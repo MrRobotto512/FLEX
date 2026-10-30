@@ -23,10 +23,12 @@ make run             # deploy, then start it on the TV via websrv's /hbldr (port
 
 `PS5_HOST` defaults to `192.168.0.176`; override with `make run PS5_HOST=…`.
 
-**websrv must be running on the console.** It is the homebrew launcher from ps5-payload-dev. Only its `/hbldr` endpoint (what the launcher's tiles use) starts an ELF as a real app with the screen; payloads sent to `elfldr` (port 9021, `make run-headless`) or to websrv's `/elfldr` page run as background processes, which the launcher reports as "running in the background" with nothing on the TV. If port 8080 is closed, start websrv (it lives until the console reboots):
+**websrv must be running on the console.** It is the homebrew launcher from ps5-payload-dev. Only its `/hbldr` endpoint (what the launcher's tiles use) starts an ELF as a real app with the screen; payloads sent to `elfldr` (port 9021, `make run-headless`) or to websrv's `/elfldr` page run as background processes, which the launcher reports as "running in the background" with nothing on the TV.
+
+websrv does not survive a console restart. The symptom is the Homebrew Launcher app opening with a "not connected to the internet" error (its web view can't reach 127.0.0.1:8080). Bring it back with:
 
 ```bash
-curl -sL https://github.com/ps5-payload-dev/websrv/releases/latest/download/websrv-ps5.elf | nc -q0 192.168.0.176 9021
+make websrv          # tools/websrv.sh: downloads websrv once (pinned version + checksum) and sends it to elfldr
 ```
 
 `make deploy` must run at least once before `make run`, so the font is in `/data/homebrew/FLEX/assets/`; without it the app exits with "font missing". After `make deploy` FLEX also appears, with its icon, in the websrv launcher page at `http://192.168.0.176:8080` (open it in the PS5 browser to start FLEX without a PC).

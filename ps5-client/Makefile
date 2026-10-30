@@ -56,6 +56,10 @@ run: deploy
 run-headless: $(ELF)
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p $(PS5_PORT) $(ELF)
 
+# After a console restart websrv is gone; this brings it back.
+websrv:
+	PS5_HOST=$(PS5_HOST) PS5_PORT=$(PS5_PORT) bash tools/websrv.sh
+
 deploy: $(ELF)
 	curl -sS --ftp-create-dirs -T $(ELF) ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/FLEX/eboot.elf
 	curl -sS --ftp-create-dirs -T sce_sys/icon0.png ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/FLEX/sce_sys/icon0.png
@@ -64,4 +68,4 @@ deploy: $(ELF)
 clean:
 	rm -rf build
 
-.PHONY: all run run-headless deploy clean
+.PHONY: all run run-headless websrv deploy clean
