@@ -6,12 +6,23 @@ import (
 	"io/fs"
 	"log/slog"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// Root is a library folder. In a TV root every video is an episode; in a
+// movie root files are movies unless they are named S01E02 / 1x02 or sit
+// in a season folder.
+type Root struct {
+	Path string
+	TV   bool
+}
+
+// matcherVersion is bumped when title parsing or TMDB matching improves, so
+// movies that found no match are tried once more on the next scan (and only
+// then).
+const matcherVersion = 2
 
 var videoExt = map[string]bool{
 	".mkv": true, ".mp4": true, ".m4v": true, ".mov": true, ".avi": true,
@@ -50,7 +61,7 @@ func (s *Scanner) Status() ScanStatus {
 }
 
 // Start kicks off a scan in the background. Returns false if one is already running.
-func (s *Scanner) Start(ctx context.Context, folders []string) bool {
+func (s *Scanner) Start(ctx context.Context, roots []Root) bool {
 	s.mu.Lock()
 	if s.status.Scanning {
 		s.mu.Unlock()
@@ -62,7 +73,7 @@ func (s *Scanner) Start(ctx context.Context, folders []string) bool {
 	s.mu.Unlock()
 
 	go func() {
-		err := s.scan(ctx, folders)
+		err := s.scan(ctx, roots)
 		now := time.Now()
 		s.mu.Lock()
 		s.status.Scanning = false
@@ -75,13 +86,19 @@ func (s *Scanner) Start(ctx context.Context, folders []string) bool {
 	return true
 }
 
-func (s *Scanner) scan(ctx context.Context, folders []string) error {
+func (s *Scanner) scan(ctx context.Context, roots []Root) error {
 	start := time.Now()
 	s.shows = map[string]int64{}
 	s.touched = map[int64]bool{}
-	s.log.Info("scan started", "folders", folders)
-	for _, root := range folders {
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	s.log.Info("scan started", "roots", roots)
+	tvRoots := map[string]bool{}
+	for _, r := range roots {
+		if r.TV {
+			tvRoots[strings.ToLower(filepath.Clean(r.Path))] = true
+		}
+	}
+	for _, root := range roots {
+		err := filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				s.log.Warn("scan: skipping", "path", path, "err", err)
 				return nil
@@ -90,7 +107,11 @@ func (s *Scanner) scan(ctx context.Context, folders []string) error {
 				return ctx.Err()
 			}
 			if d.IsDir() {
-				if strings.HasPrefix(d.Name(), ".") {
+				if strings.HasPrefix(d.Name(), ".") || (path != root.Path && extrasDirRe.MatchString(d.Name())) {
+					return filepath.SkipDir
+				}
+				// a TV folder inside a movie folder is scanned as TV, once
+				if !root.TV && path != root.Path && tvRoots[strings.ToLower(filepath.Clean(path))] {
 					return filepath.SkipDir
 				}
 				return nil
@@ -116,7 +137,7 @@ func (s *Scanner) scan(ctx context.Context, folders []string) error {
 	return nil
 }
 
-func (s *Scanner) file(ctx context.Context, root, path string, d fs.DirEntry) error {
+func (s *Scanner) file(ctx context.Context, root Root, path string, d fs.DirEntry) error {
 	info, err := d.Info()
 	if err != nil {
 		return err
@@ -125,11 +146,15 @@ func (s *Scanner) file(ctx context.Context, root, path string, d fs.DirEntry) er
 	s.status.FilesSeen++
 	s.mu.Unlock()
 
+	size, mtime := info.Size(), info.ModTime().Unix()
+	if root.TV || inSeasonFolder(path, root.Path) {
+		return s.episodeFile(ctx, root.Path, path, size, mtime, parseTVEpisode(path, root.Path))
+	}
 	base := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
 	if ep, ok := parseEpisode(base); ok {
-		return s.episodeFile(ctx, root, path, info.Size(), info.ModTime().Unix(), ep)
+		return s.episodeFile(ctx, root.Path, path, size, mtime, ep)
 	}
-	return s.movieFile(ctx, root, path, info.Size(), info.ModTime().Unix())
+	return s.movieFile(ctx, root.Path, path, size, mtime)
 }
 
 func (s *Scanner) movieFile(ctx context.Context, root, path string, size, mtime int64) error {
@@ -139,7 +164,7 @@ func (s *Scanner) movieFile(ctx context.Context, root, path string, size, mtime 
 		return err
 	}
 	if existing != nil && existing.Size == size && existing.MTime == mtime {
-		if !existing.HasMeta && s.tmdb != nil {
+		if !existing.HasMeta && existing.MatchVer < matcherVersion && s.tmdb != nil {
 			s.enrichMovie(ctx, existing.ID, path, root)
 		}
 		return s.db.TouchSeen(existing.ID, now)
@@ -167,7 +192,14 @@ func (s *Scanner) movieFile(ctx context.Context, root, path string, size, mtime 
 
 func (s *Scanner) enrichMovie(ctx context.Context, id int64, path, root string) {
 	title, year := guessTitle(path, root)
-	md, err := s.tmdb.Match(ctx, title, year)
+	var md Metadata
+	var err error
+	for _, c := range titleCandidates(title) {
+		if md, err = s.tmdb.Match(ctx, c, year); err == nil {
+			break
+		}
+	}
+	s.db.SetMatchVersion(id, matcherVersion)
 	if err != nil {
 		s.log.Warn("tmdb: no match", "title", title, "year", year, "err", err)
 		return
@@ -200,7 +232,14 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 			s.log.Info("scan: new show", "title", series, "year", year)
 		}
 		if s.tmdb != nil && (created || s.db.ShowNeedsMetadata(id)) {
-			if md, err := s.tmdb.MatchShow(ctx, series, year); err != nil {
+			var md Metadata
+			var err error
+			for _, c := range titleCandidates(series) {
+				if md, err = s.tmdb.MatchShow(ctx, c, year); err == nil {
+					break
+				}
+			}
+			if err != nil {
 				s.log.Warn("tmdb: no show match", "title", series, "year", year, "err", err)
 			} else if err := s.db.SetShowMetadata(id, md); err != nil {
 				s.log.Warn("tmdb: save show", "id", id, "err", err)
@@ -268,116 +307,4 @@ func (s *Scanner) episodeMetadata(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// --- filename parsing ---
-
-var (
-	yearRe  = regexp.MustCompile(`^(.+?)[\s._\-(\[]+((?:19|20)\d{2})(?:[\s._\-)\]]|$)`)
-	noiseRe = regexp.MustCompile(`(?i)[\s._\-](1080p|2160p|720p|480p|4k|uhd|bluray|blu-ray|bdrip|brrip|web-?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|remux|hdr|dv|atmos|dts|aac|ac3|proper|repack)\b.*$`)
-	spaceRe = regexp.MustCompile(`[._]+|\s+`)
-
-	// "Show Name S01E02 Episode Title", "show.name.1x02", "S01E01E02", with
-	// an optional "(2011)" after the show name
-	episodeRe   = regexp.MustCompile(`(?i)^(?:(.*?)[\s._\-]+)?(?:S(\d{1,2})[\s._\-]*E(\d{1,3})(?:[\s._\-]*E\d{1,3})*|(\d{1,2})x(\d{2,3}))(?:[\s._\-]+(.*))?$`)
-	seasonDirRe = regexp.MustCompile(`(?i)^(season|series|s)[\s._\-]*\d+$|^specials$`)
-)
-
-type episodeName struct {
-	Series  string
-	Year    int
-	Season  int
-	Episode int
-	Title   string
-}
-
-func parseEpisode(name string) (episodeName, bool) {
-	m := episodeRe.FindStringSubmatch(name)
-	if m == nil {
-		return episodeName{}, false
-	}
-	var e episodeName
-	if m[2] != "" {
-		e.Season, _ = strconv.Atoi(m[2])
-		e.Episode, _ = strconv.Atoi(m[3])
-	} else {
-		e.Season, _ = strconv.Atoi(m[4])
-		e.Episode, _ = strconv.Atoi(m[5])
-	}
-	if strings.TrimSpace(m[1]) != "" {
-		e.Series, e.Year = parseName(m[1])
-	}
-	e.Title = cleanEpisodeTitle(m[6])
-	return e, true
-}
-
-// seriesFromDirs handles "Show Name/Season 01/S01E01.mkv": the show is the
-// folder above the season folder (never the library root itself).
-func seriesFromDirs(path, root string) (string, int) {
-	dir := filepath.Dir(path)
-	if seasonDirRe.MatchString(filepath.Base(dir)) {
-		dir = filepath.Dir(dir)
-	}
-	if filepath.Clean(dir) == filepath.Clean(root) {
-		return "", 0
-	}
-	return parseName(filepath.Base(dir))
-}
-
-func cleanEpisodeTitle(s string) string {
-	s = noiseRe.ReplaceAllString(" "+s, "")
-	s = spaceRe.ReplaceAllString(s, " ")
-	s = strings.TrimSpace(strings.Trim(s, " -"))
-	if s != "" && s == strings.ToLower(s) {
-		s = titleCase(s)
-	}
-	return s
-}
-
-// guessTitle prefers "Title (Year)" from the file name, then from the parent
-// folder (common layout: "Heat (1995)/heat.mkv"), then falls back to the bare name.
-func guessTitle(path, root string) (string, int) {
-	t, y := parseName(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
-	if y != 0 {
-		return t, y
-	}
-	parent := filepath.Dir(path)
-	if filepath.Clean(parent) != filepath.Clean(root) {
-		if pt, py := parseName(filepath.Base(parent)); py != 0 {
-			return pt, py
-		}
-	}
-	return t, 0
-}
-
-func parseName(name string) (string, int) {
-	title, year := name, 0
-	if m := yearRe.FindStringSubmatch(name); m != nil {
-		title = m[1]
-		year, _ = strconv.Atoi(m[2])
-	} else {
-		title = noiseRe.ReplaceAllString(title, "")
-	}
-	title = spaceRe.ReplaceAllString(title, " ")
-	title = strings.TrimSpace(strings.Trim(title, " -"))
-	if title == "" {
-		title = name
-	}
-	if title == strings.ToLower(title) {
-		title = titleCase(title) // "transcode test" -> "Transcode Test"
-	}
-	return title, year
-}
-
-func titleCase(s string) string {
-	words := strings.Fields(s)
-	for i, w := range words {
-		words[i] = strings.ToUpper(w[:1]) + w[1:]
-	}
-	return strings.Join(words, " ")
-}
-
-func looksLikeExtra(name string) bool {
-	n := strings.ToLower(name)
-	return strings.Contains(n, "sample") || strings.Contains(n, "trailer")
 }

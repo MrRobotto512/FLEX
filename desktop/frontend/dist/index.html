@@ -35,10 +35,16 @@
 
 <div class="status" id="status" style="margin-top:12px"></div>
 
-<h2>Library</h2>
+<h2>Movie folders</h2>
 <ul id="folders"></ul>
-<div class="row">
-  <button id="add">Add folder…</button>
+<div class="row"><button id="add">Add movie folder…</button></div>
+
+<h2>TV show folders</h2>
+<p class="note">Everything inside a TV folder is an episode. Each show gets its own subfolder (e.g. <code>TV Shows\Futurama\Season 3\…</code>); season folders are optional. Don't add a TV folder to the movie list as well.</p>
+<ul id="tvfolders"></ul>
+<div class="row"><button id="addtv">Add TV folder…</button></div>
+
+<div class="row" style="margin-top:12px">
   <button id="scan">Scan now</button>
   <button id="open">Open library in browser</button>
 </div>
@@ -91,15 +97,20 @@ async function load() {
 }
 
 function renderFolders() {
-  const ul = $('folders'); ul.innerHTML = '';
-  (settings.library || []).forEach((p, i) => {
+  renderList('folders', 'library');
+  renderList('tvfolders', 'tv_library');
+}
+
+function renderList(id, key) {
+  const ul = $(id); ul.innerHTML = '';
+  (settings[key] || []).forEach((p, i) => {
     const li = document.createElement('li');
     li.innerHTML = `<span></span><button>Remove</button>`;
     li.querySelector('span').textContent = p;
-    li.querySelector('button').onclick = () => { settings.library.splice(i, 1); renderFolders(); };
+    li.querySelector('button').onclick = () => { settings[key].splice(i, 1); renderFolders(); };
     ul.appendChild(li);
   });
-  if (!settings.library?.length) ul.innerHTML = '<li class="muted">No folders yet</li>';
+  if (!settings[key]?.length) ul.innerHTML = '<li class="muted">No folders yet</li>';
 }
 
 async function refresh() {
@@ -125,7 +136,8 @@ async function refresh() {
   $('ts_signin').hidden = !st.ts_needs_login;
 }
 
-$('add').onclick = async () => { const p = await App().PickFolder(); if (p) { (settings.library ||= []).push(p); renderFolders(); } };
+$('add').onclick = async () => { const p = await App().PickFolder('Add a movie folder'); if (p) { (settings.library ||= []).push(p); renderFolders(); } };
+$('addtv').onclick = async () => { const p = await App().PickFolder('Add a TV show folder'); if (p) { (settings.tv_library ||= []).push(p); renderFolders(); } };
 $('scan').onclick = () => App().StartScan();
 $('open').onclick = () => App().OpenLibrary();
 $('ts_signin').onclick = () => App().TailscaleSignIn();

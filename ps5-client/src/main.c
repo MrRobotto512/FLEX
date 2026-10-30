@@ -21,6 +21,7 @@
 #define APP_DIR "/data/homebrew/FLEX"
 #define SAVED_SERVER APP_DIR "/server.txt"
 #define FONT_PATH APP_DIR "/assets/DejaVuSans.ttf"
+#define ASPECT_FILE APP_DIR "/aspect.txt"
 #define SCREEN_W 1920
 #define SCREEN_H 1080
 
@@ -147,6 +148,50 @@ static int find_server(void) {
 static void set_status(char *status, size_t n, int movies, int shows) {
     snprintf(status, n, "%s:%d%s  ·  %d movies  ·  %d shows", g_host, g_port, g_is_remote ? " (remote)" : "", movies,
              shows);
+}
+
+/* ---------- per-item picture shape ----------
+ * The Square button's choice is remembered per movie / episode in
+ * aspect.txt ("m 42 2" = movie 42 plays as 4:3). */
+
+typedef struct {
+    char kind; /* 'm' movie, 'e' episode */
+    long id;
+    int aspect;
+} AspectPref;
+
+static AspectPref g_aspects[1024];
+static int g_naspects;
+
+static void load_aspects(void) {
+    FILE *f = fopen(ASPECT_FILE, "r");
+    if (!f) return;
+    AspectPref a;
+    while (g_naspects < 1024 && fscanf(f, " %c %ld %d", &a.kind, &a.id, &a.aspect) == 3) g_aspects[g_naspects++] = a;
+    fclose(f);
+}
+
+static int get_aspect(char kind, long id) {
+    for (int i = 0; i < g_naspects; i++)
+        if (g_aspects[i].kind == kind && g_aspects[i].id == id) return g_aspects[i].aspect;
+    return ASPECT_AUTO;
+}
+
+static void set_aspect(char kind, long id, int aspect) {
+    if (get_aspect(kind, id) == aspect) return;
+    int i = 0;
+    while (i < g_naspects && !(g_aspects[i].kind == kind && g_aspects[i].id == id)) i++;
+    if (aspect == ASPECT_AUTO) {
+        if (i < g_naspects) g_aspects[i] = g_aspects[--g_naspects];
+    } else if (i < g_naspects) {
+        g_aspects[i].aspect = aspect;
+    } else if (g_naspects < 1024) {
+        g_aspects[g_naspects++] = (AspectPref){kind, id, aspect};
+    }
+    FILE *f = fopen(ASPECT_FILE, "w");
+    if (!f) return;
+    for (int j = 0; j < g_naspects; j++) fprintf(f, "%c %ld %d\n", g_aspects[j].kind, g_aspects[j].id, g_aspects[j].aspect);
+    fclose(f);
 }
 
 /* ---------- API ---------- */
@@ -317,6 +362,8 @@ static void load_visible_posters(SDL_Renderer *ren, Item *list, int n, int sel, 
 static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *title, int resume_s, int watched,
                       int runtime_s) {
     double start = watched ? 0 : resume_s, position = -1, duration = runtime_s;
+    char kc = kind[0] == 'm' ? 'm' : 'e';
+    int aspect = get_aspect(kc, id);
     char path[256];
     for (;;) {
         snprintf(path, sizeof path, "/api/v1/%s/%ld/play?profile=ps5&start=%d", kind, id, (int)start);
@@ -336,8 +383,9 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         fprintf(stderr, "FLEX: play \"%s\" via %s from %.0fs: %s\n", title, method ? method : "?", start, url);
 
         PlayOpts o = {.url = url, .title = title, .offset = hls ? start : 0, .initial = hls ? 0 : start,
-                      .duration = duration, .seekable = !hls, .font = g_small};
+                      .duration = duration, .seekable = !hls, .aspect = aspect, .font = g_small};
         PlayResult r = player_play(ren, &o);
+        aspect = r.aspect; /* carried across session restarts */
         fprintf(stderr, "FLEX: stopped at %.1fs%s\n", r.position, r.seek_to >= 0 ? " (seek)" : "");
 
         if (hls && rel) {
@@ -352,6 +400,7 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         if (r.seek_to < 0) break;
         start = r.seek_to;
     }
+    set_aspect(kc, id, aspect);
     if (position >= 0) {
         char json[128];
         snprintf(json, sizeof json, "{\"position_s\":%d,\"duration_s\":%d}", (int)position, (int)duration);
@@ -637,6 +686,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    load_aspects();
     char status[256] = "Looking for a FLEX server…";
     draw_grid(ren, KIND_MOVIE, NULL, 0, 0, 0, status);
     fprintf(stderr, "FLEX: first frame presented\n");

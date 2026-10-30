@@ -52,13 +52,13 @@ type session struct {
 }
 
 type transcodeRequest struct {
-	Path     string
-	Media    *MediaInfo
-	Profile  profile
-	Audio    int     // absolute stream index, -1 = default
-	Sub      int     // absolute stream index, -1 = none (burned in when set)
-	Start    float64 // seconds
-	CopyVid  bool    // remux video instead of re-encoding
+	Path    string
+	Media   *MediaInfo
+	Profile profile
+	Audio   int     // absolute stream index, -1 = default
+	Sub     int     // absolute stream index, -1 = none (burned in when set)
+	Start   float64 // seconds
+	CopyVid bool    // remux video instead of re-encoding
 }
 
 func NewTranscoder(ffmpeg, encoder, dir string, log *slog.Logger) *Transcoder {

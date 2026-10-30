@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS movies (
 	size          INTEGER NOT NULL,
 	mtime         INTEGER NOT NULL,
 	added_at      TEXT NOT NULL,
-	seen_at       TEXT NOT NULL
+	seen_at       TEXT NOT NULL,
+	match_ver     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS movies_title ON movies(title COLLATE NOCASE);
 
@@ -103,6 +104,7 @@ func OpenDB(path string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	db.Exec(`ALTER TABLE movies ADD COLUMN match_ver INTEGER NOT NULL DEFAULT 0`) // older DBs; fails harmlessly when present
 	if _, err := db.Exec(`INSERT OR IGNORE INTO progress
 		SELECT 'movie', movie_id, position_s, duration_s, watched, updated_at FROM progress_v1`); err == nil {
 		db.Exec(`DROP TABLE progress_v1`)
@@ -204,17 +206,18 @@ func scanMovie(r rowScanner, withMedia bool) (*Movie, error) {
 
 // fileRow is the scanner's view of an existing entry (movie or episode).
 type fileRow struct {
-	ID      int64
-	Size    int64
-	MTime   int64
-	HasMeta bool // movie: tmdb_id set; episode: meta flag
+	ID       int64
+	Size     int64
+	MTime    int64
+	HasMeta  bool // movie: tmdb_id set; episode: meta flag
+	MatchVer int  // movie: matcher version of the last TMDB attempt
 }
 
 func (d *DB) LookupFile(path string) (*fileRow, error) {
 	var r fileRow
 	var tmdb sql.NullInt64
-	err := d.QueryRow(`SELECT id, size, mtime, tmdb_id FROM movies WHERE path = ?`, path).
-		Scan(&r.ID, &r.Size, &r.MTime, &tmdb)
+	err := d.QueryRow(`SELECT id, size, mtime, tmdb_id, match_ver FROM movies WHERE path = ?`, path).
+		Scan(&r.ID, &r.Size, &r.MTime, &tmdb, &r.MatchVer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -272,6 +275,10 @@ func (d *DB) DeleteUnseen(since time.Time) (int64, error) {
 	d.Exec(`DELETE FROM progress WHERE kind = 'movie' AND item_id NOT IN (SELECT id FROM movies)`)
 	d.Exec(`DELETE FROM progress WHERE kind = 'episode' AND item_id NOT IN (SELECT id FROM episodes)`)
 	return n + ne, nil
+}
+
+func (d *DB) SetMatchVersion(id int64, v int) {
+	d.Exec(`UPDATE movies SET match_ver = ? WHERE id = ?`, v, id)
 }
 
 func (d *DB) SetMetadata(id int64, md Metadata) error {
@@ -375,7 +382,7 @@ func (d *DB) GetShow(id int64) (*Show, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.Query(`SELECT `+episodeCols+` `+episodeFrom+` WHERE e.show_id = ? ORDER BY e.season, e.episode`, id)
+	rows, err := d.Query(`SELECT `+episodeCols+` `+episodeFrom+` WHERE e.show_id = ? ORDER BY e.season, e.episode, e.title`, id)
 	if err != nil {
 		return nil, err
 	}

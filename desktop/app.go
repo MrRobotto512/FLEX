@@ -22,6 +22,7 @@ import (
 type Settings struct {
 	Name            string   `json:"name"`
 	Library         []string `json:"library"`
+	TVLibrary       []string `json:"tv_library"`
 	DataDir         string   `json:"data_dir"`
 	HTTPPort        int      `json:"http_port"`
 	DiscoveryPort   int      `json:"discovery_port"`
@@ -130,8 +131,8 @@ func (a *App) TailscaleSignIn() {
 
 func (a *App) SetAutostart(on bool) error { return setAutostart(on) }
 
-func (a *App) PickFolder() (string, error) {
-	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "Add a movie folder"})
+func (a *App) PickFolder(title string) (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
 }
 
 func (a *App) StartScan() bool {
@@ -180,7 +181,7 @@ func (a *App) stopServer() {
 
 func (s Settings) config() server.Config {
 	return server.Config{
-		Name: s.Name, Library: s.Library, DataDir: s.DataDir,
+		Name: s.Name, Library: s.Library, TVLibrary: s.TVLibrary, DataDir: s.DataDir,
 		HTTPPort: s.HTTPPort, DiscoveryPort: s.DiscoveryPort, TMDBKey: s.TMDBKey,
 		FFmpeg: s.FFmpeg, FFprobe: s.FFprobe, Encoder: s.Encoder,
 		TSEnabled: s.TSEnabled, TSAuthKey: s.TSAuthKey, TSHostname: s.TSHostname,

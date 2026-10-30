@@ -39,6 +39,9 @@ Build order, each step produces something you can run.
    - [x] server: Tailscale sign-in from the desktop app, `remote` profile for tailnet clients
    - [x] server: restarts websrv on known consoles after a PS5 reboot
    - [x] desktop: tray icon, start with Windows, single instance, close-to-tray
+   - [x] PS5: picture shape (Square), remembered per item; seek no longer stalls waiting for audio
+   - [x] TV folders (everything inside is an episode), many numbering styles, season folders in movie folders
+   - [x] title cleanup + TMDB retry ladder (leading index, year-first, " - Genre", editions, "Part 1")
    - [ ] verified on hardware: seek, tray on the library PC, remote from a phone, reboot + rejailbreak
 7. **Later**
    - [ ] subtitles rendered client-side (SDL2_ttf) instead of burned in

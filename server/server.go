@@ -115,8 +115,8 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
-	if folders := s.Folders(); len(folders) > 0 {
-		s.scanner.Start(ctx, folders)
+	if roots := s.roots(); len(roots) > 0 {
+		s.scanner.Start(ctx, roots)
 	} else {
 		s.log.Warn("no library folders configured")
 	}
@@ -154,7 +154,19 @@ func (s *Server) SetFolders(folders []string) error {
 }
 
 // Scan starts a library scan; false if one is already running.
-func (s *Server) Scan() bool { return s.scanner.Start(s.bg(), s.Folders()) }
+func (s *Server) Scan() bool { return s.scanner.Start(s.bg(), s.roots()) }
+
+// roots is every library folder: movie folders, then TV folders.
+func (s *Server) roots() []Root {
+	var out []Root
+	for _, f := range s.Folders() {
+		out = append(out, Root{Path: f})
+	}
+	for _, f := range s.cfg.TVLibrary {
+		out = append(out, Root{Path: f, TV: true})
+	}
+	return out
+}
 
 func (s *Server) ScanStatus() ScanStatus { return s.scanner.Status() }
 

@@ -13,7 +13,8 @@ import (
 // from its settings UI; flexd fills it from the environment / .env.
 type Config struct {
 	Name          string   // shown to clients
-	Library       []string // folders to scan
+	Library       []string // movie folders (episodes in them are still recognised)
+	TVLibrary     []string // TV folders: every video inside is an episode
 	DataDir       string   // db, posters, transcode segments
 	HTTPPort      int
 	DiscoveryPort int
@@ -63,6 +64,11 @@ func FromEnv() (Config, error) {
 			c.Library = append(c.Library, filepath.Clean(p))
 		}
 	}
+	for _, p := range strings.Split(os.Getenv("FLEX_TV_LIBRARY"), sep) {
+		if p = strings.TrimSpace(p); p != "" {
+			c.TVLibrary = append(c.TVLibrary, filepath.Clean(p))
+		}
+	}
 	for _, h := range strings.Split(os.Getenv("FLEX_PS5_HOSTS"), ",") {
 		if h = strings.TrimSpace(h); h != "" {
 			c.PS5Hosts = append(c.PS5Hosts, h)
@@ -97,9 +103,9 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func (c Config) DBPath() string        { return filepath.Join(c.DataDir, "flex.db") }
-func (c Config) PosterDir() string     { return filepath.Join(c.DataDir, "posters") }
-func (c Config) TranscodeDir() string  { return filepath.Join(c.DataDir, "transcode") }
+func (c Config) DBPath() string       { return filepath.Join(c.DataDir, "flex.db") }
+func (c Config) PosterDir() string    { return filepath.Join(c.DataDir, "posters") }
+func (c Config) TranscodeDir() string { return filepath.Join(c.DataDir, "transcode") }
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
