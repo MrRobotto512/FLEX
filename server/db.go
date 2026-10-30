@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS shows (
 	overview      TEXT,
 	poster_path   TEXT,
 	backdrop_path TEXT,
-	added_at      TEXT NOT NULL
+	added_at      TEXT NOT NULL,
+	match_ver     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS episodes (
@@ -105,6 +106,7 @@ func OpenDB(path string) (*DB, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	db.Exec(`ALTER TABLE movies ADD COLUMN match_ver INTEGER NOT NULL DEFAULT 0`) // older DBs; fails harmlessly when present
+	db.Exec(`ALTER TABLE shows ADD COLUMN match_ver INTEGER NOT NULL DEFAULT 0`)
 	if _, err := db.Exec(`INSERT OR IGNORE INTO progress
 		SELECT 'movie', movie_id, position_s, duration_s, watched, updated_at FROM progress_v1`); err == nil {
 		db.Exec(`DROP TABLE progress_v1`)
@@ -468,6 +470,38 @@ func (d *DB) ShowTMDBID(id int64) int64 {
 	return tmdb.Int64
 }
 
+// ShowMatchVersion is the matcher version that last matched the show; older
+// matches are redone once by the next scan.
+func (d *DB) ShowMatchVersion(id int64) int {
+	var v int
+	d.QueryRow(`SELECT match_ver FROM shows WHERE id = ?`, id).Scan(&v)
+	return v
+}
+
+func (d *DB) SetShowMatchVersion(id int64, v int) {
+	d.Exec(`UPDATE shows SET match_ver = ? WHERE id = ?`, v, id)
+}
+
+// SharedEpisodeNumbers lists the season/episode numbers of a show that more
+// than one file claims ("201-a", "201-b", "201-c": three segments of one
+// half hour, or the same episode twice).
+func (d *DB) SharedEpisodeNumbers(showID int64) map[[2]int64]bool {
+	out := map[[2]int64]bool{}
+	rows, err := d.Query(`SELECT season, episode FROM episodes WHERE show_id = ?
+		GROUP BY season, episode HAVING COUNT(*) > 1`, showID)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k [2]int64
+		if rows.Scan(&k[0], &k[1]) == nil {
+			out[k] = true
+		}
+	}
+	return out
+}
+
 func (d *DB) SetShowMetadata(id int64, md Metadata) error {
 	_, err := d.Exec(`UPDATE shows SET tmdb_id = ?, title = ?, year = ?, overview = ?,
 		poster_path = ?, backdrop_path = ? WHERE id = ?`,
@@ -679,9 +713,13 @@ func (d *DB) EpisodesNeedingMeta(showID int64) ([][3]int64, error) {
 	return out, rows.Err()
 }
 
-func (d *DB) SetEpisodeMetadata(id int64, md EpisodeMeta) error {
-	_, err := d.Exec(`UPDATE episodes SET title = ?, overview = ?, runtime_s = ?, still_path = ?, meta = 1 WHERE id = ?`,
-		md.Title, md.Overview, md.RuntimeS, md.StillPath, id)
+// SetEpisodeMetadata stores TMDB's data for an episode. keepTitle keeps the
+// title read from the file name unless that is only the "Episode N"
+// placeholder.
+func (d *DB) SetEpisodeMetadata(id int64, md EpisodeMeta, keepTitle bool) error {
+	_, err := d.Exec(`UPDATE episodes SET title = CASE WHEN ? AND title NOT GLOB 'Episode [0-9]*' THEN title ELSE ? END,
+		overview = ?, runtime_s = ?, still_path = ?, meta = 1 WHERE id = ?`,
+		keepTitle, md.Title, md.Overview, md.RuntimeS, md.StillPath, id)
 	return err
 }
 

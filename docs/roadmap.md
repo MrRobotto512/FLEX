@@ -47,6 +47,8 @@ Build order, each step produces something you can run.
    - [x] `/library/unmatched` with file paths
    - [x] scanner: 4 workers, "current" activity in the status, unreadable drives don't wipe their items, "TV Shows" in the movie list treated as TV, duplicate shows merged after every scan
    - [x] transcoding: all-GPU pipeline with NVENC (CUDA decode, bwdif_cuda, scale_cuda), -hwaccel auto otherwise, CPU fallback; paced to 1.5x playback after a 60 s burst; `/transcodes`, encoder shown in the app
+   - [x] GPU encoding through Windows (`h264_mf`) for GPUs ffmpeg's NVENC rejects (GTX 1070 Ti on the 580 driver); `/server` reports GPUs and why each encoder failed
+   - [x] season folders named with air years ("1993-1994 - Season 1"), "0000 - Shorts" as specials, segment files ("201-a"); same-name series (TMNT 1987/2003/2012) told apart by an episode title, existing shows re-matched once
    - [x] verified on hardware: seek
    - [ ] verified on hardware: tray on the library PC, remote from a phone, reboot + rejailbreak
 7. **Later**

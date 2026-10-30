@@ -23,7 +23,7 @@ type Config struct {
 
 	FFmpeg  string // path or "" for PATH lookup
 	FFprobe string
-	Encoder string // auto | nvenc | qsv | amf | software
+	Encoder string // auto | nvenc | qsv | amf | mf | software
 
 	// Remote access: TSEnabled joins the tailnet; without an auth key the
 	// node waits for an interactive sign-in (TailscaleInfo().AuthURL).
@@ -96,7 +96,7 @@ func (c *Config) Validate() error {
 		c.FFprobe = bundledOr("ffprobe")
 	}
 	switch c.Encoder {
-	case "auto", "nvenc", "qsv", "amf", "software":
+	case "auto", "nvenc", "qsv", "amf", "mf", "software":
 	default:
 		return fmt.Errorf("unknown encoder %q", c.Encoder)
 	}

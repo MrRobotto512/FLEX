@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +35,7 @@ var profiles = map[string]profile{
 // segments into its own folder; idle sessions are reaped.
 type Transcoder struct {
 	ffmpeg  string
-	encoder string // h264_nvenc | h264_qsv | h264_amf | libx264
+	encoder string // h264_nvenc | h264_qsv | h264_amf | h264_mf | libx264
 	dir     string
 	log     *slog.Logger
 
@@ -88,6 +90,7 @@ type transcodeRequest struct {
 	CopyVid bool    // remux video instead of re-encoding
 	Upscale bool    // scale up to the profile's height (Lanczos + light sharpening)
 	NoGPU   bool    // CPU filters even with NVENC (retry after the GPU pipeline failed)
+	CPUOnly bool    // libx264 whatever the hardware (retry after the hardware encoder failed)
 }
 
 func NewTranscoder(ffmpeg, encoder, dir string, log *slog.Logger) *Transcoder {
@@ -163,6 +166,12 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 				r.NoGPU = true
 				return t.Start(ctx, r)
 			}
+			if !r.CopyVid && t.encoderFor(r) != "libx264" {
+				// e.g. a picture size the hardware encoder refuses
+				t.log.Warn("ffmpeg hardware encoder failed, retrying with libx264", "key", key, "err", s.err)
+				r.CPUOnly = true
+				return t.Start(ctx, r)
+			}
 			return "", fmt.Errorf("ffmpeg failed before producing output: %v", s.err)
 		case <-ctx.Done():
 			t.remove(key)
@@ -209,7 +218,7 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 			scale = fmt.Sprintf("scale_cuda=-2:%d:interp_algo=lanczos:format=yuv420p", r.Profile.MaxHeight)
 		}
 		a = append(a, "-vf", "bwdif_cuda=mode=send_frame:deint=interlaced,"+scale)
-		a = append(a, t.videoCodecArgs(r.Profile)...)
+		a = append(a, t.videoCodecArgs(r)...)
 	} else {
 		// deinterlace frames flagged interlaced (old TV and DVD rips); progressive
 		// frames pass through untouched
@@ -228,9 +237,13 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 			si := subOrdinal(r.Media, r.Sub)
 			vf = append(vf, fmt.Sprintf("subtitles=%s:si=%d", ffEscape(r.Path), si))
 		}
-		vf = append(vf, "format=yuv420p")
+		if t.encoderFor(r) == "h264_mf" {
+			vf = append(vf, "format=nv12") // the only layout GPU encoders take through Media Foundation
+		} else {
+			vf = append(vf, "format=yuv420p")
+		}
 		a = append(a, "-vf", strings.Join(vf, ","))
-		a = append(a, t.videoCodecArgs(r.Profile)...)
+		a = append(a, t.videoCodecArgs(r)...)
 	}
 
 	a = append(a, "-c:a", "aac", "-ac", "2", "-b:a", r.Profile.AudioBits, "-ar", "48000")
@@ -245,20 +258,35 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 // useGPU: the all-CUDA pipeline needs NVENC and no CPU-only filters
 // (HDR tone mapping, burned-in subtitles).
 func (t *Transcoder) useGPU(r transcodeRequest) bool {
-	return t.encoder == "h264_nvenc" && !r.CopyVid && !r.NoGPU && r.Media.Video.HDR == "" && r.Sub < 0
+	return t.encoderFor(r) == "h264_nvenc" && !r.CopyVid && !r.NoGPU && r.Media.Video.HDR == "" && r.Sub < 0
 }
 
-func (t *Transcoder) videoCodecArgs(p profile) []string {
+func (t *Transcoder) encoderFor(r transcodeRequest) string {
+	if r.CPUOnly {
+		return "libx264"
+	}
+	return t.encoder
+}
+
+func (t *Transcoder) videoCodecArgs(r transcodeRequest) []string {
+	p := r.Profile
 	br := fmt.Sprintf("%d", p.MaxBitrate)
-	common := []string{"-b:v", br, "-maxrate", br, "-bufsize", fmt.Sprintf("%d", p.MaxBitrate*2),
-		"-g", "96", "-keyint_min", "96", "-profile:v", "high", "-level", "4.1"}
-	switch t.encoder {
+	rate := []string{"-b:v", br, "-maxrate", br, "-bufsize", fmt.Sprintf("%d", p.MaxBitrate*2),
+		"-g", "96", "-keyint_min", "96"}
+	common := append(append([]string{}, rate...), "-profile:v", "high", "-level", "4.1")
+	switch t.encoderFor(r) {
 	case "h264_nvenc":
 		return append([]string{"-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-bf", "2"}, common...)
 	case "h264_qsv":
 		return append([]string{"-c:v", "h264_qsv", "-preset", "medium"}, common...)
 	case "h264_amf":
 		return append([]string{"-c:v", "h264_amf", "-quality", "balanced"}, common...)
+	case "h264_mf":
+		// Windows' Media Foundation encoder: the graphics driver does the
+		// work, so it still runs on the GPU where ffmpeg's NVENC wants a newer
+		// driver than the card can get (GTX 10-series and older). It takes the
+		// profile as a number (100 = High) and has no level option.
+		return append([]string{"-c:v", "h264_mf", "-hw_encoding", "1", "-rate_control", "pc_vbr", "-profile:v", "100"}, rate...)
 	default:
 		return append([]string{"-c:v", "libx264", "-preset", "veryfast", "-tune", "film", "-sc_threshold", "0"}, common...)
 	}
@@ -341,12 +369,17 @@ func (t *Transcoder) Reap(ctx context.Context, idle time.Duration) {
 // It also reports what each hardware encoder said, so a PC that ends up on
 // libx264 shows why (no such GPU, driver too old, ...).
 func DetectEncoder(ctx context.Context, ffmpeg, pref string) (string, map[string]string) {
-	named := map[string]string{"nvenc": "h264_nvenc", "qsv": "h264_qsv", "amf": "h264_amf", "software": "libx264"}
+	named := map[string]string{"nvenc": "h264_nvenc", "qsv": "h264_qsv", "amf": "h264_amf", "mf": "h264_mf", "software": "libx264"}
 	if enc, ok := named[pref]; ok && pref != "auto" {
 		return enc, map[string]string{enc: "chosen in settings"}
 	}
+	ladder := []string{"h264_nvenc", "h264_qsv", "h264_amf"}
+	if runtime.GOOS == "windows" {
+		// last resort before the CPU: any GPU whose driver ships an encoder
+		ladder = append(ladder, "h264_mf")
+	}
 	tests := map[string]string{}
-	for _, enc := range []string{"h264_nvenc", "h264_qsv", "h264_amf"} {
+	for _, enc := range ladder {
 		msg := encoderTest(ctx, ffmpeg, enc)
 		tests[enc] = msg
 		if msg == "ok" {
@@ -356,26 +389,56 @@ func DetectEncoder(ctx context.Context, ffmpeg, pref string) (string, map[string
 	return "libx264", tests
 }
 
-// encoderTest encodes a few black frames with enc and returns "ok" or the
-// last thing ffmpeg complained about. ffmpeg lists every hardware encoder it
-// was built with even when the GPU isn't there, so a real test encode is
-// the only reliable check.
+// encoderTest encodes a few black frames with enc and returns "ok" or what
+// ffmpeg complained about. ffmpeg lists every hardware encoder it was built
+// with even when the GPU isn't there, so a real test encode is the only
+// reliable check.
 func encoderTest(ctx context.Context, ffmpeg, enc string) string {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
-		"-f", "lavfi", "-i", "color=black:s=256x256:d=0.2", "-c:v", enc, "-f", "null", "-")
-	out, err := cmd.CombinedOutput()
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin",
+		"-f", "lavfi", "-i", "color=black:s=256x256:d=0.2", "-c:v", enc}
+	if enc == "h264_mf" {
+		args = append(args, "-vf", "format=nv12", "-hw_encoding", "1") // no software fallback
+	}
+	out, err := exec.CommandContext(ctx, ffmpeg, append(args, "-f", "null", "-")...).CombinedOutput()
 	if err == nil {
 		return "ok"
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if l := strings.TrimSpace(lines[i]); l != "" && !strings.HasPrefix(l, "Error while") && !strings.HasPrefix(l, "Conversion failed") {
-			return l
-		}
+	if msg := ffmpegError(string(out)); msg != "" {
+		return msg
 	}
 	return err.Error()
+}
+
+var (
+	// ffmpeg's follow-up lines once an encoder has failed to open
+	ffNoiseRe = regexp.MustCompile(`Error while opening encoder|Error applying encoder options|Could not open encoder|Error sending frames|Task finished with error|Terminating thread|Nothing was written|Conversion failed|Error opening output`)
+	// "[vost#0:0/h264_mf @ 000001e9] [enc:h264_mf @ 000001e9] "
+	ffTagRe = regexp.MustCompile(`^(?:\[[^\]]*\]\s*)+`)
+)
+
+// ffmpegError keeps the lines that say why an encoder failed ("The minimum
+// required Nvidia driver for nvenc is 610.00 or newer"); they come before
+// ffmpeg's generic "Error while opening encoder ... Nothing was written".
+func ffmpegError(out string) string {
+	var msgs []string
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(ffTagRe.ReplaceAllString(strings.TrimSpace(l), ""))
+		if l == "" {
+			continue
+		}
+		if ffNoiseRe.MatchString(l) {
+			if len(msgs) == 0 {
+				msgs = append(msgs, l)
+			}
+			break
+		}
+		if msgs = append(msgs, l); len(msgs) == 3 {
+			break
+		}
+	}
+	return strings.Join(msgs, " / ")
 }
 
 // subOrdinal converts an absolute stream index into the Nth subtitle stream,

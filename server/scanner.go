@@ -24,6 +24,11 @@ type Root struct {
 // then).
 const matcherVersion = 3
 
+// showMatcherVersion is the same for TV shows, except that every show
+// matched by an older version is matched again (1: an episode title can
+// pick between series that share a name).
+const showMatcherVersion = 1
+
 // scanWorkers files are probed and matched at a time: ffprobe on a slow
 // drive and TMDB round trips are both mostly waiting.
 const scanWorkers = 4
@@ -47,8 +52,9 @@ type Scanner struct {
 	// per-scan caches, guarded by showMu (show creation and TMDB show
 	// matching run one at a time so two workers never create the same show)
 	showMu  sync.Mutex
-	shows   map[string]int64 // show key -> id
-	touched map[int64]bool   // shows seen this scan (episode metadata pass)
+	shows     map[string]int64 // show key -> id
+	touched   map[int64]bool   // shows seen this scan (episode metadata pass)
+	rematched map[int64]bool   // shows now matched to another TMDB series: their episodes' TMDB data is stale
 }
 
 func (s *Scanner) setCurrent(what string) {
@@ -103,6 +109,7 @@ func (s *Scanner) scan(ctx context.Context, roots []Root) error {
 	start := time.Now()
 	s.shows = map[string]int64{}
 	s.touched = map[int64]bool{}
+	s.rematched = map[int64]bool{}
 	s.log.Info("scan started", "roots", roots)
 	tvRoots := map[string]bool{}
 	for i, r := range roots {
@@ -319,14 +326,16 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 		if created {
 			s.log.Info("scan: new show", "title", series, "year", year)
 		}
-		if s.tmdb != nil && (created || s.db.ShowNeedsMetadata(id)) {
+		if s.tmdb != nil && (created || s.db.ShowNeedsMetadata(id) || s.db.ShowMatchVersion(id) < showMatcherVersion) {
 			var md Metadata
 			var err error
+			hint := EpisodeHint{Season: ep.Season, Title: ep.Title}
 			for _, c := range titleCandidates(series) {
-				if md, err = s.tmdb.MatchShow(ctx, c, year); err == nil {
+				if md, err = s.tmdb.MatchShow(ctx, c, year, hint); err == nil {
 					break
 				}
 			}
+			old := s.db.ShowTMDBID(id)
 			if err != nil {
 				s.log.Warn("tmdb: no show match", "title", series, "year", year, "err", err)
 			} else if other := s.db.ShowByTMDB(md.TMDBID, id); other != 0 {
@@ -335,13 +344,23 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 				if err := s.db.MergeShow(id, other); err == nil {
 					showID = other
 					s.shows[key] = other
+					if old != 0 && old != md.TMDBID {
+						s.rematched[other] = true
+					}
 				}
 			} else if err := s.db.SetShowMetadata(id, md); err != nil {
 				s.log.Warn("tmdb: save show", "id", id, "err", err)
+			} else {
+				s.db.SetShowMatchVersion(id, showMatcherVersion)
+				if old != 0 && old != md.TMDBID {
+					s.log.Info("scan: show matched to another series", "title", md.Title, "year", md.Year, "was", old)
+					s.rematched[id] = true
+				}
 			}
 		}
 	}
 	s.touched[showID] = true
+	rematched := s.rematched[showID]
 	s.showMu.Unlock()
 
 	existing, err := s.db.LookupEpisodeFile(path)
@@ -352,7 +371,7 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 	if title == "" {
 		title = fmt.Sprintf("Episode %d", ep.Episode)
 	}
-	if existing != nil && (existing.ShowID != showID || existing.Season != ep.Season || existing.Episode != ep.Episode) {
+	if existing != nil && (rematched || existing.ShowID != showID || existing.Season != ep.Season || existing.Episode != ep.Episode) {
 		if err := s.db.PlaceEpisode(existing.ID, showID, ep.Season, ep.Episode, title); err != nil {
 			return err
 		}
@@ -391,6 +410,9 @@ func (s *Scanner) episodeMetadata(ctx context.Context) {
 			continue
 		}
 		s.setCurrent(fmt.Sprintf("Episode details (%d) from TMDB", len(need)))
+		// several files under one number are different things (segments of a
+		// half hour); one TMDB title would hide which is which
+		shared := s.db.SharedEpisodeNumbers(showID)
 		seasons := map[int64]map[int]EpisodeMeta{}
 		for _, r := range need {
 			id, season, episode := r[0], r[1], int(r[2])
@@ -404,7 +426,7 @@ func (s *Scanner) episodeMetadata(ctx context.Context) {
 				seasons[season] = eps
 			}
 			if md, ok := eps[episode]; ok {
-				if err := s.db.SetEpisodeMetadata(id, md); err != nil {
+				if err := s.db.SetEpisodeMetadata(id, md, shared[[2]int64{season, int64(episode)}]); err != nil {
 					s.log.Warn("tmdb: save episode", "id", id, "err", err)
 				}
 			}

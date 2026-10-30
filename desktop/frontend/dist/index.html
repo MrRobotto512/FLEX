@@ -56,7 +56,8 @@
 <div class="row"><label>Encoder</label>
   <select id="encoder">
     <option value="auto">Auto-detect</option><option value="nvenc">NVIDIA NVENC</option>
-    <option value="qsv">Intel QuickSync</option><option value="amf">AMD AMF</option><option value="software">Software (libx264)</option>
+    <option value="qsv">Intel QuickSync</option><option value="amf">AMD AMF</option>
+    <option value="mf">GPU through Windows (older NVIDIA cards)</option><option value="software">Software (libx264)</option>
   </select></div>
 <div class="row"><label>FFmpeg path</label><input id="ffmpeg" placeholder="leave empty to use the bundled one or PATH"></div>
 <div class="row"><label>FFprobe path</label><input id="ffprobe" placeholder="leave empty to use the bundled one or PATH"></div>
@@ -84,6 +85,10 @@
 const App = () => window.go.main.App;
 let settings;
 const $ = id => document.getElementById(id);
+const encoderNames = {
+  h264_nvenc: 'NVIDIA GPU (NVENC)', h264_qsv: 'Intel GPU (QuickSync)', h264_amf: 'AMD GPU (AMF)',
+  h264_mf: 'GPU through Windows', libx264: 'CPU (no usable GPU)',
+};
 const fields = ['name','http_port','tmdb_key','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher'];
 
 async function load() {
@@ -121,7 +126,7 @@ async function refresh() {
   if (st.ts_state === 'Running') pills.push(`<span class="pill ok">Remote <code>http://${esc(st.ts_dns)}:${settings.http_port}</code></span>`);
   if (st.scan) pills.push(`<span class="pill">${st.scan.scanning ? `scanning… ${st.scan.files_seen} files` : `${st.scan.movies} movies · ${st.scan.shows || 0} shows`}</span>`);
   if (st.scan && st.scan.scanning && st.scan.current) pills.push(`<span class="pill muted">${esc(st.scan.current)}</span>`);
-  if (st.encoder) pills.push(`<span class="pill ${st.encoder === 'libx264' ? 'warn' : 'muted'}">encoder ${esc(st.encoder)}${st.encoder === 'libx264' ? ' (CPU)' : ''}</span>`);
+  if (st.encoder) pills.push(`<span class="pill ${st.encoder === 'libx264' ? 'warn' : 'muted'}">converts with ${esc(encoderNames[st.encoder] || st.encoder)}</span>`);
   (st.transcodes || []).forEach(t => pills.push(`<span class="pill warn">${esc(t.mode)}: ${esc(t.file)}</span>`));
   pills.push(`<span class="pill muted">v${esc(st.version)}</span>`);
   $('status').innerHTML = pills.join('');

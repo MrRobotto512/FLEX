@@ -29,13 +29,14 @@ var (
 	epWordRe   = regexp.MustCompile(`(?i)\b(?:episode|ep)[\s._\-]*(\d{1,3})\b`)             // Episode 02, Ep.5
 	eNumRe     = regexp.MustCompile(`(?i)^e(\d{1,3})\b`)                                    // E05 Title
 	dashSERe   = regexp.MustCompile(`\b(\d{1,2})-(\d{2})\b`)                                // 1-04 Title
-	leadNumRe  = regexp.MustCompile(`^(\d{1,4})(?:\+\d{1,3}|[a-d])?(?:\s*[-._)]\s*|\s+|$)`) // 01 Title, 1 - Title, 119 - Title, 507, 108+9 - Title, 01a Title
+	leadNumRe  = regexp.MustCompile(`^(\d{1,4})(?:\+\d{1,3}|-?[a-d]\b)?(?:\s*[-._)]\s*|\s+|$)`) // 01 Title, 1 - Title, 119 - Title, 507, 108+9 - Title, 01a Title, 201-a Title
 	groupTagRe = regexp.MustCompile(`\s*\[[^\]]*\]\s*$`)                                    // "Stunt Dogs [Moonsong]"
 
 	seasonWordRe = regexp.MustCompile(`(?i)\b(?:season|series|staffel)[\s._\-]*(\d{1,2})\b(\s*-\s*\d)?`)
 	seasonCodeRe = regexp.MustCompile(`(?i)^s(\d{1,2})$`)
-	specialsRe   = regexp.MustCompile(`(?i)^specials?$`)
+	specialsRe   = regexp.MustCompile(`(?i)^(?:\d+\s*-\s*)?(?:specials?|shorts)$`) // "Specials", "0000 - Shorts"
 	onlyDigitsRe = regexp.MustCompile(`^\d+$`)
+	airYearsRe   = regexp.MustCompile(`^[\d\s._\-]*$`) // what's left of "1993-1994 - Season 1" before "Season"
 	// movie-list folders that obviously hold TV
 	tvRootNameRe = regexp.MustCompile(`(?i)^(tv|tv[\s._-]*shows?|tv[\s._-]*series|television|shows|series)$`)
 	seasonSufRe  = regexp.MustCompile(`(?i)\s*-?\s*\b(?:season|series)\s*\d+\s*$`)
@@ -199,6 +200,16 @@ func seasonFromDir(name string) (int, bool) {
 // cleanShowName turns a show folder name into the series title. It returns
 // "" when the folder is only a season ("Season 3 [DVD Rips]").
 func cleanShowName(dir string) (string, int) {
+	if specialsRe.MatchString(dir) {
+		return "", 0
+	}
+	// "1993-1994 - Season 1": a season folder named with its air years, which
+	// parseName would otherwise read as a title "1993" from 1994
+	if loc := seasonWordRe.FindStringIndex(dir); loc != nil && airYearsRe.MatchString(dir[:loc[0]]) {
+		if _, ok := seasonFromDir(dir); ok {
+			return "", 0
+		}
+	}
 	name, year := parseName(dir)
 	if loc := showCutRe.FindStringIndex(name); loc != nil {
 		cut := strings.TrimSpace(strings.Trim(strings.TrimSpace(name[:loc[0]]), "-._,"))

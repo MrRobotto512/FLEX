@@ -11,12 +11,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
-const (
-	tmdbAPI   = "https://api.themoviedb.org/3"
+var (
+	tmdbAPI   = "https://api.themoviedb.org/3" // var so tests can point it at a fake
 	tmdbImage = "https://image.tmdb.org/t/p"
 )
 
@@ -113,16 +115,91 @@ type tmdbShow struct {
 	BackdropPath string `json:"backdrop_path"`
 }
 
+// EpisodeHint is one file of a show on disk, used to tell apart series that
+// share a name.
+type EpisodeHint struct {
+	Season int
+	Title  string
+}
+
 // MatchShow searches TV series by name/year and fetches details plus images.
-func (t *TMDB) MatchShow(ctx context.Context, title string, year int) (Metadata, error) {
-	hit, err := t.searchShow(ctx, title, year)
+func (t *TMDB) MatchShow(ctx context.Context, title string, year int, ep EpisodeHint) (Metadata, error) {
+	hits, err := t.searchShow(ctx, title, year)
 	if err != nil && year != 0 {
-		hit, err = t.searchShow(ctx, title, 0)
+		hits, err = t.searchShow(ctx, title, 0)
 	}
 	if err != nil {
 		return Metadata{}, err
 	}
-	return t.FetchShow(ctx, hit.ID)
+	return t.FetchShow(ctx, t.pickShow(ctx, hits, ep).ID)
+}
+
+// pickShow takes TMDB's top hit unless an episode on disk says otherwise.
+// Remakes share names ("Teenage Mutant Ninja Turtles" 1987, 2003, 2012) and
+// the most popular comes first, so when the top hit's season has no episode
+// named like the file, the next few hits get the same check.
+func (t *TMDB) pickShow(ctx context.Context, hits []tmdbShow, ep EpisodeHint) tmdbShow {
+	if len(hits) == 1 || !usefulEpisodeTitle(ep.Title) {
+		return hits[0]
+	}
+	for i, h := range hits {
+		if i == 5 {
+			break
+		}
+		names, err := t.seasonNames(ctx, h.ID, ep.Season)
+		if err != nil {
+			continue // that series has no such season
+		}
+		for _, n := range names {
+			if sameEpisodeTitle(n, ep.Title) {
+				if i > 0 {
+					t.log.Info("tmdb: episode title points to another series", "episode", ep.Title,
+						"top", hits[0].Name+" "+hits[0].FirstAirDate, "picked", h.Name+" "+h.FirstAirDate)
+				}
+				return h
+			}
+		}
+	}
+	return hits[0]
+}
+
+func (t *TMDB) seasonNames(ctx context.Context, showID int64, season int) ([]string, error) {
+	var res struct {
+		Episodes []struct {
+			Name string `json:"name"`
+		} `json:"episodes"`
+	}
+	if err := t.get(ctx, fmt.Sprintf("/tv/%d/season/%d", showID, season), nil, &res); err != nil {
+		return nil, err
+	}
+	names := make([]string, len(res.Episodes))
+	for i, e := range res.Episodes {
+		names[i] = e.Name
+	}
+	return names, nil
+}
+
+var (
+	bracketedRe    = regexp.MustCompile(`\s*[(\[][^)\]]*[)\]]`)
+	genericTitleRe = regexp.MustCompile(`^(?:episode|part|chapter|pilot|intro|finale)\d*$`)
+)
+
+func episodeTitleKey(s string) string { return normKey(bracketedRe.ReplaceAllString(s, "")) }
+
+// usefulEpisodeTitle: long and specific enough to identify a series by.
+func usefulEpisodeTitle(s string) bool {
+	k := episodeTitleKey(s)
+	return len(k) >= 6 && !genericTitleRe.MatchString(k)
+}
+
+// sameEpisodeTitle compares loosely: "Puss Gets The Boot (1940)" is TMDB's
+// "Puss Gets the Boot", "Really You (Parts 1-2)" its "Really You (1)".
+func sameEpisodeTitle(a, b string) bool {
+	a, b = episodeTitleKey(a), episodeTitleKey(b)
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return len(a) >= 6 && (a == b || len(a) >= 10 && strings.Contains(b, a))
 }
 
 func (t *TMDB) FetchShow(ctx context.Context, id int64) (Metadata, error) {
@@ -143,7 +220,7 @@ func (t *TMDB) FetchShow(ctx context.Context, id int64) (Metadata, error) {
 	return md, nil
 }
 
-func (t *TMDB) searchShow(ctx context.Context, title string, year int) (*tmdbShow, error) {
+func (t *TMDB) searchShow(ctx context.Context, title string, year int) ([]tmdbShow, error) {
 	q := url.Values{"query": {title}, "include_adult": {"false"}}
 	if year != 0 {
 		q.Set("first_air_date_year", strconv.Itoa(year))
@@ -157,7 +234,7 @@ func (t *TMDB) searchShow(ctx context.Context, title string, year int) (*tmdbSho
 	if len(res.Results) == 0 {
 		return nil, ErrNoMatch
 	}
-	return &res.Results[0], nil
+	return res.Results, nil
 }
 
 // Season returns metadata for every episode TMDB lists in one season,
