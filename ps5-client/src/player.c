@@ -57,7 +57,14 @@ typedef struct {
     SDL_Texture *tex;
     int w, h;
 } OsdLine;
-enum { OSD_TITLE, OSD_TIME, OSD_STATE, OSD_PERF, OSD_LINES };
+enum { OSD_TITLE, OSD_TIME, OSD_STATE, OSD_PERF, OSD_PIC, OSD_PIC_END = OSD_PIC + PIC_COUNT, OSD_PIC_HINT = OSD_PIC_END,
+       OSD_LINES };
+
+/* the picture panel: name, range, step, neutral value */
+static const struct {
+    const char *name;
+    int min, max, step, neutral;
+} pic_def[PIC_COUNT] = {{"Saturation", 0, 200, 5, 100}, {"Brightness", -30, 30, 2, 0}, {"Contrast", 50, 150, 5, 100}};
 
 /* ---------- queues between the threads ---------- */
 
@@ -99,6 +106,7 @@ typedef struct {
     SwrContext *swr;
     SDL_Texture *tex;
     int tex_w, tex_h;
+    Uint32 tex_fmt;
     double sar;   /* pixel aspect of the stream */
 
     /* The video thread scales every frame to the size it takes on screen
@@ -108,7 +116,9 @@ typedef struct {
     int laid_w, laid_h;                   /* what layout() last placed */
     SDL_atomic_t want_w, want_h;          /* size of the scaled frames (0: as decoded) */
     struct SwsContext *vsws;              /* video thread */
-    int vsws_key[5];
+    int vsws_key[10];
+    volatile int pic[PIC_COUNT];          /* picture adjustments, read by the video thread */
+    int adjusting, adj_row;               /* the picture panel is open; which line */
     int aspect;   /* ASPECT_* */
     SDL_Rect dst; /* where the picture goes on screen */
     SDL_AudioDeviceID dev;
@@ -435,7 +445,7 @@ static void trace(Player *p, const char *what) {
 }
 
 static int osd_visible(Player *p) {
-    return p->paused || p->buffering || p->pending >= 0 || SDL_GetTicks() < p->osd_until;
+    return p->paused || p->buffering || p->adjusting || p->pending >= 0 || SDL_GetTicks() < p->osd_until;
 }
 static void show_osd(Player *p) { p->osd_until = SDL_GetTicks() + OSD_MS; }
 static int seek_ready(Player *p) { return p->pending >= 0 && SDL_GetTicks() >= p->seek_at; }
@@ -505,6 +515,25 @@ static void draw_osd(Player *p) {
     osd_text(p, OSD_STATE, state, SCREEN_W / 2 - 300, SCREEN_H - 140, 0);
     osd_text(p, OSD_PERF, perf_text(p), SCREEN_W - 80, SCREEN_H - 50, 1);
 
+    if (p->adjusting) { /* the picture panel, top right */
+        SDL_Rect box = {SCREEN_W - 560, 60, 480, 70 + PIC_COUNT * 52};
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 190);
+        SDL_RenderFillRect(r, &box);
+        for (int i = 0; i < PIC_COUNT; i++) {
+            char line[64];
+            int v = p->pic[i];
+            if (i == PIC_BRIGHTNESS) snprintf(line, sizeof line, "%s   %+d", pic_def[i].name, v);
+            else snprintf(line, sizeof line, "%s   %d %%", pic_def[i].name, v);
+            if (i == p->adj_row) {
+                SDL_SetRenderDrawColor(r, 90, 169, 255, 255);
+                SDL_RenderFillRect(r, &(SDL_Rect){box.x, box.y + 14 + i * 52, 6, 40});
+            }
+            osd_text(p, OSD_PIC + i, line, box.x + 30, box.y + 18 + i * 52, 0);
+        }
+        osd_text(p, OSD_PIC_HINT, "Left/Right change  ·  Square resets  ·  Options closes", box.x + 30,
+                 box.y + 26 + PIC_COUNT * 52, 0);
+    }
+
     if (dur > 0) {
         int x = 80, y = SCREEN_H - 70, w = SCREEN_W - 160;
         double f = pos / dur;
@@ -564,6 +593,7 @@ static int key_button(SDL_Keycode k) {
     case SDLK_u: return SDL_CONTROLLER_BUTTON_Y;
     case SDLK_MINUS: return SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
     case SDLK_EQUALS: return SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+    case SDLK_p: return SDL_CONTROLLER_BUTTON_START;
     }
     return -1;
 }
@@ -637,9 +667,24 @@ static void change_volume(Player *p, int delta) {
     if (p->paused) redraw(p);
 }
 
-/* repeat_press acts on a button that repeats while held (seek, volume);
- * returns 0 for any other button. */
+/* change_picture steps the selected adjustment; the video thread rebuilds its
+ * converter for the next frames. */
+static void change_picture(Player *p, int dir) {
+    int i = p->adj_row, v = p->pic[i] + dir * pic_def[i].step;
+    if (v < pic_def[i].min) v = pic_def[i].min;
+    if (v > pic_def[i].max) v = pic_def[i].max;
+    p->pic[i] = v;
+    if (p->paused) redraw(p);
+}
+
+/* repeat_press acts on a button that repeats while held (seek, volume, a
+ * picture setting); returns 0 for any other button. */
 static int repeat_press(Player *p, int b) {
+    if (p->adjusting && (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {
+        change_picture(p, b == SDL_CONTROLLER_BUTTON_DPAD_LEFT ? -1 : 1);
+        return 1;
+    }
+    if (p->adjusting && (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN)) return 0;
     if (seek_delta(b) != 0) step_seek(p, seek_delta(b));
     else if (volume_delta(b) != 0) change_volume(p, volume_delta(b));
     else return 0;
@@ -658,9 +703,28 @@ static void handle_events(Player *p) {
             p->held = -1;
         if (b < 0) continue;
         show_osd(p);
+        if (p->adjusting) { /* the picture panel takes the D-pad, Square, Circle and Options */
+            if (b == SDL_CONTROLLER_BUTTON_START || b == SDL_CONTROLLER_BUTTON_B) {
+                p->adjusting = 0;
+                if (p->paused) redraw(p);
+                continue;
+            }
+            if (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+                p->adj_row = (p->adj_row + (b == SDL_CONTROLLER_BUTTON_DPAD_UP ? PIC_COUNT - 1 : 1)) % PIC_COUNT;
+                if (p->paused) redraw(p);
+                continue;
+            }
+            if (b == SDL_CONTROLLER_BUTTON_X) {
+                p->pic[p->adj_row] = pic_def[p->adj_row].neutral;
+                if (p->paused) redraw(p);
+                continue;
+            }
+        }
         if (repeat_press(p, b)) {
             p->held = b;
             p->next_repeat = SDL_GetTicks() + REPEAT_DELAY_MS;
+        } else if (b == SDL_CONTROLLER_BUTTON_START) {
+            p->adjusting = 1;
         } else if (b == SDL_CONTROLLER_BUTTON_B) {
             p->quit = 1;
         } else if (b == SDL_CONTROLLER_BUTTON_A) {
@@ -787,25 +851,45 @@ static int reader_thread(void *arg) {
     return 0;
 }
 
-/* to_display returns the frame at the size it takes on screen, as 8-bit
- * 4:2:0 (what the texture takes): Lanczos on several threads, so 4K comes
- * out as a sharp 1080p picture and SD/720p are upscaled better than the
- * renderer's bilinear stretch would. A frame that already fits is passed
- * through untouched; out is scratch space for the scaled copy. */
+/* matrix: the YUV->RGB coefficients a frame was made with. Untagged video
+ * follows the usual rule: HD is BT.709, SD is BT.601. */
+static int matrix(const AVFrame *f) {
+    switch (f->colorspace) {
+    case AVCOL_SPC_BT709: return SWS_CS_ITU709;
+    case AVCOL_SPC_BT470BG:
+    case AVCOL_SPC_SMPTE170M: return SWS_CS_ITU601;
+    case AVCOL_SPC_SMPTE240M: return SWS_CS_SMPTE240M;
+    case AVCOL_SPC_FCC: return SWS_CS_FCC;
+    case AVCOL_SPC_BT2020_NCL:
+    case AVCOL_SPC_BT2020_CL: return SWS_CS_BT2020;
+    default: return f->height >= 720 ? SWS_CS_ITU709 : SWS_CS_ITU601;
+    }
+}
+
+static int full_range(const AVFrame *f) {
+    return f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P || f->format == AV_PIX_FMT_YUVJ422P ||
+           f->format == AV_PIX_FMT_YUVJ444P;
+}
+
+/* to_display returns the frame ready for the screen: at the size it takes
+ * there (Lanczos on several threads, so 4K comes out as a sharp 1080p
+ * picture and SD/720p are upscaled better than the renderer's bilinear
+ * stretch) and already in RGB, converted with the frame's own matrix and
+ * range rather than whatever SDL would infer from the texture, and off the
+ * main thread. (Checked with FLEX_DUMP_FRAME: the result matches a textbook
+ * decode of the file pixel for pixel.) out is scratch space. */
 static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
     if (in->width != p->src_w || in->height != p->src_h) {
         p->sar = in->sample_aspect_ratio.num && in->sample_aspect_ratio.den ? av_q2d(in->sample_aspect_ratio) : 1.0;
-        p->src_bt709 = in->colorspace == AVCOL_SPC_BT709 ||
-                       (in->colorspace != AVCOL_SPC_BT470BG && in->colorspace != AVCOL_SPC_SMPTE170M && in->height >= 720);
+        p->src_bt709 = matrix(in) == SWS_CS_ITU709;
         p->src_h = in->height;
         p->src_w = in->width; /* last: the main thread lays out when it changes */
     }
     int w = SDL_AtomicGet(&p->want_w), h = SDL_AtomicGet(&p->want_h);
     if (w <= 0 || h <= 0) w = in->width, h = in->height; /* not laid out yet */
-    int yuv420 = in->format == AV_PIX_FMT_YUV420P || in->format == AV_PIX_FMT_YUVJ420P;
-    if (yuv420 && in->width == w && in->height == h) return in;
 
-    int key[5] = {in->width, in->height, in->format, w, h};
+    int key[10] = {in->width, in->height, in->format, w, h, matrix(in), full_range(in),
+                   p->pic[PIC_SATURATION], p->pic[PIC_BRIGHTNESS], p->pic[PIC_CONTRAST]};
     if (!p->vsws || memcmp(key, p->vsws_key, sizeof key) != 0) {
         sws_freeContext(p->vsws);
         p->vsws = sws_alloc_context();
@@ -814,8 +898,10 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
         av_opt_set_int(p->vsws, "src_format", in->format, 0);
         av_opt_set_int(p->vsws, "dstw", w, 0);
         av_opt_set_int(p->vsws, "dsth", h, 0);
-        av_opt_set_int(p->vsws, "dst_format", AV_PIX_FMT_YUV420P, 0);
-        av_opt_set_int(p->vsws, "sws_flags", SWS_LANCZOS | SWS_ACCURATE_RND, 0);
+        av_opt_set_int(p->vsws, "dst_format", AV_PIX_FMT_BGRA, 0); /* SDL's ARGB8888 in memory order */
+        /* full-resolution chroma both ways: sharper colour edges than the default */
+        av_opt_set_int(p->vsws, "sws_flags",
+                       SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP, 0);
         av_opt_set_int(p->vsws, "threads", av_cpu_count() > 1 ? av_cpu_count() / 2 : 4, 0);
         if (sws_init_context(p->vsws, NULL, NULL) < 0) {
             fprintf(stderr, "player: cannot scale %dx%d to %dx%d\n", in->width, in->height, w, h);
@@ -823,11 +909,19 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
             p->vsws = NULL;
             return in;
         }
+        /* the picture panel's settings ride along in the same conversion
+         * (16.16 fixed point; brightness as a percentage of full scale) */
+        sws_setColorspaceDetails(p->vsws, sws_getCoefficients(matrix(in)), full_range(in),
+                                 sws_getCoefficients(SWS_CS_DEFAULT), 1, p->pic[PIC_BRIGHTNESS] * 65536 / 100,
+                                 p->pic[PIC_CONTRAST] * 65536 / 100, p->pic[PIC_SATURATION] * 65536 / 100);
         memcpy(p->vsws_key, key, sizeof key);
-        fprintf(stderr, "player: scaling %dx%d %s to %dx%d (Lanczos)\n", in->width, in->height,
-                av_get_pix_fmt_name(in->format), w, h);
+        static const char *names[] = {[SWS_CS_ITU709] = "BT.709", [SWS_CS_FCC] = "FCC", [SWS_CS_ITU601] = "BT.601",
+                                      [SWS_CS_SMPTE240M] = "SMPTE 240M", [SWS_CS_BT2020] = "BT.2020"};
+        fprintf(stderr, "player: %dx%d %s (%s, %s range) to %dx%d RGB (Lanczos)\n", in->width, in->height,
+                av_get_pix_fmt_name(in->format), names[matrix(in)] ? names[matrix(in)] : "?",
+                full_range(in) ? "full" : "limited", w, h);
     }
-    out->format = AV_PIX_FMT_YUV420P;
+    out->format = AV_PIX_FMT_BGRA;
     out->width = w;
     out->height = h;
     if (sws_scale_frame(p->vsws, out, in) < 0) {
@@ -955,15 +1049,19 @@ static int open_decoder(AVFormatContext *fmt, enum AVMediaType type, AVCodecCont
 
 static void upload_frame(Player *p, AVFrame *f) {
     if (p->src_w != p->laid_w || p->src_h != p->laid_h) layout(p); /* a new picture size */
-    if (!p->tex || p->tex_w != f->width || p->tex_h != f->height) {
+    int rgb = f->format == AV_PIX_FMT_BGRA; /* what to_display makes; YUV only if it failed */
+    Uint32 fmt = rgb ? SDL_PIXELFORMAT_ARGB8888 : SDL_PIXELFORMAT_IYUV;
+    if (!p->tex || p->tex_w != f->width || p->tex_h != f->height || p->tex_fmt != fmt) {
         if (p->tex) SDL_DestroyTexture(p->tex);
-        /* the matrix of the source, not of the (scaled) texture size SDL would guess from */
-        SDL_SetYUVConversionMode(p->src_bt709 ? SDL_YUV_CONVERSION_BT709 : SDL_YUV_CONVERSION_BT601);
-        p->tex = SDL_CreateTexture(p->ren, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, f->width, f->height);
+        if (!rgb) SDL_SetYUVConversionMode(p->src_bt709 ? SDL_YUV_CONVERSION_BT709 : SDL_YUV_CONVERSION_BT601);
+        p->tex = SDL_CreateTexture(p->ren, fmt, SDL_TEXTUREACCESS_STREAMING, f->width, f->height);
         p->tex_w = f->width;
         p->tex_h = f->height;
+        p->tex_fmt = fmt;
     }
-    if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
+    if (rgb) {
+        SDL_UpdateTexture(p->tex, NULL, f->data[0], f->linesize[0]);
+    } else if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
         SDL_UpdateYUVTexture(p->tex, NULL, f->data[0], f->linesize[0], f->data[1], f->linesize[1], f->data[2],
                              f->linesize[2]);
     } else {
@@ -977,6 +1075,31 @@ static void upload_frame(Player *p, AVFrame *f) {
         SDL_UpdateYUVTexture(p->tex, NULL, dst[0], dstls[0], dst[1], dstls[1], dst[2], dstls[2]);
         av_freep(&dst[0]);
     }
+}
+
+/* dump_frame: with FLEX_DUMP_FRAME set, 5 s into playback, saves the frame as
+ * the player converted it (frame.bmp) and the screen as the renderer drew
+ * it (screen.bmp) in the app folder, to compare colours with the source. */
+static void dump_frame(Player *p, AVFrame *f) {
+    static int on = -1, done;
+    if (on < 0) on = getenv("FLEX_DUMP_FRAME") != NULL;
+    if (!on || done || f->format != AV_PIX_FMT_BGRA || SDL_GetTicks() - p->gate_opened < 5000) return;
+    done = 1;
+    SDL_Surface *s = SDL_CreateRGBSurfaceWithFormatFrom(f->data[0], f->width, f->height, 32, f->linesize[0],
+                                                        SDL_PIXELFORMAT_ARGB8888);
+    if (s) {
+        SDL_SaveBMP(s, "/data/homebrew/FLEX/frame.bmp");
+        SDL_FreeSurface(s);
+    }
+    redraw(p); /* draw it, then read back what the renderer made of it */
+    SDL_Surface *scr = SDL_CreateRGBSurfaceWithFormat(0, SCREEN_W, SCREEN_H, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (scr && SDL_RenderReadPixels(p->ren, NULL, SDL_PIXELFORMAT_ARGB8888, scr->pixels, scr->pitch) == 0)
+        SDL_SaveBMP(scr, "/data/homebrew/FLEX/screen.bmp");
+    if (scr) SDL_FreeSurface(scr);
+    SDL_RendererInfo ri;
+    SDL_GetRendererInfo(p->ren, &ri);
+    fprintf(stderr, "player: dumped the frame at pts %.3f (renderer %s, window format %s)\n", p->last_pts, ri.name,
+            SDL_GetPixelFormatName(SDL_GetWindowPixelFormat(SDL_RenderGetWindow(p->ren))));
 }
 
 /* note_drop: when frames keep coming late, have the video thread stop
@@ -1076,6 +1199,7 @@ static int show_next(Player *p) {
     p->drops_in_row = 0;
     Uint64 d0 = SDL_GetPerformanceCounter();
     upload_frame(p, f);
+    dump_frame(p, f);
     fq_pop(&p->fq);
     redraw(p);
     average(&p->draw_ms, ms_since(d0));
@@ -1104,8 +1228,12 @@ static void note_waiting(Player *p) {
         if (!p->empty_since) p->empty_since = now;
         p->buffering = now - p->empty_since >= BUFFERING_MS;
         /* the network can't keep up: hold the sound and the clock instead of
-         * playing on and dropping every late frame */
-        if (p->buffering && !p->gate && SDL_AtomicGet(&p->read_eof) != cur_serial(p) + 1) {
+         * playing on and dropping every late frame. Only when the read-ahead
+         * is really empty (no frames but packets waiting is the decoder
+         * catching up), and not in the first seconds after a start or seek,
+         * when the pipeline is still filling. */
+        if (p->buffering && !p->gate && SDL_AtomicGet(&p->read_eof) != cur_serial(p) + 1 && buffered_s(p) < 0.5 &&
+            now - p->gate_opened > 5000) {
             fprintf(stderr, "player: ran dry at %.1fs, buffering %.0f s\n", p->last_pts, REBUFFER_S);
             /* a file whose peaks the link can't carry (its average says nothing about
              * an action scene): hand back so the caller asks for a converted stream */
@@ -1131,6 +1259,10 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
                 .resync_audio = 1, .drop_before = -1e9, .sar = 1, .aspect = o->aspect, .volume = o->volume};
     if (p.aspect < 0 || p.aspect >= ASPECT_COUNT) p.aspect = ASPECT_AUTO;
     if (p.volume < 0 || p.volume > VOLUME_MAX) p.volume = 100;
+    for (int i = 0; i < PIC_COUNT; i++) {
+        int v = o->picture[i];
+        p.pic[i] = v >= pic_def[i].min && v <= pic_def[i].max && (v || i == PIC_BRIGHTNESS) ? v : pic_def[i].neutral;
+    }
     PlayResult res = {.position = -1, .seek_to = -1};
     pq_init(&p.vq);
     pq_init(&p.aq);
@@ -1226,6 +1358,7 @@ done:
     SDL_WaitThread(p.athread, NULL);
     res.aspect = p.aspect;
     res.volume = p.volume;
+    for (int i = 0; i < PIC_COUNT; i++) res.picture[i] = p.pic[i];
     if (p.dev) SDL_CloseAudioDevice(p.dev);
     free(p.ring);
     pq_destroy(&p.vq);

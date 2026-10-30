@@ -34,6 +34,7 @@
 #define ASPECT_FILE APP_DIR "/aspect.txt"
 #define UPSCALE_FILE APP_DIR "/upscale.txt"
 #define VOLUME_FILE APP_DIR "/volume.txt"
+#define PICTURE_FILE APP_DIR "/picture.txt"
 #define LINK_FILE APP_DIR "/link.txt"
 
 /* What this player decodes itself (CPU, any container and audio FFmpeg
@@ -225,6 +226,25 @@ static void set_aspect(char kind, long id, int aspect) {
 /* Upscaling (Triangle while playing) and volume (L1/R1) are one setting for
  * everything, each kept in its own file. */
 static int g_upscale, g_volume = 100;
+
+/* Picture adjustments (Options while playing): saturation, brightness,
+ * contrast, one setting for everything, kept in picture.txt. */
+static int g_picture[PIC_COUNT] = {100, 0, 100};
+
+static void load_picture(void) {
+    FILE *f = fopen(PICTURE_FILE, "r");
+    if (!f) return;
+    int v[PIC_COUNT];
+    if (fscanf(f, "%d %d %d", &v[0], &v[1], &v[2]) == PIC_COUNT) memcpy(g_picture, v, sizeof v);
+    fclose(f);
+}
+
+static void save_picture(void) {
+    FILE *f = fopen(PICTURE_FILE, "w");
+    if (!f) return;
+    fprintf(f, "%d %d %d\n", g_picture[0], g_picture[1], g_picture[2]);
+    fclose(f);
+}
 
 /* How fast streams reach this console (kbit/s, 0 = not measured yet), kept
  * in link.txt and sent with /play so the server picks the best stream that
@@ -583,12 +603,17 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         PlayOpts o = {.url = url, .title = title, .offset = hls ? start : 0, .initial = hls ? 0 : start,
                       .duration = duration, .seekable = !hls, .aspect = aspect, .upscaled = upscaled,
                       .volume = g_volume, .may_give_up = hls ? step_downs < 2 : !no_direct, .font = g_small};
+        memcpy(o.picture, g_picture, sizeof o.picture);
         PlayResult r = player_play(ren, &o);
         if (!r.starved) note_link(r.link_kbps, !hls);
         aspect = r.aspect; /* carried across session restarts */
         if (r.volume != g_volume) {
             g_volume = r.volume;
             save_int(VOLUME_FILE, g_volume);
+        }
+        if (memcmp(r.picture, g_picture, sizeof g_picture) != 0) {
+            memcpy(g_picture, r.picture, sizeof g_picture);
+            save_picture();
         }
         fprintf(stderr, "FLEX: stopped at %.1fs%s\n", r.position, r.seek_to >= 0 ? " (seek)" : "");
 
@@ -908,6 +933,46 @@ static void check_update(void) {
 
 /* draw_message fills the screen with one or two centred lines and a bar
  * (frac < 0: no bar). */
+/* test_pattern (FLEX_TEST_PATTERN set): labelled colour bars, each drawn
+ * twice, with a plain fill (as the menus are) and from an ARGB8888 texture
+ * (as video frames are), to see on the TV what the output path does to
+ * colours. Waits for a button. */
+static void test_pattern(SDL_Renderer *ren) {
+    static const struct {
+        const char *name;
+        Uint8 r, g, b;
+    } bars[] = {{"Red", 255, 0, 0},      {"Green", 0, 255, 0},     {"Blue", 0, 0, 255},     {"Yellow", 255, 255, 0},
+                {"Cyan", 0, 255, 255},   {"Magenta", 255, 0, 255}, {"Pink", 255, 105, 180}, {"Skin", 224, 172, 105},
+                {"Orange", 255, 128, 0}, {"Grey", 128, 128, 128},  {"White", 255, 255, 255}};
+    int n = sizeof bars / sizeof bars[0], bw = (SCREEN_W - 2 * MARGIN_X) / n;
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    SDL_RenderClear(ren);
+    draw_text(ren, g_font, "FLEX colour test", MARGIN_X, 60, C_FG);
+    draw_text(ren, g_small, "Top row: plain fill (menus)   ·   Bottom row: texture (video)   ·   any button continues",
+              MARGIN_X, 120, C_MUTED);
+    Uint32 *px = malloc(sizeof(Uint32) * bw * 300);
+    for (int i = 0; i < n; i++) {
+        int x = MARGIN_X + i * bw;
+        fill(ren, (SDL_Rect){x, 200, bw - 10, 300}, (SDL_Color){bars[i].r, bars[i].g, bars[i].b, 255});
+        SDL_Texture *t = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, bw - 10, 300);
+        for (int k = 0; px && k < (bw - 10) * 300; k++)
+            px[k] = 0xFF000000u | (Uint32)bars[i].r << 16 | (Uint32)bars[i].g << 8 | bars[i].b;
+        if (t && px) {
+            SDL_UpdateTexture(t, NULL, px, (bw - 10) * 4);
+            SDL_RenderCopy(ren, t, NULL, &(SDL_Rect){x, 540, bw - 10, 300});
+        }
+        if (t) SDL_DestroyTexture(t);
+        draw_text(ren, g_tiny, bars[i].name, x, 860, C_FG);
+    }
+    free(px);
+    SDL_RenderPresent(ren);
+    fprintf(stderr, "FLEX: showing the colour test pattern\n");
+    SDL_Delay(500);
+    for (SDL_Event e;;)
+        if (SDL_WaitEventTimeout(&e, 100) && (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_KEYDOWN || e.type == SDL_QUIT))
+            break;
+}
+
 static void draw_message(SDL_Renderer *ren, const char *line1, const char *line2, double frac) {
     SDL_SetRenderDrawColor(ren, C_BG.r, C_BG.g, C_BG.b, 255);
     SDL_RenderClear(ren);
@@ -1140,7 +1205,9 @@ int main(int argc, char **argv) {
     load_aspects();
     load_int(UPSCALE_FILE, &g_upscale);
     load_int(VOLUME_FILE, &g_volume);
+    load_picture();
     load_int(LINK_FILE, &g_link_kbps);
+    if (getenv("FLEX_TEST_PATTERN")) test_pattern(ren);
     char status[256] = "Looking for a FLEX server…";
     draw_grid(ren, TAB_MOVIES, NULL, 0, 0, 0, status, 0);
     fprintf(stderr, "FLEX: first frame presented\n");
