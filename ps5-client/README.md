@@ -71,7 +71,7 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 
 Seeks add up: the jump happens 0.7 s after the last press, with a progress bar showing the target. Direct-play files seek in place; a transcoded movie restarts its server session at the new time (a second or two).
 
-The OSD's bottom line shows how playback keeps up: picture size (`3840x2160 → 1920x1080` when it is scaled), how full the decoded-frame queue is (8/8: the decoder is ahead; near 0: it can't keep up), draw time per frame, seconds read ahead, frames dropped, decoder threads. A frame that is already late is decoded but not drawn, so a picture too heavy for the console drops frames instead of stuttering the sound; after repeated drops the player also skips H.264 deblocking ("fast decode"). When the network can't keep up and the read-ahead runs dry, playback pauses ("Buffering…") until 3 s are buffered again, instead of dropping frames.
+The OSD's bottom line shows how playback keeps up: picture size (`3840x2160 → 1920x1080` when it is scaled), how full the decoded-frame queue is (8/8: the decoder is ahead; near 0: it can't keep up), draw time per frame, seconds read ahead, frames dropped, decoder threads. A frame that is already late is decoded but not drawn, so a picture too heavy for the console drops frames instead of stuttering the sound; after repeated drops the player also skips H.264 deblocking ("fast decode", a slightly blockier picture) and turns it back on after 30 s without a drop. When the network can't keep up and the read-ahead runs dry, playback pauses ("Buffering…") until 3 s are buffered again, instead of dropping frames.
 
 ### Picture quality and 4K
 
