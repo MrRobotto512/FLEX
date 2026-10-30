@@ -9,14 +9,31 @@
 <body>
 <header>
   <h1>FLEX</h1>
+  <nav id="tabs">
+    <button data-mode="movies" class="active">Movies</button>
+    <button data-mode="tv">TV</button>
+  </nav>
   <span id="server" class="muted">connecting…</span>
   <span class="spacer"></span>
   <input id="search" type="search" placeholder="Search" autocomplete="off">
   <button id="scan" title="Rescan library">Scan</button>
 </header>
 
-<main id="grid" role="grid" aria-label="Movies"></main>
-<p id="empty" class="muted" hidden>No movies yet. Add library folders in <code>.env</code> (FLEX_LIBRARY) and press Scan.</p>
+<main id="grid" role="grid" aria-label="Library"></main>
+<p id="empty" class="muted" hidden></p>
+
+<section id="episodes" hidden>
+  <div id="show-head">
+    <img id="show-poster" alt="">
+    <div>
+      <h2 id="show-title"></h2>
+      <p id="show-meta" class="muted"></p>
+      <p id="show-overview"></p>
+      <p class="muted hint">Enter plays · Backspace returns to the shows</p>
+    </div>
+  </div>
+  <ul id="eplist"></ul>
+</section>
 
 <section id="player" hidden>
   <video id="video" playsinline></video>

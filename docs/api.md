@@ -43,9 +43,33 @@ Broadcasts don't cross Tailscale. Clients keep a saved address (tailnet hostname
 
 `GET /movies/{id}/poster`, `GET /movies/{id}/backdrop` → JPEG, cacheable.
 
+## TV shows
+
+Episodes are recognised from `S01E02` / `1x02` in the file name (double episodes `S01E01E02` count as the first). The series name comes from the text before it, or from the folder above a `Season 01` folder.
+
+`GET /shows?q=<text>`
+```json
+[{"id":3,"title":"Bob's Burgers","year":2011,"overview":"…","poster":"/api/v1/shows/3/poster",
+  "backdrop":"/api/v1/shows/3/backdrop","seasons":1,"episodes":22,"unwatched":20,"added_at":"…"}]
+```
+
+`GET /shows/{id}` → the list item plus every episode grouped by season and the next one to watch (first not marked watched):
+```json
+{"…":"…","season_list":[{"season":9,"episodes":[
+   {"id":41,"show_id":3,"season":9,"episode":1,"title":"Just One of the Boyz 4 Now for Now","overview":"…",
+    "runtime_s":1320,"still":"/api/v1/episodes/41/still","resume_s":0,"watched":true,"added_at":"…"}]}],
+ "next_episode":{"id":42,"season":9,"episode":2,"…":"…"}}
+```
+
+`GET /shows/{id}/poster`, `GET /shows/{id}/backdrop` → JPEG.
+
+`GET /episodes/{id}` → the episode plus `show_title` and `media` (same shape as a movie). `GET /episodes/{id}/still` → JPEG.
+
+Playback and progress work exactly like movies with the `/episodes/{id}` prefix: `GET /episodes/{id}/play`, `GET /episodes/{id}/file`, `PUT /episodes/{id}/progress`.
+
 ## Playback
 
-`GET /movies/{id}/play?profile=direct|ps5|remote&audio=<index>&sub=<index>&start=<seconds>`
+`GET /movies/{id}/play?profile=direct|ps5|remote&audio=<index>&sub=<index>&start=<seconds>` (or `/episodes/{id}/play`)
 
 The server decides how to deliver the file for that profile and returns:
 ```json
@@ -78,7 +102,7 @@ If the source is already within a profile's limits the server remuxes (`-c:v cop
 ## Library
 
 - `POST /library/scan` → `202` starts a scan (no-op if one is running).
-- `GET /library/status` → `{"scanning":true,"files_seen":812,"movies":790,"last_scan":"…"}`
+- `GET /library/status` → `{"scanning":true,"files_seen":812,"movies":790,"shows":12,"episodes":240,"last_scan":"…"}`
 - `GET /library/folders`, `PUT /library/folders` body `["D:\\Movies","E:\\More"]` — desktop UI only.
 - `POST /movies/{id}/match` body `{"tmdb_id":949}` — fix a wrong metadata match.
 

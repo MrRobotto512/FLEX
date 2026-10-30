@@ -102,6 +102,90 @@ func (t *TMDB) search(ctx context.Context, title string, year int) (*tmdbMovie, 
 	return &res.Results[0], nil
 }
 
+// ---------------------------------------------------------------- TV
+
+type tmdbShow struct {
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	FirstAirDate string `json:"first_air_date"`
+	Overview     string `json:"overview"`
+	PosterPath   string `json:"poster_path"`
+	BackdropPath string `json:"backdrop_path"`
+}
+
+// MatchShow searches TV series by name/year and fetches details plus images.
+func (t *TMDB) MatchShow(ctx context.Context, title string, year int) (Metadata, error) {
+	hit, err := t.searchShow(ctx, title, year)
+	if err != nil && year != 0 {
+		hit, err = t.searchShow(ctx, title, 0)
+	}
+	if err != nil {
+		return Metadata{}, err
+	}
+	return t.FetchShow(ctx, hit.ID)
+}
+
+func (t *TMDB) FetchShow(ctx context.Context, id int64) (Metadata, error) {
+	var sh tmdbShow
+	if err := t.get(ctx, fmt.Sprintf("/tv/%d", id), nil, &sh); err != nil {
+		return Metadata{}, err
+	}
+	md := Metadata{TMDBID: sh.ID, Title: sh.Name, Overview: sh.Overview}
+	if len(sh.FirstAirDate) >= 4 {
+		md.Year, _ = strconv.Atoi(sh.FirstAirDate[:4])
+	}
+	if sh.PosterPath != "" {
+		md.PosterPath = t.image(ctx, "w500", sh.PosterPath, fmt.Sprintf("tv%d_poster.jpg", sh.ID))
+	}
+	if sh.BackdropPath != "" {
+		md.BackdropPath = t.image(ctx, "w1280", sh.BackdropPath, fmt.Sprintf("tv%d_backdrop.jpg", sh.ID))
+	}
+	return md, nil
+}
+
+func (t *TMDB) searchShow(ctx context.Context, title string, year int) (*tmdbShow, error) {
+	q := url.Values{"query": {title}, "include_adult": {"false"}}
+	if year != 0 {
+		q.Set("first_air_date_year", strconv.Itoa(year))
+	}
+	var res struct {
+		Results []tmdbShow `json:"results"`
+	}
+	if err := t.get(ctx, "/search/tv", q, &res); err != nil {
+		return nil, err
+	}
+	if len(res.Results) == 0 {
+		return nil, ErrNoMatch
+	}
+	return &res.Results[0], nil
+}
+
+// Season returns metadata for every episode TMDB lists in one season,
+// keyed by episode number. Stills are cached like posters.
+func (t *TMDB) Season(ctx context.Context, showID int64, season int) (map[int]EpisodeMeta, error) {
+	var res struct {
+		Episodes []struct {
+			Number    int    `json:"episode_number"`
+			Name      string `json:"name"`
+			Overview  string `json:"overview"`
+			StillPath string `json:"still_path"`
+			Runtime   int    `json:"runtime"`
+		} `json:"episodes"`
+	}
+	if err := t.get(ctx, fmt.Sprintf("/tv/%d/season/%d", showID, season), nil, &res); err != nil {
+		return nil, err
+	}
+	out := make(map[int]EpisodeMeta, len(res.Episodes))
+	for _, e := range res.Episodes {
+		md := EpisodeMeta{Title: e.Name, Overview: e.Overview, RuntimeS: e.Runtime * 60}
+		if e.StillPath != "" {
+			md.StillPath = t.image(ctx, "w300", e.StillPath, fmt.Sprintf("tv%d_s%02de%02d_still.jpg", showID, season, e.Number))
+		}
+		out[e.Number] = md
+	}
+	return out, nil
+}
+
 func (t *TMDB) get(ctx context.Context, path string, q url.Values, into any) error {
 	if q == nil {
 		q = url.Values{}

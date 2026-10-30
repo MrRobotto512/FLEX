@@ -14,14 +14,27 @@ import (
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/server", s.handleServer)
+
 	mux.HandleFunc("GET /api/v1/movies", s.handleMovies)
 	mux.HandleFunc("GET /api/v1/movies/{id}", s.handleMovie)
-	mux.HandleFunc("GET /api/v1/movies/{id}/poster", s.handleImage("poster"))
-	mux.HandleFunc("GET /api/v1/movies/{id}/backdrop", s.handleImage("backdrop"))
-	mux.HandleFunc("GET /api/v1/movies/{id}/play", s.handlePlay)
-	mux.HandleFunc("GET /api/v1/movies/{id}/file", s.handleFile)
-	mux.HandleFunc("PUT /api/v1/movies/{id}/progress", s.handleProgress)
+	mux.HandleFunc("GET /api/v1/movies/{id}/poster", s.handleImage("movie", "poster"))
+	mux.HandleFunc("GET /api/v1/movies/{id}/backdrop", s.handleImage("movie", "backdrop"))
+	mux.HandleFunc("GET /api/v1/movies/{id}/play", s.handlePlay("movie"))
+	mux.HandleFunc("GET /api/v1/movies/{id}/file", s.handleFile("movie"))
+	mux.HandleFunc("PUT /api/v1/movies/{id}/progress", s.handleProgress("movie"))
 	mux.HandleFunc("POST /api/v1/movies/{id}/match", s.handleMatch)
+
+	mux.HandleFunc("GET /api/v1/shows", s.handleShows)
+	mux.HandleFunc("GET /api/v1/shows/{id}", s.handleShow)
+	mux.HandleFunc("GET /api/v1/shows/{id}/poster", s.handleImage("show", "poster"))
+	mux.HandleFunc("GET /api/v1/shows/{id}/backdrop", s.handleImage("show", "backdrop"))
+
+	mux.HandleFunc("GET /api/v1/episodes/{id}", s.handleEpisode)
+	mux.HandleFunc("GET /api/v1/episodes/{id}/still", s.handleImage("episode", "still"))
+	mux.HandleFunc("GET /api/v1/episodes/{id}/play", s.handlePlay("episode"))
+	mux.HandleFunc("GET /api/v1/episodes/{id}/file", s.handleFile("episode"))
+	mux.HandleFunc("PUT /api/v1/episodes/{id}/progress", s.handleProgress("episode"))
+
 	mux.HandleFunc("GET /api/v1/hls/{session}/{file}", s.handleHLS)
 	mux.HandleFunc("DELETE /api/v1/hls/{session}", s.handleHLSStop)
 	mux.HandleFunc("POST /api/v1/library/scan", s.handleScan)
@@ -35,7 +48,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
-	features := []string{"direct", "hls"}
+	features := []string{"direct", "hls", "tv"}
 	s.mu.Lock()
 	if s.tsUp {
 		features = append(features, "tsnet")
@@ -46,6 +59,8 @@ func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
 		Remote: isTailnetAddr(r.RemoteAddr),
 	})
 }
+
+// ---------------------------------------------------------------- movies
 
 func (s *Server) handleMovies(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -63,82 +78,6 @@ func (s *Server) handleMovie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
-}
-
-func (s *Server) handleImage(kind string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		m, ok := s.movie(w, r)
-		if !ok {
-			return
-		}
-		path := m.posterPath
-		if kind == "backdrop" {
-			path = m.backdropPath
-		}
-		if path == "" {
-			writeErr(w, http.StatusNotFound, "not_found", "no "+kind)
-			return
-		}
-		w.Header().Set("Cache-Control", "public, max-age=86400")
-		http.ServeFile(w, r, path)
-	}
-}
-
-func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
-	m, ok := s.movie(w, r)
-	if !ok {
-		return
-	}
-	q := r.URL.Query()
-	profile := q.Get("profile")
-	if profile == "" {
-		switch {
-		case r.Header.Get("X-Flex-Client") == "ps5":
-			profile = "ps5"
-		case isTailnetAddr(r.RemoteAddr):
-			profile = "remote"
-		default:
-			profile = "direct"
-		}
-	}
-	audio := intOr(q.Get("audio"), -1)
-	sub := intOr(q.Get("sub"), -1)
-	start, _ := strconv.ParseFloat(q.Get("start"), 64)
-
-	info, err := s.decidePlay(r.Context(), m, profile, audio, sub, start)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ffmpeg_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, info)
-}
-
-func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
-	m, ok := s.movie(w, r)
-	if !ok {
-		return
-	}
-	serveFile(w, r, m.Path)
-}
-
-func (s *Server) handleProgress(w http.ResponseWriter, r *http.Request) {
-	m, ok := s.movie(w, r)
-	if !ok {
-		return
-	}
-	var body struct {
-		PositionS int `json:"position_s"`
-		DurationS int `json:"duration_s"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	if err := s.db.SetProgress(m.ID, body.PositionS, body.DurationS); err != nil {
-		writeErr(w, http.StatusInternalServerError, "db", err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleMatch(w http.ResponseWriter, r *http.Request) {
@@ -169,6 +108,182 @@ func (s *Server) handleMatch(w http.ResponseWriter, r *http.Request) {
 	m, _ = s.db.GetMovie(m.ID)
 	writeJSON(w, http.StatusOK, m)
 }
+
+// ---------------------------------------------------------------- shows / episodes
+
+func (s *Server) handleShows(w http.ResponseWriter, r *http.Request) {
+	shows, err := s.db.ListShows(r.URL.Query().Get("q"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, shows)
+}
+
+func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	sh, err := s.db.GetShow(id)
+	if !s.found(w, r, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, sh)
+}
+
+func (s *Server) handleEpisode(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	ep, err := s.db.GetEpisode(id)
+	if !s.found(w, r, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, ep)
+}
+
+// ---------------------------------------------------------------- shared item handlers
+
+// playItem is the common view of a movie or an episode for playback.
+type playItem struct {
+	kind  string
+	id    int64
+	path  string
+	media *MediaInfo
+}
+
+func (s *Server) item(w http.ResponseWriter, r *http.Request, kind string) (*playItem, bool) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return nil, false
+	}
+	switch kind {
+	case "movie":
+		m, err := s.db.GetMovie(id)
+		if !s.found(w, r, err) {
+			return nil, false
+		}
+		return &playItem{kind, m.ID, m.Path, m.Media}, true
+	default:
+		ep, err := s.db.GetEpisode(id)
+		if !s.found(w, r, err) {
+			return nil, false
+		}
+		return &playItem{kind, ep.ID, ep.Path, ep.Media}, true
+	}
+}
+
+func (s *Server) handlePlay(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		it, ok := s.item(w, r, kind)
+		if !ok {
+			return
+		}
+		q := r.URL.Query()
+		profile := q.Get("profile")
+		if profile == "" {
+			switch {
+			case r.Header.Get("X-Flex-Client") == "ps5":
+				profile = "ps5"
+			case isTailnetAddr(r.RemoteAddr):
+				profile = "remote"
+			default:
+				profile = "direct"
+			}
+		}
+		audio := intOr(q.Get("audio"), -1)
+		sub := intOr(q.Get("sub"), -1)
+		start, _ := strconv.ParseFloat(q.Get("start"), 64)
+
+		info, err := s.decidePlay(r.Context(), it.kind, it.id, it.path, it.media, profile, audio, sub, start)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "ffmpeg_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, info)
+	}
+}
+
+func (s *Server) handleFile(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		it, ok := s.item(w, r, kind)
+		if !ok {
+			return
+		}
+		serveFile(w, r, it.path)
+	}
+}
+
+func (s *Server) handleProgress(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		it, ok := s.item(w, r, kind)
+		if !ok {
+			return
+		}
+		var body struct {
+			PositionS int `json:"position_s"`
+			DurationS int `json:"duration_s"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		if err := s.db.SetProgress(it.kind, it.id, body.PositionS, body.DurationS); err != nil {
+			writeErr(w, http.StatusInternalServerError, "db", err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// handleImage serves a cached TMDB image: movie/show poster or backdrop,
+// episode still.
+func (s *Server) handleImage(kind, which string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		var path string
+		var err error
+		switch kind {
+		case "movie":
+			var m *Movie
+			if m, err = s.db.GetMovie(id); err == nil {
+				path = m.posterPath
+				if which == "backdrop" {
+					path = m.backdropPath
+				}
+			}
+		case "show":
+			var sh *Show
+			if sh, err = s.db.GetShow(id); err == nil {
+				path = sh.posterPath
+				if which == "backdrop" {
+					path = sh.backdropPath
+				}
+			}
+		default:
+			var ep *Episode
+			if ep, err = s.db.GetEpisode(id); err == nil {
+				path = ep.stillPath
+			}
+		}
+		if !s.found(w, r, err) {
+			return
+		}
+		if path == "" {
+			writeErr(w, http.StatusNotFound, "not_found", "no "+which)
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		http.ServeFile(w, r, path)
+	}
+}
+
+// ---------------------------------------------------------------- transcode / library
 
 func (s *Server) handleHLS(w http.ResponseWriter, r *http.Request) {
 	s.tc.Serve(w, r, r.PathValue("session"), r.PathValue("file"))
@@ -208,24 +323,40 @@ func (s *Server) handleFoldersPut(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// --- helpers ---
+// ---------------------------------------------------------------- helpers
 
 func (s *Server) movie(w http.ResponseWriter, r *http.Request) (*Movie, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_request", "bad movie id")
+	id, ok := pathID(w, r)
+	if !ok {
 		return nil, false
 	}
 	m, err := s.db.GetMovie(id)
-	if errors.Is(err, ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "not_found", "movie "+r.PathValue("id")+" does not exist")
-		return nil, false
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "db", err.Error())
+	if !s.found(w, r, err) {
 		return nil, false
 	}
 	return m, true
+}
+
+func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", "bad id")
+		return 0, false
+	}
+	return id, true
+}
+
+// found turns a lookup error into the right HTTP response; true means go on.
+func (s *Server) found(w http.ResponseWriter, r *http.Request, err error) bool {
+	if errors.Is(err, ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "id "+r.PathValue("id")+" does not exist")
+		return false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db", err.Error())
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

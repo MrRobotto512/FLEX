@@ -38,9 +38,13 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 | Where | Button | Action |
 | --- | --- | --- |
 | Grid | D-pad | move (hold to repeat) |
-| Grid | Cross | play (resumes if partially watched) |
+| Grid | L1 / R1 | switch between Movies and TV |
+| Grid | Cross | play a movie / open a show |
 | Grid | Triangle | re-discover the server and refresh |
 | Grid | Circle | quit |
+| Episodes | D-pad up/down | move; the list opens on the next unwatched episode |
+| Episodes | Cross | play (resumes if partially watched) |
+| Episodes | Circle | back to the shows |
 | Player | Cross | pause / resume |
 | Player | Circle | stop (progress is saved) |
 

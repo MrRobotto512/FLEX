@@ -9,12 +9,13 @@ import (
 	"strings"
 )
 
-// decidePlay picks direct play, remux or transcode for a movie and profile.
-func (s *Server) decidePlay(ctx context.Context, m *Movie, profileName string, audio, sub int, start float64) (PlayInfo, error) {
-	if m.Media == nil {
-		return PlayInfo{}, fmt.Errorf("movie %d has not been probed", m.ID)
+// decidePlay picks direct play, remux or transcode for an item (kind is
+// "movie" or "episode") and profile.
+func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path string, mi *MediaInfo, profileName string, audio, sub int, start float64) (PlayInfo, error) {
+	if mi == nil {
+		return PlayInfo{}, fmt.Errorf("%s %d has not been probed", kind, id)
 	}
-	mi := m.Media
+	fileURL := fmt.Sprintf("/api/v1/%ss/%d/file", kind, id)
 	info := PlayInfo{
 		DurationS:  mi.DurationS,
 		VideoCodec: mi.Video.Codec,
@@ -27,7 +28,7 @@ func (s *Server) decidePlay(ctx context.Context, m *Movie, profileName string, a
 	p, ok := profiles[profileName]
 	if !ok || profileName == "direct" {
 		info.Method = "direct"
-		info.URL = fmt.Sprintf("/api/v1/movies/%d/file", m.ID)
+		info.URL = fileURL
 		return info, nil
 	}
 
@@ -39,12 +40,12 @@ func (s *Server) decidePlay(ctx context.Context, m *Movie, profileName string, a
 
 	if videoOK && audioOK && containerOK && sub < 0 && start == 0 {
 		info.Method = "direct"
-		info.URL = fmt.Sprintf("/api/v1/movies/%d/file", m.ID)
+		info.URL = fileURL
 		return info, nil
 	}
 
 	key, err := s.tc.Start(ctx, transcodeRequest{
-		Path:    m.Path,
+		Path:    path,
 		Media:   mi,
 		Profile: p,
 		Audio:   audio,

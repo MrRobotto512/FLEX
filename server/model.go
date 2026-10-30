@@ -62,6 +62,61 @@ type SubInfo struct {
 	Forced bool   `json:"forced"`
 }
 
+// Show is a TV series; episodes hang off it. SeasonList and NextEpisode are
+// only filled by the detail endpoint.
+type Show struct {
+	ID        int64     `json:"id"`
+	Title     string    `json:"title"`
+	Year      int       `json:"year,omitempty"`
+	Overview  string    `json:"overview,omitempty"`
+	Poster    string    `json:"poster,omitempty"`
+	Backdrop  string    `json:"backdrop,omitempty"`
+	Seasons   int       `json:"seasons"`
+	Episodes  int       `json:"episodes"`
+	Unwatched int       `json:"unwatched"`
+	AddedAt   time.Time `json:"added_at"`
+	TMDBID    int64     `json:"tmdb_id,omitempty"`
+
+	SeasonList  []Season `json:"season_list,omitempty"`
+	NextEpisode *Episode `json:"next_episode,omitempty"`
+
+	posterPath   string
+	backdropPath string
+}
+
+type Season struct {
+	Season   int       `json:"season"`
+	Episodes []Episode `json:"episodes"`
+}
+
+type Episode struct {
+	ID        int64     `json:"id"`
+	ShowID    int64     `json:"show_id"`
+	ShowTitle string    `json:"show_title,omitempty"`
+	Season    int       `json:"season"`
+	Episode   int       `json:"episode"`
+	Title     string    `json:"title"`
+	Overview  string    `json:"overview,omitempty"`
+	RuntimeS  int       `json:"runtime_s,omitempty"`
+	Still     string    `json:"still,omitempty"`
+	ResumeS   int       `json:"resume_s"`
+	Watched   bool      `json:"watched"`
+	AddedAt   time.Time `json:"added_at"`
+
+	Media *MediaInfo `json:"media,omitempty"`
+
+	Path      string `json:"-"`
+	stillPath string
+}
+
+// EpisodeMeta is what TMDB knows about one episode.
+type EpisodeMeta struct {
+	Title     string
+	Overview  string
+	RuntimeS  int
+	StillPath string
+}
+
 // Metadata is what a TMDB match (or a manual fix) writes back.
 type Metadata struct {
 	TMDBID       int64
@@ -89,6 +144,8 @@ type ScanStatus struct {
 	Scanning  bool       `json:"scanning"`
 	FilesSeen int        `json:"files_seen"`
 	Movies    int        `json:"movies"`
+	Shows     int        `json:"shows"`
+	Episodes  int        `json:"episodes"`
 	LastScan  *time.Time `json:"last_scan,omitempty"`
 	LastError string     `json:"last_error,omitempty"`
 }

@@ -1,7 +1,10 @@
-/* FLEX PS5 client: find the server, show the library as a poster grid, play.
+/* FLEX PS5 client: find the server, browse Movies and TV as poster grids,
+ * open a show's episodes, play.
  *
- * Controls: D-pad moves, Cross plays, Triangle re-discovers the server and
- * refreshes, Circle quits. While playing: Cross pauses, Circle stops. */
+ * Controls (grid): D-pad moves, L1/R1 switch Movies/TV, Cross plays a movie
+ * or opens a show, Triangle re-discovers the server and refreshes, Circle
+ * quits. Episodes: D-pad up/down, Cross plays, Circle back. Player: Cross
+ * pauses, Circle stops. */
 
 #include <SDL.h>
 #include <SDL_image.h>
@@ -32,24 +35,55 @@
 #define ROWS_VISIBLE 2
 #define MAX_CACHED_POSTERS 48
 
+/* episode list geometry */
+#define EP_TOP 330
+#define EP_ROW_H 54
+#define EP_ROWS_VISIBLE 13
+
+typedef enum { KIND_MOVIE, KIND_SHOW } Kind;
+
+/* One poster card: a movie or a show. */
 typedef struct {
+    Kind kind;
     long id;
     char title[200];
     int year, resume_s, runtime_s, watched;
-    char poster[128];  /* API path or "" when the server has no artwork */
-    SDL_Texture *tex;  /* decoded poster, NULL until loaded */
-    int tex_state;     /* 0 = not loaded yet, 1 = loaded, 2 = unavailable */
-} Movie;
+    int seasons, episodes, unwatched; /* shows */
+    char poster[128];                 /* API path or "" when the server has no artwork */
+    SDL_Texture *tex;                 /* decoded poster, NULL until loaded */
+    int tex_state;                    /* 0 = not loaded yet, 1 = loaded, 2 = unavailable */
+} Item;
+
+/* One row of the episode list: a season header or an episode. */
+typedef struct {
+    int header;
+    int season, episode;
+    long id;
+    char title[200];
+    int resume_s, runtime_s, watched;
+} EpRow;
+
+typedef struct {
+    long id;
+    char title[200];
+    char overview[600];
+    int seasons, episodes, unwatched;
+    EpRow *rows;
+    int n;
+} ShowView;
 
 static const SDL_Color C_FG = {232, 234, 240, 255};
 static const SDL_Color C_MUTED = {138, 144, 160, 255};
 static const SDL_Color C_ACCENT = {90, 169, 255, 255};
 static const SDL_Color C_PANEL = {24, 27, 34, 255};
 static const SDL_Color C_BG = {15, 17, 21, 255};
+static const SDL_Color C_BLACK = {0, 0, 0, 255};
 
 static char g_host[128] = "";
 static int g_port = 8484;
 static TTF_Font *g_font, *g_small, *g_tiny;
+
+static const char *kind_path(Kind k) { return k == KIND_MOVIE ? "movies" : "shows"; }
 
 /* ---------- server address ---------- */
 
@@ -79,9 +113,21 @@ static int find_server(void) {
 
 /* ---------- API ---------- */
 
-static Movie *fetch_movies(int *count) {
+static int jint(cJSON *o, const char *key) {
+    cJSON *v = cJSON_GetObjectItem(o, key);
+    return cJSON_IsNumber(v) ? v->valueint : 0;
+}
+
+static void jstr(cJSON *o, const char *key, char *dst, size_t n) {
+    cJSON *v = cJSON_GetObjectItem(o, key);
+    snprintf(dst, n, "%s", cJSON_IsString(v) ? v->valuestring : "");
+}
+
+static Item *fetch_items(Kind kind, int *count) {
     *count = 0;
-    char *body = flex_get(g_host, g_port, "/api/v1/movies?sort=title");
+    char path[64];
+    snprintf(path, sizeof path, "/api/v1/%s%s", kind_path(kind), kind == KIND_MOVIE ? "?sort=title" : "");
+    char *body = flex_get(g_host, g_port, path);
     if (!body) return NULL;
     cJSON *arr = cJSON_Parse(body);
     free(body);
@@ -90,30 +136,32 @@ static Movie *fetch_movies(int *count) {
         return NULL;
     }
     int n = cJSON_GetArraySize(arr);
-    Movie *list = calloc(n ? n : 1, sizeof *list);
+    Item *list = calloc(n ? n : 1, sizeof *list);
     for (int i = 0; i < n; i++) {
         cJSON *m = cJSON_GetArrayItem(arr, i);
-        list[i].id = (long)cJSON_GetObjectItem(m, "id")->valuedouble;
-        snprintf(list[i].title, sizeof list[i].title, "%s", cJSON_GetStringValue(cJSON_GetObjectItem(m, "title")));
-        cJSON *y = cJSON_GetObjectItem(m, "year"), *r = cJSON_GetObjectItem(m, "resume_s"),
-              *rt = cJSON_GetObjectItem(m, "runtime_s"), *w = cJSON_GetObjectItem(m, "watched"),
-              *p = cJSON_GetObjectItem(m, "poster");
-        list[i].year = cJSON_IsNumber(y) ? y->valueint : 0;
-        list[i].resume_s = cJSON_IsNumber(r) ? r->valueint : 0;
-        list[i].runtime_s = cJSON_IsNumber(rt) ? rt->valueint : 0;
-        list[i].watched = cJSON_IsTrue(w);
-        if (cJSON_IsString(p)) snprintf(list[i].poster, sizeof list[i].poster, "%s", p->valuestring);
+        Item *it = &list[i];
+        it->kind = kind;
+        it->id = jint(m, "id");
+        jstr(m, "title", it->title, sizeof it->title);
+        jstr(m, "poster", it->poster, sizeof it->poster);
+        it->year = jint(m, "year");
+        it->resume_s = jint(m, "resume_s");
+        it->runtime_s = jint(m, "runtime_s");
+        it->watched = cJSON_IsTrue(cJSON_GetObjectItem(m, "watched"));
+        it->seasons = jint(m, "seasons");
+        it->episodes = jint(m, "episodes");
+        it->unwatched = jint(m, "unwatched");
     }
     cJSON_Delete(arr);
     *count = n;
     return list;
 }
 
-/* refresh_list re-fetches the library but keeps already decoded posters. */
-static void refresh_list(Movie **list, int *n) {
-    Movie *old = *list;
+/* refresh_items re-fetches a grid but keeps already decoded posters. */
+static void refresh_items(Kind kind, Item **list, int *n) {
+    Item *old = *list;
     int old_n = *n;
-    Movie *fresh = fetch_movies(n);
+    Item *fresh = fetch_items(kind, n);
     for (int i = 0; fresh && i < *n; i++)
         for (int j = 0; j < old_n; j++)
             if (old[j].id == fresh[i].id && old[j].tex) {
@@ -128,13 +176,62 @@ static void refresh_list(Movie **list, int *n) {
     *list = fresh;
 }
 
-static void free_list(Movie *list, int n) {
+static void free_items(Item *list, int n) {
     for (int i = 0; i < n; i++)
         if (list[i].tex) SDL_DestroyTexture(list[i].tex);
     free(list);
 }
 
-static void load_poster(SDL_Renderer *ren, Movie *m) {
+/* fetch_show fills a ShowView with season headers and episodes in order.
+ * Returns the row index of the next episode to watch (or 0). */
+static int fetch_show(long id, ShowView *sv) {
+    free(sv->rows);
+    memset(sv, 0, sizeof *sv);
+    sv->id = id;
+    char path[64];
+    snprintf(path, sizeof path, "/api/v1/shows/%ld", id);
+    char *body = flex_get(g_host, g_port, path);
+    if (!body) return 0;
+    cJSON *j = cJSON_Parse(body);
+    free(body);
+    if (!j) return 0;
+    jstr(j, "title", sv->title, sizeof sv->title);
+    jstr(j, "overview", sv->overview, sizeof sv->overview);
+    sv->seasons = jint(j, "seasons");
+    sv->episodes = jint(j, "episodes");
+    sv->unwatched = jint(j, "unwatched");
+    long next_id = 0;
+    cJSON *next = cJSON_GetObjectItem(j, "next_episode");
+    if (cJSON_IsObject(next)) next_id = jint(next, "id");
+
+    int cap = 0, focus = 0;
+    cJSON *season;
+    cJSON_ArrayForEach(season, cJSON_GetObjectItem(j, "season_list")) {
+        if (sv->n + 1 > cap) sv->rows = realloc(sv->rows, (cap = cap * 2 + 32) * sizeof *sv->rows);
+        EpRow *h = &sv->rows[sv->n++];
+        memset(h, 0, sizeof *h);
+        h->header = 1;
+        h->season = jint(season, "season");
+        cJSON *ep;
+        cJSON_ArrayForEach(ep, cJSON_GetObjectItem(season, "episodes")) {
+            if (sv->n + 1 > cap) sv->rows = realloc(sv->rows, (cap = cap * 2 + 32) * sizeof *sv->rows);
+            EpRow *r = &sv->rows[sv->n++];
+            memset(r, 0, sizeof *r);
+            r->season = jint(ep, "season");
+            r->episode = jint(ep, "episode");
+            r->id = jint(ep, "id");
+            jstr(ep, "title", r->title, sizeof r->title);
+            r->resume_s = jint(ep, "resume_s");
+            r->runtime_s = jint(ep, "runtime_s");
+            r->watched = cJSON_IsTrue(cJSON_GetObjectItem(ep, "watched"));
+            if (r->id == next_id || (!focus && !next_id)) focus = sv->n - 1;
+        }
+    }
+    cJSON_Delete(j);
+    return focus;
+}
+
+static void load_poster(SDL_Renderer *ren, Item *m) {
     m->tex_state = 2;
     if (!m->poster[0]) return;
     size_t len = 0;
@@ -153,7 +250,7 @@ static void load_poster(SDL_Renderer *ren, Movie *m) {
 
 /* Decode at most one poster per frame so the UI never stalls; drop cached
  * textures that scrolled far away once the cache gets big. */
-static void load_visible_posters(SDL_Renderer *ren, Movie *list, int n, int sel, int first_row) {
+static void load_visible_posters(SDL_Renderer *ren, Item *list, int n, int sel, int first_row) {
     int lo = first_row * COLS, hi = (first_row + ROWS_VISIBLE) * COLS;
     if (hi > n) hi = n;
     if (sel >= 0 && sel < n && list[sel].tex_state == 0) {
@@ -176,10 +273,13 @@ static void load_visible_posters(SDL_Renderer *ren, Movie *list, int n, int sel,
             }
 }
 
-static void play_movie(SDL_Renderer *ren, Movie *m) {
-    int start = m->watched ? 0 : m->resume_s;
+/* play_item plays a movie ("movies") or an episode ("episodes"), then saves
+ * the position and tears down any transcode session. */
+static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *title, int resume_s, int watched,
+                      int runtime_s) {
+    int start = watched ? 0 : resume_s;
     char path[256];
-    snprintf(path, sizeof path, "/api/v1/movies/%ld/play?profile=ps5&start=%d", m->id, start);
+    snprintf(path, sizeof path, "/api/v1/%s/%ld/play?profile=ps5&start=%d", kind, id, start);
     char *body = flex_get(g_host, g_port, path);
     if (!body) return;
     cJSON *info = cJSON_Parse(body);
@@ -191,7 +291,7 @@ static void play_movie(SDL_Renderer *ren, Movie *m) {
     cJSON *dur = cJSON_GetObjectItem(info, "duration_s");
     char url[512];
     snprintf(url, sizeof url, "http://%s:%d%s", g_host, g_port, rel ? rel : "");
-    fprintf(stderr, "FLEX: play \"%s\" via %s: %s\n", m->title, method ? method : "?", url);
+    fprintf(stderr, "FLEX: play \"%s\" via %s: %s\n", title, method ? method : "?", url);
 
     double pos = player_play(ren, url);
     fprintf(stderr, "FLEX: stopped at %.1fs\n", pos);
@@ -201,8 +301,8 @@ static void play_movie(SDL_Renderer *ren, Movie *m) {
         int position = (int)pos + (method && strcmp(method, "hls") == 0 ? start : 0);
         char json[128];
         snprintf(json, sizeof json, "{\"position_s\":%d,\"duration_s\":%d}", position,
-                 cJSON_IsNumber(dur) ? (int)dur->valuedouble : m->runtime_s);
-        snprintf(path, sizeof path, "/api/v1/movies/%ld/progress", m->id);
+                 cJSON_IsNumber(dur) ? (int)dur->valuedouble : runtime_s);
+        snprintf(path, sizeof path, "/api/v1/%s/%ld/progress", kind, id);
         free(flex_http(g_host, g_port, "PUT", path, json, NULL));
     }
     if (method && strcmp(method, "hls") == 0 && rel) {
@@ -224,6 +324,7 @@ static void fill(SDL_Renderer *ren, SDL_Rect r, SDL_Color c) {
 
 static int draw_text(SDL_Renderer *ren, TTF_Font *font, const char *text, int x, int y, SDL_Color c) {
     static int reported;
+    if (!text[0]) return 0;
     SDL_Surface *s = TTF_RenderUTF8_Blended(font, text, c);
     if (!s) {
         if (!reported++) fprintf(stderr, "TTF_RenderUTF8_Blended: %s\n", TTF_GetError());
@@ -263,46 +364,70 @@ static void draw_text_fit(SDL_Renderer *ren, TTF_Font *font, const char *text, i
     draw_text(ren, font, buf, x, y, c);
 }
 
-/* draw_wrapped centres multi-line text inside a box (poster placeholders). */
-static void draw_wrapped(SDL_Renderer *ren, TTF_Font *font, const char *text, SDL_Rect box, SDL_Color c) {
-    SDL_Surface *s = TTF_RenderUTF8_Blended_Wrapped(font, text, c, box.w - 24);
-    if (!s) return;
+/* draw_wrapped renders multi-line text inside a box; centred when `center`. */
+static int draw_wrapped(SDL_Renderer *ren, TTF_Font *font, const char *text, SDL_Rect box, SDL_Color c, int center) {
+    if (!text[0]) return 0;
+    SDL_Surface *s = TTF_RenderUTF8_Blended_Wrapped(font, text, c, box.w - (center ? 24 : 0));
+    if (!s) return 0;
+    int h = s->h;
     SDL_Texture *t = SDL_CreateTextureFromSurface(ren, s);
     if (t) {
-        SDL_Rect dst = {box.x + (box.w - s->w) / 2, box.y + (box.h - s->h) / 2, s->w, s->h};
+        SDL_Rect dst = {box.x + (center ? (box.w - s->w) / 2 : 0), box.y + (center ? (box.h - s->h) / 2 : 0), s->w, s->h};
         if (dst.y < box.y) dst.y = box.y;
+        SDL_Rect clip = box;
+        SDL_RenderSetClipRect(ren, &clip);
         SDL_RenderCopy(ren, t, NULL, &dst);
+        SDL_RenderSetClipRect(ren, NULL);
         SDL_DestroyTexture(t);
     }
     SDL_FreeSurface(s);
+    return h;
 }
 
-static void draw_card(SDL_Renderer *ren, Movie *m, int x, int y, int selected) {
+static void draw_card(SDL_Renderer *ren, Item *m, int x, int y, int selected) {
     SDL_Rect card = {x, y, CARD_W, CARD_H};
     if (selected) fill(ren, (SDL_Rect){x - 6, y - 6, CARD_W + 12, CARD_H + 12}, C_ACCENT);
     if (m->tex) {
         SDL_RenderCopy(ren, m->tex, NULL, &card);
     } else {
         fill(ren, card, C_PANEL);
-        draw_wrapped(ren, g_small, m->title, card, C_MUTED);
+        draw_wrapped(ren, g_small, m->title, card, C_MUTED, 1);
     }
-    if (!m->watched && m->resume_s > 0 && m->runtime_s > 0) {
-        int pct = 100 * m->resume_s / m->runtime_s;
-        if (pct > 100) pct = 100;
-        fill(ren, (SDL_Rect){x + 10, y + CARD_H - 16, CARD_W - 20, 6}, (SDL_Color){0, 0, 0, 160});
-        fill(ren, (SDL_Rect){x + 10, y + CARD_H - 16, (CARD_W - 20) * pct / 100, 6}, C_ACCENT);
+    if (m->kind == KIND_MOVIE) {
+        if (!m->watched && m->resume_s > 0 && m->runtime_s > 0) {
+            int pct = 100 * m->resume_s / m->runtime_s;
+            if (pct > 100) pct = 100;
+            fill(ren, (SDL_Rect){x + 10, y + CARD_H - 16, CARD_W - 20, 6}, (SDL_Color){0, 0, 0, 160});
+            fill(ren, (SDL_Rect){x + 10, y + CARD_H - 16, (CARD_W - 20) * pct / 100, 6}, C_ACCENT);
+        }
+    } else if (m->unwatched > 0) {
+        /* unwatched count badge */
+        char n[16];
+        snprintf(n, sizeof n, "%d", m->unwatched);
+        int w = 0, h = 0;
+        TTF_SizeUTF8(g_tiny, n, &w, &h);
+        fill(ren, (SDL_Rect){x + CARD_W - w - 26, y + 10, w + 16, h + 4}, C_ACCENT);
+        draw_text(ren, g_tiny, n, x + CARD_W - w - 18, y + 12, C_BLACK);
     }
     draw_text_fit(ren, g_small, m->title, x, y + CARD_H + 10, CARD_W, selected ? C_FG : C_MUTED);
-    char sub[64] = "";
-    if (m->year) snprintf(sub, sizeof sub, "%d", m->year);
-    if (m->watched) snprintf(sub + strlen(sub), sizeof sub - strlen(sub), "%swatched", m->year ? "  ·  " : "");
+    char sub[96] = "";
+    if (m->kind == KIND_MOVIE) {
+        if (m->year) snprintf(sub, sizeof sub, "%d", m->year);
+        if (m->watched) snprintf(sub + strlen(sub), sizeof sub - strlen(sub), "%swatched", m->year ? "  ·  " : "");
+    } else {
+        snprintf(sub, sizeof sub, "%d season%s  ·  %d ep", m->seasons, m->seasons == 1 ? "" : "s", m->episodes);
+    }
     if (sub[0]) draw_text(ren, g_tiny, sub, x, y + CARD_H + 42, C_MUTED);
 }
 
-static void draw_grid(SDL_Renderer *ren, Movie *list, int n, int sel, int first_row, const char *status) {
+static void draw_grid(SDL_Renderer *ren, Kind mode, Item *list, int n, int sel, int first_row, const char *status) {
     SDL_SetRenderDrawColor(ren, C_BG.r, C_BG.g, C_BG.b, 255);
     SDL_RenderClear(ren);
-    draw_text(ren, g_font, "FLEX", MARGIN_X, 50, C_FG);
+    int x = MARGIN_X;
+    x += draw_text(ren, g_font, "FLEX", x, 50, C_FG) + 40;
+    x += draw_text(ren, g_font, "Movies", x, 50, mode == KIND_MOVIE ? C_FG : C_MUTED) + 30;
+    draw_text(ren, g_font, "TV", x, 50, mode == KIND_SHOW ? C_FG : C_MUTED);
+    draw_text(ren, g_tiny, "L1 / R1 switch", SCREEN_W - MARGIN_X - 150, 62, C_MUTED);
     draw_text(ren, g_small, status, MARGIN_X, 108, C_MUTED);
 
     int lo = first_row * COLS, hi = (first_row + ROWS_VISIBLE) * COLS;
@@ -310,14 +435,58 @@ static void draw_grid(SDL_Renderer *ren, Movie *list, int n, int sel, int first_
         int col = i % COLS, row = i / COLS - first_row;
         draw_card(ren, &list[i], MARGIN_X + col * (CARD_W + GAP_X), GRID_TOP + row * ROW_H, i == sel);
     }
-    if (n == 0) draw_text(ren, g_font, "No movies. Add folders on the PC and scan.", MARGIN_X, GRID_TOP, C_MUTED);
+    if (n == 0)
+        draw_text(ren, g_font, mode == KIND_MOVIE ? "No movies. Add folders on the PC and scan." : "No TV shows found.",
+                  MARGIN_X, GRID_TOP, C_MUTED);
 
-    /* scroll hint */
     int rows = (n + COLS - 1) / COLS;
     if (rows > ROWS_VISIBLE) {
         char pos[64];
-        snprintf(pos, sizeof pos, "rows %d-%d of %d", first_row + 1, first_row + ROWS_VISIBLE < rows ? first_row + ROWS_VISIBLE : rows, rows);
+        snprintf(pos, sizeof pos, "rows %d-%d of %d", first_row + 1,
+                 first_row + ROWS_VISIBLE < rows ? first_row + ROWS_VISIBLE : rows, rows);
         draw_text(ren, g_tiny, pos, SCREEN_W - MARGIN_X - 200, 116, C_MUTED);
+    }
+    SDL_RenderPresent(ren);
+}
+
+static void draw_episodes(SDL_Renderer *ren, ShowView *sv, Item *show, int sel, int first) {
+    SDL_SetRenderDrawColor(ren, C_BG.r, C_BG.g, C_BG.b, 255);
+    SDL_RenderClear(ren);
+    int tx = MARGIN_X;
+    if (show && show->tex) {
+        SDL_Rect p = {MARGIN_X, 50, 150, 225};
+        SDL_RenderCopy(ren, show->tex, NULL, &p);
+        tx += 150 + 30;
+    }
+    draw_text(ren, g_font, sv->title, tx, 50, C_FG);
+    char meta[160];
+    snprintf(meta, sizeof meta, "%d season%s  ·  %d episodes  ·  %d unwatched        Circle: back", sv->seasons,
+             sv->seasons == 1 ? "" : "s", sv->episodes, sv->unwatched);
+    draw_text(ren, g_small, meta, tx, 104, C_MUTED);
+    draw_wrapped(ren, g_tiny, sv->overview, (SDL_Rect){tx, 140, SCREEN_W - tx - MARGIN_X, 130}, C_MUTED, 0);
+
+    for (int i = first; i < sv->n && i < first + EP_ROWS_VISIBLE; i++) {
+        EpRow *r = &sv->rows[i];
+        int y = EP_TOP + (i - first) * EP_ROW_H;
+        if (r->header) {
+            char h[32];
+            snprintf(h, sizeof h, r->season == 0 ? "SPECIALS" : "SEASON %d", r->season);
+            draw_text(ren, g_tiny, h, MARGIN_X, y + 18, C_MUTED);
+            continue;
+        }
+        if (i == sel) fill(ren, (SDL_Rect){MARGIN_X - 10, y, SCREEN_W - 2 * MARGIN_X + 20, EP_ROW_H - 4}, C_ACCENT);
+        SDL_Color fg = i == sel ? C_BLACK : C_FG, mu = i == sel ? C_BLACK : C_MUTED;
+        char num[16];
+        snprintf(num, sizeof num, "S%02dE%02d", r->season, r->episode);
+        draw_text(ren, g_small, num, MARGIN_X, y + 12, mu);
+        draw_text_fit(ren, g_small, r->title, MARGIN_X + 130, y + 12, SCREEN_W - 2 * MARGIN_X - 330, fg);
+        char state[32] = "";
+        if (r->watched) snprintf(state, sizeof state, "watched");
+        else if (r->resume_s > 0 && r->runtime_s > 0) snprintf(state, sizeof state, "%d%%", 100 * r->resume_s / r->runtime_s);
+        else if (r->runtime_s > 0) snprintf(state, sizeof state, "%d min", (r->runtime_s + 30) / 60);
+        int w = 0, hh = 0;
+        TTF_SizeUTF8(g_small, state, &w, &hh);
+        draw_text(ren, g_small, state, SCREEN_W - MARGIN_X - w, y + 12, r->watched && i != sel ? C_ACCENT : mu);
     }
     SDL_RenderPresent(ren);
 }
@@ -342,6 +511,17 @@ static void move_sel(int *sel, int *first_row, int n, int button) {
     if (row >= *first_row + ROWS_VISIBLE) *first_row = row - ROWS_VISIBLE + 1;
 }
 
+/* move_ep steps over season headers and keeps the selection on screen. */
+static void move_ep(ShowView *sv, int *sel, int *first, int dir) {
+    int i = *sel;
+    do i += dir; while (i >= 0 && i < sv->n && sv->rows[i].header);
+    if (i < 0 || i >= sv->n) return;
+    *sel = i;
+    if (i < *first + 1) *first = i > 0 && sv->rows[i - 1].header ? i - 1 : i;
+    if (i >= *first + EP_ROWS_VISIBLE) *first = i - EP_ROWS_VISIBLE + 1;
+    if (*first < 0) *first = 0;
+}
+
 static int is_dpad(int b) {
     return b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT ||
            b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN;
@@ -356,6 +536,8 @@ static int key_to_button(SDL_Keycode k) {
     case SDLK_RETURN: return SDL_CONTROLLER_BUTTON_A;
     case SDLK_ESCAPE: return SDL_CONTROLLER_BUTTON_B;
     case SDLK_r: return SDL_CONTROLLER_BUTTON_Y;
+    case SDLK_q: return SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+    case SDLK_e: return SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
     }
     return -1;
 }
@@ -373,11 +555,9 @@ int main(int argc, char **argv) {
     if (TTF_Init() != 0) fprintf(stderr, "TTF_Init: %s\n", TTF_GetError());
     if (!(IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG) & IMG_INIT_JPG)) fprintf(stderr, "IMG_Init: %s\n", IMG_GetError());
 
-    /* --- diagnostics: what SDL sees on this console --- */
     SDL_DisplayMode dm;
     fprintf(stderr, "FLEX: video driver %s, %d display(s)\n", SDL_GetCurrentVideoDriver(), SDL_GetNumVideoDisplays());
     if (SDL_GetDesktopDisplayMode(0, &dm) == 0) fprintf(stderr, "FLEX: desktop mode %dx%d @%dHz\n", dm.w, dm.h, dm.refresh_rate);
-    fprintf(stderr, "FLEX: %d audio device(s), %d joystick(s)\n", SDL_GetNumAudioDevices(0), SDL_NumJoysticks());
 
     /* Same setup as ps5-payload-dev/jtplay, which is known to display on the
      * console: a plain 1920x1080 window and SDL's software renderer (the
@@ -395,13 +575,6 @@ int main(int argc, char **argv) {
         return 1;
     }
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    {
-        SDL_RendererInfo ri;
-        int w = 0, h = 0;
-        SDL_GetRendererInfo(ren, &ri);
-        SDL_GetRendererOutputSize(ren, &w, &h);
-        fprintf(stderr, "FLEX: renderer %s, output %dx%d\n", ri.name, w, h);
-    }
     for (int i = 0; i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i)) {
             SDL_GameController *gc = SDL_GameControllerOpen(i);
@@ -420,16 +593,22 @@ int main(int argc, char **argv) {
     }
 
     char status[256] = "Looking for a FLEX server…";
-    draw_grid(ren, NULL, 0, 0, 0, status);
+    draw_grid(ren, KIND_MOVIE, NULL, 0, 0, 0, status);
     fprintf(stderr, "FLEX: first frame presented\n");
 
-    Movie *list = NULL;
-    int n = 0, sel = 0, first_row = 0, quit = 0;
+    Item *lists[2] = {NULL, NULL};
+    int counts[2] = {0, 0}, sels[2] = {0, 0}, firsts[2] = {0, 0};
+    Kind mode = KIND_MOVIE;
+    int quit = 0;
+    ShowView sv = {0};
+    int in_show = 0, ep_sel = 0, ep_first = 0;
+
     if (find_server() == 0) {
         fprintf(stderr, "FLEX: server %s:%d\n", g_host, g_port);
-        list = fetch_movies(&n);
-        fprintf(stderr, "FLEX: %d movies\n", n);
-        snprintf(status, sizeof status, "%s:%d  ·  %d movies", g_host, g_port, n);
+        lists[0] = fetch_items(KIND_MOVIE, &counts[0]);
+        lists[1] = fetch_items(KIND_SHOW, &counts[1]);
+        fprintf(stderr, "FLEX: %d movies, %d shows\n", counts[0], counts[1]);
+        snprintf(status, sizeof status, "%s:%d  ·  %d movies  ·  %d shows", g_host, g_port, counts[0], counts[1]);
     } else {
         fprintf(stderr, "FLEX: no server found (discovery timed out, no saved address)\n");
         snprintf(status, sizeof status, "No server found. Start FLEX on your PC (same network), or put \"host port\" in " SAVED_SERVER);
@@ -440,8 +619,15 @@ int main(int argc, char **argv) {
     Uint32 next_repeat = 0;
 
     while (!quit) {
-        load_visible_posters(ren, list, n, sel, first_row);
-        draw_grid(ren, list, n, sel, first_row, status);
+        Item *list = lists[mode];
+        int n = counts[mode], *sel = &sels[mode], *first_row = &firsts[mode];
+
+        if (in_show) {
+            draw_episodes(ren, &sv, list && *sel < n ? &list[*sel] : NULL, ep_sel, ep_first);
+        } else {
+            load_visible_posters(ren, list, n, *sel, *first_row);
+            draw_grid(ren, mode, list, n, *sel, *first_row, status);
+        }
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -453,40 +639,79 @@ int main(int argc, char **argv) {
             if (e.type == SDL_KEYUP && key_to_button(e.key.keysym.sym) == held) held = -1;
             if (button < 0) continue;
 
+            if (in_show) {
+                switch (button) {
+                case SDL_CONTROLLER_BUTTON_DPAD_UP: move_ep(&sv, &ep_sel, &ep_first, -1); held = button; next_repeat = SDL_GetTicks() + 350; break;
+                case SDL_CONTROLLER_BUTTON_DPAD_DOWN: move_ep(&sv, &ep_sel, &ep_first, 1); held = button; next_repeat = SDL_GetTicks() + 350; break;
+                case SDL_CONTROLLER_BUTTON_B: in_show = 0; held = -1; refresh_items(KIND_SHOW, &lists[1], &counts[1]); break;
+                case SDL_CONTROLLER_BUTTON_A:
+                    if (ep_sel < sv.n && !sv.rows[ep_sel].header) {
+                        EpRow r = sv.rows[ep_sel];
+                        char title[260];
+                        snprintf(title, sizeof title, "%s S%02dE%02d %s", sv.title, r.season, r.episode, r.title);
+                        play_item(ren, "episodes", r.id, title, r.resume_s, r.watched, r.runtime_s);
+                        held = -1;
+                        long keep = r.id;
+                        fetch_show(sv.id, &sv);
+                        for (int i = 0; i < sv.n; i++)
+                            if (sv.rows[i].id == keep) ep_sel = i;
+                    }
+                    break;
+                }
+                continue;
+            }
+
             if (is_dpad(button)) {
-                move_sel(&sel, &first_row, n, button);
+                move_sel(sel, first_row, n, button);
                 held = button;
                 next_repeat = SDL_GetTicks() + 350;
                 continue;
             }
             switch (button) {
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                mode = mode == KIND_MOVIE ? KIND_SHOW : KIND_MOVIE;
+                break;
             case SDL_CONTROLLER_BUTTON_B: quit = 1; break;
             case SDL_CONTROLLER_BUTTON_Y: /* triangle: re-discover and refresh */
                 if (find_server() == 0) {
-                    refresh_list(&list, &n);
-                    snprintf(status, sizeof status, "%s:%d  ·  %d movies", g_host, g_port, n);
+                    refresh_items(KIND_MOVIE, &lists[0], &counts[0]);
+                    refresh_items(KIND_SHOW, &lists[1], &counts[1]);
+                    snprintf(status, sizeof status, "%s:%d  ·  %d movies  ·  %d shows", g_host, g_port, counts[0], counts[1]);
                 }
-                if (sel >= n) sel = n ? n - 1 : 0;
-                first_row = 0;
+                for (int k = 0; k < 2; k++) {
+                    if (sels[k] >= counts[k]) sels[k] = counts[k] ? counts[k] - 1 : 0;
+                    firsts[k] = 0;
+                }
                 break;
             case SDL_CONTROLLER_BUTTON_A:
-                if (n > 0) {
-                    play_movie(ren, &list[sel]);
+                if (n == 0) break;
+                if (mode == KIND_MOVIE) {
+                    Item *m = &list[*sel];
+                    play_item(ren, "movies", m->id, m->title, m->resume_s, m->watched, m->runtime_s);
                     held = -1;
-                    refresh_list(&list, &n); /* pick up the new resume point */
-                    if (sel >= n) sel = n ? n - 1 : 0;
+                    refresh_items(KIND_MOVIE, &lists[0], &counts[0]); /* pick up the new resume point */
+                    if (sels[0] >= counts[0]) sels[0] = counts[0] ? counts[0] - 1 : 0;
+                } else {
+                    ep_sel = fetch_show(list[*sel].id, &sv);
+                    ep_first = ep_sel > EP_ROWS_VISIBLE - 2 ? ep_sel - 2 : 0;
+                    in_show = sv.n > 0;
+                    held = -1;
                 }
                 break;
             }
         }
         if (held >= 0 && SDL_GetTicks() >= next_repeat) {
-            move_sel(&sel, &first_row, n, held);
+            if (in_show) move_ep(&sv, &ep_sel, &ep_first, held == SDL_CONTROLLER_BUTTON_DPAD_UP ? -1 : 1);
+            else move_sel(sel, first_row, n, held);
             next_repeat = SDL_GetTicks() + 110;
         }
         SDL_Delay(16);
     }
 
-    free_list(list, n);
+    free(sv.rows);
+    free_items(lists[0], counts[0]);
+    free_items(lists[1], counts[1]);
     TTF_CloseFont(g_font);
     TTF_CloseFont(g_small);
     TTF_CloseFont(g_tiny);
