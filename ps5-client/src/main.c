@@ -19,6 +19,7 @@
 #include "cJSON.h"
 #include "net.h"
 #include "player.h"
+#include "posters.h"
 
 #ifndef FLEX_VERSION
 #define FLEX_VERSION "dev" /* the Makefile passes the git tag */
@@ -60,8 +61,9 @@ typedef struct {
     int year, resume_s, runtime_s, watched;
     int seasons, episodes, unwatched; /* shows */
     char poster[128];                 /* API path or "" when the server has no artwork */
+    int tmdb_id;                      /* part of the poster's cache name: a new match means a new poster */
     SDL_Texture *tex;                 /* decoded poster, NULL until loaded */
-    int tex_state;                    /* 0 = not loaded yet, 1 = loaded, 2 = unavailable */
+    int tex_state;                    /* 0 = not loaded yet, 1 = loaded, 2 = unavailable, 3 = requested */
 } Item;
 
 /* One row of the episode list: a season header or an episode. */
@@ -261,6 +263,7 @@ static Item *fetch_items(Kind kind, int *count) {
         it->id = jint(m, "id");
         jstr(m, "title", it->title, sizeof it->title);
         jstr(m, "poster", it->poster, sizeof it->poster);
+        it->tmdb_id = jint(m, "tmdb_id");
         it->year = jint(m, "year");
         it->resume_s = jint(m, "resume_s");
         it->runtime_s = jint(m, "runtime_s");
@@ -348,37 +351,53 @@ static int fetch_show(long id, ShowView *sv) {
     return focus;
 }
 
-static void load_poster(SDL_Renderer *ren, Item *m) {
-    m->tex_state = 2;
-    if (!m->poster[0]) return;
-    size_t len = 0;
-    char *bytes = flex_http(g_host, g_port, "GET", m->poster, NULL, &len);
-    if (!bytes) return;
-    SDL_Surface *s = IMG_Load_RW(SDL_RWFromConstMem(bytes, (int)len), 1);
-    free(bytes);
-    if (!s) {
-        fprintf(stderr, "poster %ld: %s\n", m->id, IMG_GetError());
+static char kind_char(Kind k) { return k == KIND_MOVIE ? 'm' : 's'; }
+
+static void want_poster(Item *m) {
+    if (m->tex_state != 0) return;
+    if (!m->poster[0]) {
+        m->tex_state = 2;
         return;
     }
-    m->tex = SDL_CreateTextureFromSurface(ren, s);
-    SDL_FreeSurface(s);
-    if (m->tex) m->tex_state = 1;
+    posters_want(kind_char(m->kind), m->id, m->tmdb_id, m->poster);
+    m->tex_state = 3;
 }
 
-/* Decode at most one poster per frame so the UI never stalls; drop cached
- * textures that scrolled far away once the cache gets big. */
-static void load_visible_posters(SDL_Renderer *ren, Item *list, int n, int sel, int first_row) {
-    int lo = first_row * COLS, hi = (first_row + ROWS_VISIBLE) * COLS;
-    if (hi > n) hi = n;
-    if (sel >= 0 && sel < n && list[sel].tex_state == 0) {
-        load_poster(ren, &list[sel]);
-        return;
-    }
-    for (int i = lo; i < hi; i++)
-        if (list[i].tex_state == 0) {
-            load_poster(ren, &list[i]);
+/* prefetch_posters fills the console's poster cache in the background. */
+static void prefetch_posters(Item *list, int n) {
+    for (int i = 0; i < n; i++)
+        if (list[i].poster[0]) posters_prefetch(kind_char(list[i].kind), list[i].id, list[i].tmdb_id, list[i].poster);
+}
+
+/* take_posters turns the posters the loader finished into textures. */
+static void take_posters(SDL_Renderer *ren, Item **lists, int *counts) {
+    char kind;
+    long id;
+    SDL_Surface *s;
+    while (posters_take(&kind, &id, &s)) {
+        Item *list = lists[kind == 'm' ? KIND_MOVIE : KIND_SHOW];
+        int n = counts[kind == 'm' ? KIND_MOVIE : KIND_SHOW];
+        for (int i = 0; i < n; i++) {
+            Item *m = &list[i];
+            if (m->id != id || m->tex_state != 3) continue;
+            m->tex = s ? SDL_CreateTextureFromSurface(ren, s) : NULL;
+            m->tex_state = m->tex ? 1 : 2;
             break;
         }
+        if (s) SDL_FreeSurface(s);
+    }
+}
+
+/* Ask the loader for the rows on screen and one row either side (the rows
+ * scrolled to next); drop textures that scrolled far away once there are
+ * many. Requests are served newest first, so the screen is asked for last. */
+static void load_visible_posters(Item *list, int n, int first_row) {
+    int lo = first_row * COLS, hi = (first_row + ROWS_VISIBLE) * COLS;
+    if (hi > n) hi = n;
+    for (int i = hi; i < hi + COLS && i < n; i++) want_poster(&list[i]);
+    for (int i = lo - COLS; i < lo; i++)
+        if (i >= 0) want_poster(&list[i]);
+    for (int i = hi - 1; i >= lo; i--) want_poster(&list[i]);
     int cached = 0;
     for (int i = 0; i < n; i++) cached += list[i].tex != NULL;
     if (cached > MAX_CACHED_POSTERS)
@@ -891,6 +910,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    posters_init();
     load_aspects();
     load_int(UPSCALE_FILE, &g_upscale);
     load_int(VOLUME_FILE, &g_volume);
@@ -912,6 +932,9 @@ int main(int argc, char **argv) {
         lists[1] = fetch_items(KIND_SHOW, &counts[1]);
         fprintf(stderr, "FLEX: %d movies, %d shows\n", counts[0], counts[1]);
         set_status(status, sizeof status, counts[0], counts[1]);
+        posters_server(g_host, g_port);
+        prefetch_posters(lists[0], counts[0]);
+        prefetch_posters(lists[1], counts[1]);
         check_update();
     } else {
         fprintf(stderr, "FLEX: no server found (discovery timed out, saved addresses unreachable)\n");
@@ -926,10 +949,11 @@ int main(int argc, char **argv) {
         Item *list = lists[mode];
         int n = counts[mode], *sel = &sels[mode], *first_row = &firsts[mode];
 
+        take_posters(ren, lists, counts);
         if (in_show) {
             draw_episodes(ren, &sv, list && *sel < n ? &list[*sel] : NULL, ep_sel, ep_first);
         } else {
-            load_visible_posters(ren, list, n, *sel, *first_row);
+            load_visible_posters(list, n, *first_row);
             draw_grid(ren, mode, list, n, *sel, *first_row, status);
         }
 
@@ -986,6 +1010,9 @@ int main(int argc, char **argv) {
                     refresh_items(KIND_MOVIE, &lists[0], &counts[0]);
                     refresh_items(KIND_SHOW, &lists[1], &counts[1]);
                     set_status(status, sizeof status, counts[0], counts[1]);
+                    posters_server(g_host, g_port);
+                    prefetch_posters(lists[0], counts[0]);
+                    prefetch_posters(lists[1], counts[1]);
                     check_update();
                 }
                 for (int k = 0; k < 2; k++) {
