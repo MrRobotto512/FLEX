@@ -36,8 +36,13 @@
 #define LATE_DROP_S 0.08 /* a frame this far behind the clock is skipped */
 #define MAX_DROPS_IN_ROW 6
 #define FAST_DECODE_MS 30000 /* this long without a drop: deblocking again */
-#define BUFFER_S 30.0           /* read this far ahead of the video decoder */
-#define BUFFER_BYTES (64 << 20) /* ...but never hold more than this */
+/* Read this far ahead of the video decoder, so a bitrate peak or a dip in
+ * the link plays out of memory (a 4.7 Mbit/s average 4K file ran at 16-20
+ * in an action scene). 512 MB is ~2.5 min of a 28 Mbit/s file and 5 min of
+ * anything up to ~13. If memory runs out first, the reader settles below
+ * where it ran out (buffer_cap). */
+#define BUFFER_S 300.0
+#define BUFFER_BYTES (512 << 20)
 #define FRAME_QUEUE 8           /* decoded frames waiting for their time */
 #define AUDIO_DRY_S 1.0         /* video waiting this long on silent audio: pace by wall time */
 #define BUFFERING_MS 300        /* no frame for this long: say "Buffering" */
@@ -128,6 +133,7 @@ typedef struct {
     SDL_atomic_t abort;  /* every thread stops */
     SDL_atomic_t serial; /* bumped by each seek */
     PktQueue vq, aq;
+    volatile long buffer_cap; /* BUFFER_BYTES, or less after memory ran out */
     FrameQueue fq;
 
     /* seek request, main -> reader */
@@ -211,15 +217,19 @@ static void node_free(PktNode *n) {
     free(n);
 }
 
-/* pq_put queues pkt (its data moves into the queue) or, with pkt NULL, a marker. */
-static void pq_put(PktQueue *q, AVPacket *pkt, int marker, int serial, double ts) {
+/* pq_put queues pkt (its data moves into the queue) or, with pkt NULL, a
+ * marker. Returns 0, leaving pkt as it was, when memory ran out. */
+static int pq_put(PktQueue *q, AVPacket *pkt, int marker, int serial, double ts) {
     PktNode *n = calloc(1, sizeof *n);
-    if (!n) return;
+    if (!n) return 0;
     n->marker = marker;
     n->serial = serial;
     n->ts = ts;
     if (pkt) {
-        n->pkt = av_packet_alloc();
+        if (!(n->pkt = av_packet_alloc())) {
+            free(n);
+            return 0;
+        }
         av_packet_move_ref(n->pkt, pkt);
     }
     SDL_LockMutex(q->mu);
@@ -232,6 +242,7 @@ static void pq_put(PktQueue *q, AVPacket *pkt, int marker, int serial, double ts
     }
     SDL_CondSignal(q->cond);
     SDL_UnlockMutex(q->mu);
+    return 1;
 }
 
 /* pq_get waits for the next node; NULL when the player is stopping. */
@@ -797,8 +808,23 @@ static double packet_ts(AVPacket *pkt, double tb, double start) {
 }
 
 static int buffer_full(Player *p) {
-    if (p->vq.bytes + p->aq.bytes > BUFFER_BYTES) return 1;
+    if (p->vq.bytes + p->aq.bytes > p->buffer_cap) return 1;
     return buffered_s(p) > BUFFER_S;
+}
+
+/* queue_packet hands a packet to its queue. If memory runs out, the reader
+ * keeps the packet, settles its ceiling at 3/4 of what it held, and tries
+ * again once the decoders have used some up. */
+static void queue_packet(Player *p, PktQueue *q, AVPacket *pkt, int serial, double ts) {
+    while (!pq_put(q, pkt, MARK_NONE, serial, ts) && !aborted(p)) {
+        long held = p->vq.bytes + p->aq.bytes, cap = held * 3 / 4;
+        if (cap < p->buffer_cap) {
+            p->buffer_cap = cap > (8 << 20) ? cap : (8 << 20);
+            fprintf(stderr, "player: out of memory with %ld MB read ahead, keeping %ld MB from now on\n", held >> 20,
+                    p->buffer_cap >> 20);
+        }
+        SDL_Delay(50);
+    }
 }
 
 static int reader_thread(void *arg) {
@@ -844,9 +870,9 @@ static int reader_thread(void *arg) {
         /* time spent waiting in here is the link; with the buffer full the reader idles and isn't counted */
         p->read_secs += ms_since(t0) / 1000.0;
         p->read_bytes += pkt->size;
-        if (pkt->stream_index == p->vidx) pq_put(&p->vq, pkt, MARK_NONE, serial, packet_ts(pkt, p->vtb, p->start));
+        if (pkt->stream_index == p->vidx) queue_packet(p, &p->vq, pkt, serial, packet_ts(pkt, p->vtb, p->start));
         else if (pkt->stream_index == p->aidx && p->adec)
-            pq_put(&p->aq, pkt, MARK_NONE, serial, packet_ts(pkt, p->atb, p->start));
+            queue_packet(p, &p->aq, pkt, serial, packet_ts(pkt, p->atb, p->start));
         av_packet_unref(pkt);
     }
     av_packet_free(&pkt);
@@ -1270,7 +1296,8 @@ static void note_waiting(Player *p) {
 
 PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     Player p = {.o = o, .ren = ren, .vidx = -1, .aidx = -1, .pending = -1, .result_seek = -1, .held = -1,
-                .resync_audio = 1, .drop_before = -1e9, .sar = 1, .aspect = o->aspect, .volume = o->volume};
+                .resync_audio = 1, .drop_before = -1e9, .sar = 1, .aspect = o->aspect, .volume = o->volume,
+                .buffer_cap = BUFFER_BYTES};
     if (p.aspect < 0 || p.aspect >= ASPECT_COUNT) p.aspect = ASPECT_AUTO;
     if (p.volume < 0 || p.volume > VOLUME_MAX) p.volume = 100;
     for (int i = 0; i < PIC_COUNT; i++) {
