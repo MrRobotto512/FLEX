@@ -605,7 +605,9 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
                       .volume = g_volume, .may_give_up = hls ? step_downs < 2 : !no_direct, .font = g_small};
         memcpy(o.picture, g_picture, sizeof o.picture);
         PlayResult r = player_play(ren, &o);
-        if (!r.starved) note_link(r.link_kbps, !hls);
+        /* an original file shows the link even when it ran dry; a conversion
+         * that ran dry only shows how fast the server made it */
+        if (!r.starved || !hls) note_link(r.link_kbps, !hls);
         aspect = r.aspect; /* carried across session restarts */
         if (r.volume != g_volume) {
             g_volume = r.volume;
@@ -629,9 +631,12 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         if (r.starved) { /* carry on from here with a stream the link can carry */
             if (hls) {
                 /* the conversion came out fatter than the link (an encoder that
-                 * overshoots, or a slower link than measured): ask for less */
-                int measured = r.link_kbps > 0 && r.link_kbps < g_link_kbps ? r.link_kbps : g_link_kbps;
-                set_link((measured ? measured : 8000) * 3 / 4);
+                 * overshoots): ask for a quarter less. Not from what the reader
+                 * measured: a conversion arrives as fast as the server makes it,
+                 * so that speed says nothing about the link (a starting one read
+                 * at 0.9 Mbit/s on a 26 Mbit/s link). */
+                int was = g_link_kbps ? g_link_kbps : 8000;
+                set_link(was * 3 / 4 > 4000 ? was * 3 / 4 : 4000);
                 step_downs++;
             } else {
                 no_direct = 1;

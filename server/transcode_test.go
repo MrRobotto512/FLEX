@@ -119,6 +119,20 @@ func TestHDRPipelines(t *testing.T) {
 		t.Errorf("HDR CPU retry: %q", args)
 	}
 
+	// SDR 4K on a card without NVENC (Media Foundation): libplacebo scales it on the GPU
+	sdr4k := &MediaInfo{Video: VideoInfo{Codec: "h264", Width: 3840, Height: 1600, BitDepth: 8}}
+	r.NoGPU = false
+	r.Media = sdr4k
+	args = (&Transcoder{encoder: "h264_mf", hdrGPU: true}).args(r, t.TempDir())
+	if !has(vf(args), "libplacebo=w=2592:h=1080") || !has(vf(args), "format=nv12") || has(vf(args), "scale=-2") {
+		t.Errorf("SDR 4K via Media Foundation: %q", args)
+	}
+	// ...but a 1080p one needs no scaling and stays on the cheap CPU path
+	r.Media = &MediaInfo{Video: VideoInfo{Codec: "hevc", Width: 1920, Height: 1080, BitDepth: 10}}
+	if args = (&Transcoder{encoder: "h264_mf", hdrGPU: true}).args(r, t.TempDir()); has(vf(args), "libplacebo") {
+		t.Errorf("SDR 1080p via Media Foundation: %q", args)
+	}
+
 	// SDR keeps the all-CUDA path
 	r.NoGPU = false
 	r.Media = &MediaInfo{Video: VideoInfo{Codec: "hevc", Width: 3840, Height: 2160, BitDepth: 10}}

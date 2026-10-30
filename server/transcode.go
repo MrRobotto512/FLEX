@@ -141,6 +141,8 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		s.info.Mode = "upscale"
 	} else if t.hdrOnGPU(r) {
 		s.info.Mode = "transcode, HDR on the GPU"
+	} else if t.placebo(r) {
+		s.info.Mode = "transcode, scaled on the GPU"
 	} else if r.Media.Video.HDR != "" {
 		s.info.Mode = "transcode, HDR on the CPU"
 	}
@@ -176,7 +178,7 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		select {
 		case <-s.done:
 			t.remove(key)
-			if t.useGPU(r) || t.hdrOnGPU(r) || t.hdrCUDAScale(r) {
+			if t.useGPU(r) || t.placebo(r) || t.hdrCUDAScale(r) {
 				// e.g. a codec the GPU can't decode: same job with CPU filters
 				t.log.Warn("ffmpeg GPU pipeline failed, retrying on the CPU", "key", key, "err", s.err)
 				r.NoGPU = true
@@ -202,7 +204,7 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 	a := []string{"-hide_banner", "-loglevel", "warning", "-nostdin"}
 	gpu := t.useGPU(r)
-	hdrGPU, cudaScale := t.hdrOnGPU(r), t.hdrCUDAScale(r)
+	hdrGPU, cudaScale := t.placebo(r), t.hdrCUDAScale(r)
 	if !r.CopyVid {
 		// Decode on the GPU: with NVENC the frames stay on the card through
 		// deinterlacing, scaling and encoding (almost no CPU); otherwise
@@ -233,8 +235,9 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 	if r.CopyVid {
 		a = append(a, "-c:v", "copy")
 	} else if hdrGPU {
-		// one shader pass on the GPU: tone map to SDR (BT.2390, with peak
-		// detection) and scale to the profile's height with EWA Lanczos
+		// one shader pass on the GPU: tone map HDR to SDR (BT.2390, with peak
+		// detection; SDR passes through) and scale to the profile's height
+		// with EWA Lanczos
 		vf := []string{t.placeboFilter(r.Media.Video.Width, r.Media.Video.Height, r.Profile.MaxHeight, t.encoderFor(r))}
 		if r.Sub >= 0 {
 			vf = append(vf, fmt.Sprintf("subtitles=%s:si=%d", ffEscape(r.Path), subOrdinal(r.Media, r.Sub)))
@@ -300,6 +303,17 @@ func (t *Transcoder) useGPU(r transcodeRequest) bool {
 // passed at startup. Any GPU encoder or libx264 can take its output.
 func (t *Transcoder) hdrOnGPU(r transcodeRequest) bool {
 	return t.hdrGPU && r.Media.Video.HDR != "" && !r.CopyVid && !r.NoGPU
+}
+
+// placebo: the libplacebo pass handles the picture: HDR (tone mapping), and
+// any picture that must shrink to the profile's height when the all-CUDA
+// pipeline isn't there (no NVENC, e.g. a GTX 10-series card encoding through
+// Media Foundation), so a 4K source isn't scaled on the CPU (~1x real time).
+func (t *Transcoder) placebo(r transcodeRequest) bool {
+	if !t.hdrGPU || r.CopyVid || r.NoGPU || t.useGPU(r) {
+		return false
+	}
+	return r.Media.Video.HDR != "" || (r.Media.Video.Height > r.Profile.MaxHeight && !r.Upscale)
 }
 
 // hdrCUDAScale: HDR without libplacebo on an NVIDIA card: CUDA decodes and
