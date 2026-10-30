@@ -58,11 +58,12 @@ func (c *Config) Validate() error {
 	if c.HTTPPort <= 0 || c.HTTPPort > 65535 {
 		return fmt.Errorf("invalid HTTP port %d", c.HTTPPort)
 	}
+	// Portable installs ship ffmpeg next to the executable; otherwise PATH.
 	if c.FFmpeg == "" {
-		c.FFmpeg = "ffmpeg"
+		c.FFmpeg = bundledOr("ffmpeg")
 	}
 	if c.FFprobe == "" {
-		c.FFprobe = "ffprobe"
+		c.FFprobe = bundledOr("ffprobe")
 	}
 	switch c.Encoder {
 	case "auto", "nvenc", "qsv", "amf", "software":
@@ -88,6 +89,23 @@ func envInt(key string, def int) int {
 		return v
 	}
 	return def
+}
+
+// bundledOr returns <dir of this exe>/<name>[.exe] if it exists, else name
+// (resolved on PATH by exec).
+func bundledOr(name string) string {
+	exe, err := os.Executable()
+	if err != nil {
+		return name
+	}
+	p := filepath.Join(filepath.Dir(exe), name)
+	if runtime.GOOS == "windows" {
+		p += ".exe"
+	}
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return name
 }
 
 func hostname() string {
