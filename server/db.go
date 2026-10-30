@@ -546,8 +546,12 @@ func (d *DB) SetEpisodeMetadata(id int64, md EpisodeMeta) error {
 // ---------------------------------------------------------------- shared
 
 // SetProgress records a playback position for a movie or an episode.
-// Positions within the last 5 % mark the item watched.
+// Positions within the last 5 % mark the item watched; the first 30 s don't
+// count as a resume point (someone just peeked).
 func (d *DB) SetProgress(kind string, id int64, positionS, durationS int) error {
+	if positionS < 30 {
+		positionS = 0
+	}
 	watched := 0
 	if durationS > 0 && float64(positionS) >= float64(durationS)*0.95 {
 		watched = 1

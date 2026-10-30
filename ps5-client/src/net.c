@@ -1,6 +1,8 @@
 #include "net.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -54,6 +56,29 @@ int flex_discover(char *host, size_t hostlen, int *port, int timeout_ms) {
     return 0;
 }
 
+/* connect_timeout fails fast when the host is unreachable (e.g. the home
+ * LAN address while the console is away), instead of the ~75 s OS default. */
+static int connect_timeout(int s, const struct sockaddr *addr, socklen_t len, int ms) {
+    int fl = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, fl | O_NONBLOCK);
+    int r = connect(s, addr, len);
+    if (r < 0 && errno == EINPROGRESS) {
+        fd_set w;
+        FD_ZERO(&w);
+        FD_SET(s, &w);
+        struct timeval tv = {.tv_sec = ms / 1000, .tv_usec = (ms % 1000) * 1000};
+        r = select(s + 1, NULL, &w, NULL, &tv) == 1 ? 0 : -1;
+        if (r == 0) {
+            int err = 0;
+            socklen_t l = sizeof err;
+            getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &l);
+            if (err) r = -1;
+        }
+    }
+    fcntl(s, F_SETFL, fl);
+    return r;
+}
+
 static int tcp_connect(const char *host, int port) {
     char portstr[8];
     snprintf(portstr, sizeof portstr, "%d", port);
@@ -63,11 +88,16 @@ static int tcp_connect(const char *host, int port) {
     for (struct addrinfo *a = res; a; a = a->ai_next) {
         s = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
         if (s < 0) continue;
-        if (connect(s, a->ai_addr, a->ai_addrlen) == 0) break;
+        if (connect_timeout(s, a->ai_addr, a->ai_addrlen, 3000) == 0) break;
         close(s);
         s = -1;
     }
     freeaddrinfo(res);
+    if (s >= 0) {
+        /* /play can take a while when the server starts a transcode */
+        struct timeval tv = {.tv_sec = 45};
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    }
     return s;
 }
 

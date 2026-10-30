@@ -79,36 +79,74 @@ static const SDL_Color C_PANEL = {24, 27, 34, 255};
 static const SDL_Color C_BG = {15, 17, 21, 255};
 static const SDL_Color C_BLACK = {0, 0, 0, 255};
 
-static char g_host[128] = "";
+static char g_host[128] = "";   /* address in use */
+static char g_lan[128] = "";    /* last address found by LAN discovery */
+static char g_remote[128] = ""; /* the server's Tailscale address, learned at home */
 static int g_port = 8484;
+static int g_is_remote;
 static TTF_Font *g_font, *g_small, *g_tiny;
 
 static const char *kind_path(Kind k) { return k == KIND_MOVIE ? "movies" : "shows"; }
 
-/* ---------- server address ---------- */
+/* ---------- server address ----------
+ *
+ * server.txt holds "lan-host port" and, once seen, a second line with the
+ * server's Tailscale address. At home the server is found by broadcast;
+ * away (travel router on the tailnet) the Tailscale address is used. */
 
-static int load_saved_server(void) {
+static void load_saved_server(void) {
     FILE *f = fopen(SAVED_SERVER, "r");
-    if (!f) return -1;
-    int ok = fscanf(f, "%127s %d", g_host, &g_port) == 2;
+    if (!f) return;
+    if (fscanf(f, "%127s %d", g_lan, &g_port) != 2) g_lan[0] = 0;
+    if (fscanf(f, "%127s", g_remote) != 1) g_remote[0] = 0;
     fclose(f);
-    return ok ? 0 : -1;
 }
 
 static void save_server(void) {
     FILE *f = fopen(SAVED_SERVER, "w");
     if (!f) return;
-    fprintf(f, "%s %d\n", g_host, g_port);
+    fprintf(f, "%s %d\n%s\n", g_lan, g_port, g_remote);
     fclose(f);
 }
 
+/* probe asks host for /server; on success it becomes the address in use and
+ * the server's Tailscale address (if any) is remembered. */
+static int probe(const char *host) {
+    char *body = flex_get(host, g_port, "/api/v1/server");
+    if (!body) return 0;
+    cJSON *j = cJSON_Parse(body);
+    free(body);
+    cJSON *ts = cJSON_GetObjectItem(j, "tailscale");
+    const char *ip = cJSON_GetStringValue(cJSON_GetObjectItem(ts, "ip"));
+    if (ip && ip[0]) snprintf(g_remote, sizeof g_remote, "%s", ip);
+    cJSON_Delete(j);
+    snprintf(g_host, sizeof g_host, "%s", host);
+    return 1;
+}
+
 static int find_server(void) {
-    if (flex_discover(g_host, sizeof g_host, &g_port, 1500) == 0) {
+    load_saved_server();
+    char found[128];
+    int port = g_port;
+    if (flex_discover(found, sizeof found, &port, 1500) == 0) {
+        g_port = port;
+        snprintf(g_lan, sizeof g_lan, "%s", found);
+    }
+    g_is_remote = 0;
+    if (g_lan[0] && probe(g_lan)) {
         save_server();
         return 0;
     }
-    /* no answer on the LAN: fall back to the remembered (e.g. Tailscale) address */
-    return load_saved_server();
+    if (g_remote[0] && probe(g_remote)) {
+        g_is_remote = 1;
+        return 0;
+    }
+    return -1;
+}
+
+static void set_status(char *status, size_t n, int movies, int shows) {
+    snprintf(status, n, "%s:%d%s  ·  %d movies  ·  %d shows", g_host, g_port, g_is_remote ? " (remote)" : "", movies,
+             shows);
 }
 
 /* ---------- API ---------- */
@@ -274,45 +312,52 @@ static void load_visible_posters(SDL_Renderer *ren, Item *list, int n, int sel, 
 }
 
 /* play_item plays a movie ("movies") or an episode ("episodes"), then saves
- * the position and tears down any transcode session. */
+ * the position. Direct files seek in place; a transcoded HLS session cannot
+ * seek, so a seek ends it and a new session starts at the target. */
 static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *title, int resume_s, int watched,
                       int runtime_s) {
-    int start = watched ? 0 : resume_s;
+    double start = watched ? 0 : resume_s, position = -1, duration = runtime_s;
     char path[256];
-    snprintf(path, sizeof path, "/api/v1/%s/%ld/play?profile=ps5&start=%d", kind, id, start);
-    char *body = flex_get(g_host, g_port, path);
-    if (!body) return;
-    cJSON *info = cJSON_Parse(body);
-    free(body);
-    if (!info) return;
+    for (;;) {
+        snprintf(path, sizeof path, "/api/v1/%s/%ld/play?profile=ps5&start=%d", kind, id, (int)start);
+        char *body = flex_get(g_host, g_port, path);
+        if (!body) break;
+        cJSON *info = cJSON_Parse(body);
+        free(body);
+        if (!info) break;
 
-    const char *rel = cJSON_GetStringValue(cJSON_GetObjectItem(info, "url"));
-    const char *method = cJSON_GetStringValue(cJSON_GetObjectItem(info, "method"));
-    cJSON *dur = cJSON_GetObjectItem(info, "duration_s");
-    char url[512];
-    snprintf(url, sizeof url, "http://%s:%d%s", g_host, g_port, rel ? rel : "");
-    fprintf(stderr, "FLEX: play \"%s\" via %s: %s\n", title, method ? method : "?", url);
+        const char *rel = cJSON_GetStringValue(cJSON_GetObjectItem(info, "url"));
+        const char *method = cJSON_GetStringValue(cJSON_GetObjectItem(info, "method"));
+        cJSON *dur = cJSON_GetObjectItem(info, "duration_s");
+        if (cJSON_IsNumber(dur) && dur->valuedouble > 0) duration = dur->valuedouble;
+        int hls = method && strcmp(method, "hls") == 0;
+        char url[512];
+        snprintf(url, sizeof url, "http://%s:%d%s", g_host, g_port, rel ? rel : "");
+        fprintf(stderr, "FLEX: play \"%s\" via %s from %.0fs: %s\n", title, method ? method : "?", start, url);
 
-    double pos = player_play(ren, url);
-    fprintf(stderr, "FLEX: stopped at %.1fs\n", pos);
+        PlayOpts o = {.url = url, .title = title, .offset = hls ? start : 0, .initial = hls ? 0 : start,
+                      .duration = duration, .seekable = !hls, .font = g_small};
+        PlayResult r = player_play(ren, &o);
+        fprintf(stderr, "FLEX: stopped at %.1fs%s\n", r.position, r.seek_to >= 0 ? " (seek)" : "");
 
-    if (pos >= 0) {
-        /* HLS sessions start at `start`, direct files at 0 */
-        int position = (int)pos + (method && strcmp(method, "hls") == 0 ? start : 0);
+        if (hls && rel) {
+            /* /api/v1/hls/<session>/index.m3u8 -> DELETE /api/v1/hls/<session> */
+            char session[64] = "";
+            sscanf(rel, "/api/v1/hls/%63[^/]", session);
+            snprintf(path, sizeof path, "/api/v1/hls/%s", session);
+            free(flex_http(g_host, g_port, "DELETE", path, NULL, NULL));
+        }
+        cJSON_Delete(info);
+        if (r.position >= 0) position = r.position;
+        if (r.seek_to < 0) break;
+        start = r.seek_to;
+    }
+    if (position >= 0) {
         char json[128];
-        snprintf(json, sizeof json, "{\"position_s\":%d,\"duration_s\":%d}", position,
-                 cJSON_IsNumber(dur) ? (int)dur->valuedouble : runtime_s);
+        snprintf(json, sizeof json, "{\"position_s\":%d,\"duration_s\":%d}", (int)position, (int)duration);
         snprintf(path, sizeof path, "/api/v1/%s/%ld/progress", kind, id);
         free(flex_http(g_host, g_port, "PUT", path, json, NULL));
     }
-    if (method && strcmp(method, "hls") == 0 && rel) {
-        /* /api/v1/hls/<session>/index.m3u8 -> DELETE /api/v1/hls/<session> */
-        char session[64] = "";
-        sscanf(rel, "/api/v1/hls/%63[^/]", session);
-        snprintf(path, sizeof path, "/api/v1/hls/%s", session);
-        free(flex_http(g_host, g_port, "DELETE", path, NULL, NULL));
-    }
-    cJSON_Delete(info);
 }
 
 /* ---------- drawing ---------- */
@@ -604,14 +649,15 @@ int main(int argc, char **argv) {
     int in_show = 0, ep_sel = 0, ep_first = 0;
 
     if (find_server() == 0) {
-        fprintf(stderr, "FLEX: server %s:%d\n", g_host, g_port);
+        fprintf(stderr, "FLEX: server %s:%d%s (tailscale %s)\n", g_host, g_port, g_is_remote ? " via tailscale" : "",
+                g_remote[0] ? g_remote : "unknown");
         lists[0] = fetch_items(KIND_MOVIE, &counts[0]);
         lists[1] = fetch_items(KIND_SHOW, &counts[1]);
         fprintf(stderr, "FLEX: %d movies, %d shows\n", counts[0], counts[1]);
-        snprintf(status, sizeof status, "%s:%d  ·  %d movies  ·  %d shows", g_host, g_port, counts[0], counts[1]);
+        set_status(status, sizeof status, counts[0], counts[1]);
     } else {
-        fprintf(stderr, "FLEX: no server found (discovery timed out, no saved address)\n");
-        snprintf(status, sizeof status, "No server found. Start FLEX on your PC (same network), or put \"host port\" in " SAVED_SERVER);
+        fprintf(stderr, "FLEX: no server found (discovery timed out, saved addresses unreachable)\n");
+        snprintf(status, sizeof status, "No server found. Start FLEX on your PC (same network); Triangle retries.");
     }
 
     /* D-pad auto-repeat while held */
@@ -677,7 +723,7 @@ int main(int argc, char **argv) {
                 if (find_server() == 0) {
                     refresh_items(KIND_MOVIE, &lists[0], &counts[0]);
                     refresh_items(KIND_SHOW, &lists[1], &counts[1]);
-                    snprintf(status, sizeof status, "%s:%d  ·  %d movies  ·  %d shows", g_host, g_port, counts[0], counts[1]);
+                    set_status(status, sizeof status, counts[0], counts[1]);
                 }
                 for (int k = 0; k < 2; k++) {
                     if (sels[k] >= counts[k]) sels[k] = counts[k] ? counts[k] - 1 : 0;

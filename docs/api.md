@@ -20,9 +20,10 @@ Broadcasts don't cross Tailscale. Clients keep a saved address (tailnet hostname
 
 `GET /server`
 ```json
-{"name":"Ryan's PC","id":"c0ffee…","version":"0.1.0","features":["hls","direct","tsnet"],"remote":false}
+{"name":"Ryan's PC","id":"c0ffee…","version":"0.2.0","features":["direct","hls","tv","seek","tsnet"],"remote":false,
+ "tailscale":{"state":"Running","dns":"flex.tail1234.ts.net","ip":"100.101.102.103"}}
 ```
-`remote` is true when the server sees the request arriving over the tailnet (source in 100.64.0.0/10); clients should then default to the `remote` profile.
+`remote` is true when the request arrives over the tailnet (source in 100.64.0.0/10); `/play` then uses the `remote` profile even when a client asks for `ps5`. `tailscale` is present while the server is on the tailnet; clients remember `ip` for use away from home. The discovery reply carries the same address as `ts_ip`.
 
 ## Movies
 
@@ -93,11 +94,11 @@ or, when the file already fits the profile:
 | `ps5` | H.264 High@4.1, ≤1920×1080, ≤12 Mbps, 8-bit SDR (HDR tonemapped) | AAC 2.0 48 kHz | burned in when selected | PS5 client decodes on the CPU; this is what it handles comfortably |
 | `remote` | H.264, ≤1080p, ≤6 Mbps (720p/3 Mbps when the server is told the link is slow) | AAC 2.0 | burned in | sized to home upload bandwidth |
 
-If the source is already within a profile's limits the server remuxes (`-c:v copy`) instead of re-encoding; if the container is also fine it answers `direct`.
+If the source is already within a profile's limits the server remuxes (`-c:v copy`) instead of re-encoding; if the container is also fine it answers `direct`. A `direct` answer ignores `start`: the client seeks in the file itself. An `hls` session begins at `start` and cannot seek; clients restart it with a new `start`.
 
 ## Progress
 
-`PUT /movies/{id}/progress` body `{"position_s":1830,"duration_s":10210}` → `204`. Positions within the last 5 % mark the movie watched. Clients send this every ~10 s during playback and on stop.
+`PUT /movies/{id}/progress` body `{"position_s":1830,"duration_s":10210}` → `204`. Positions within the last 5 % mark the movie watched; positions under 30 s are stored as 0 (no resume point). Clients send this every ~10 s during playback and on stop.
 
 ## Library
 

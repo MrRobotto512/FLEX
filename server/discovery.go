@@ -11,8 +11,8 @@ import (
 const discoverMagic = "FLEX_DISCOVER"
 
 // runDiscovery answers LAN broadcasts so clients find the server without
-// configuration. `reply` is the JSON datagram to send back. Blocks until ctx ends.
-func runDiscovery(ctx context.Context, port int, reply []byte, log *slog.Logger) error {
+// configuration. `reply` builds the JSON datagram to send back. Blocks until ctx ends.
+func runDiscovery(ctx context.Context, port int, reply func() []byte, log *slog.Logger) error {
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: port})
 	if err != nil {
 		return err
@@ -41,7 +41,7 @@ func runDiscovery(ctx context.Context, port int, reply []byte, log *slog.Logger)
 		if !strings.HasPrefix(string(buf[:n]), discoverMagic) {
 			continue
 		}
-		if _, err := conn.WriteToUDP(reply, from); err != nil {
+		if _, err := conn.WriteToUDP(reply(), from); err != nil {
 			log.Warn("discovery reply", "to", from, "err", err)
 		}
 	}

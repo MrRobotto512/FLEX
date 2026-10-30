@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -19,26 +20,35 @@ import (
 // Settings is what the UI edits; it maps 1:1 onto server.Config and is
 // persisted as JSON in %APPDATA%\FLEX\settings.json.
 type Settings struct {
-	Name          string   `json:"name"`
-	Library       []string `json:"library"`
-	DataDir       string   `json:"data_dir"`
-	HTTPPort      int      `json:"http_port"`
-	DiscoveryPort int      `json:"discovery_port"`
-	TMDBKey       string   `json:"tmdb_key"`
-	FFmpeg        string   `json:"ffmpeg"`
-	FFprobe       string   `json:"ffprobe"`
-	Encoder       string   `json:"encoder"`
-	TSAuthKey     string   `json:"ts_authkey"`
-	TSHostname    string   `json:"ts_hostname"`
+	Name            string   `json:"name"`
+	Library         []string `json:"library"`
+	DataDir         string   `json:"data_dir"`
+	HTTPPort        int      `json:"http_port"`
+	DiscoveryPort   int      `json:"discovery_port"`
+	TMDBKey         string   `json:"tmdb_key"`
+	FFmpeg          string   `json:"ffmpeg"`
+	FFprobe         string   `json:"ffprobe"`
+	Encoder         string   `json:"encoder"`
+	TSEnabled       bool     `json:"ts_enabled"`
+	TSAuthKey       string   `json:"ts_authkey"`
+	TSHostname      string   `json:"ts_hostname"`
+	PS5KeepLauncher bool     `json:"ps5_keep_launcher"`
 }
 
 type Status struct {
 	Running   bool              `json:"running"`
 	Error     string            `json:"error,omitempty"`
 	LANAddrs  []string          `json:"lan_addrs"`
-	Tailscale bool              `json:"tailscale"`
-	Encoder   string            `json:"encoder"`
 	Scan      server.ScanStatus `json:"scan"`
+	Autostart bool              `json:"autostart"`
+	Version   string            `json:"version"`
+
+	TSEnabled    bool   `json:"ts_enabled"`
+	TSState      string `json:"ts_state"`
+	TSDNS        string `json:"ts_dns"`
+	TSIP         string `json:"ts_ip"`
+	TSNeedsLogin bool   `json:"ts_needs_login"`
+	TSError      string `json:"ts_error,omitempty"`
 }
 
 type App struct {
@@ -60,6 +70,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.settings = loadSettings()
 	a.startServer()
+	a.startTray()
 }
 
 func (a *App) shutdown(ctx context.Context) { a.stopServer() }
@@ -86,13 +97,38 @@ func (a *App) SaveSettings(s Settings) error {
 func (a *App) GetStatus() Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	st := Status{Running: a.srv != nil, Error: a.runErr, LANAddrs: lanAddrs(a.settings.HTTPPort)}
+	st := Status{
+		Running:   a.srv != nil,
+		Error:     a.runErr,
+		LANAddrs:  lanAddrs(a.settings.HTTPPort),
+		Autostart: autostartEnabled(),
+		Version:   server.Version,
+		TSEnabled: a.settings.TSEnabled || a.settings.TSAuthKey != "",
+		TSState:   "Off",
+	}
 	if a.srv != nil {
-		st.Tailscale = a.srv.TailscaleUp()
 		st.Scan = a.srv.ScanStatus()
+		ts := a.srv.TailscaleInfo()
+		st.TSState, st.TSDNS, st.TSIP, st.TSError = ts.State, ts.DNSName, ts.IP, ts.Error
+		st.TSNeedsLogin = ts.State == "NeedsLogin" && ts.AuthURL != ""
 	}
 	return st
 }
+
+// TailscaleSignIn opens the Tailscale login page for this server's node.
+func (a *App) TailscaleSignIn() {
+	a.mu.Lock()
+	srv := a.srv
+	a.mu.Unlock()
+	if srv == nil {
+		return
+	}
+	if url := srv.TailscaleInfo().AuthURL; url != "" {
+		runtime.BrowserOpenURL(a.ctx, url)
+	}
+}
+
+func (a *App) SetAutostart(on bool) error { return setAutostart(on) }
 
 func (a *App) PickFolder() (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "Add a movie folder"})
@@ -147,7 +183,8 @@ func (s Settings) config() server.Config {
 		Name: s.Name, Library: s.Library, DataDir: s.DataDir,
 		HTTPPort: s.HTTPPort, DiscoveryPort: s.DiscoveryPort, TMDBKey: s.TMDBKey,
 		FFmpeg: s.FFmpeg, FFprobe: s.FFprobe, Encoder: s.Encoder,
-		TSAuthKey: s.TSAuthKey, TSHostname: s.TSHostname,
+		TSEnabled: s.TSEnabled, TSAuthKey: s.TSAuthKey, TSHostname: s.TSHostname,
+		PS5KeepLauncher: s.PS5KeepLauncher,
 	}
 }
 
@@ -165,11 +202,12 @@ func defaultSettings() Settings {
 	return Settings{
 		Name: host, DataDir: filepath.Join(data, "FLEX", "data"),
 		HTTPPort: 8484, DiscoveryPort: 7555, Encoder: "auto", TSHostname: "flex",
+		PS5KeepLauncher: true,
 	}
 }
 
 func loadSettings() Settings {
-	s := defaultSettings()
+	s := defaultSettings() // fields missing from an older settings.json keep these defaults
 	b, err := os.ReadFile(settingsPath())
 	if err == nil {
 		json.Unmarshal(b, &s)
@@ -186,17 +224,20 @@ func saveSettings(s Settings) error {
 	return os.WriteFile(p, b, 0o600) // holds the TMDB key and Tailscale auth key
 }
 
-// lanAddrs lists the URLs a client on the same network can use.
+// lanAddrs lists the URLs a client on the same network can use, skipping
+// virtual adapters (WSL, Hyper-V, Bluetooth) that only confuse the list.
 func lanAddrs(port int) []string {
 	var out []string
 	ifaces, _ := net.Interfaces()
 	for _, i := range ifaces {
-		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
+		name := strings.ToLower(i.Name)
+		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 ||
+			strings.Contains(name, "vethernet") || strings.Contains(name, "bluetooth") || strings.Contains(name, "tailscale") {
 			continue
 		}
 		addrs, _ := i.Addrs()
 		for _, a := range addrs {
-			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
+			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && !ipn.IP.IsLinkLocalUnicast() {
 				out = append(out, fmt.Sprintf("http://%s:%d", ipn.IP, port))
 			}
 		}

@@ -26,10 +26,12 @@ type Server struct {
 	log     *slog.Logger
 	web     fs.FS // static UI, may be nil
 
+	ps5 *ps5Keeper
+
 	mu      sync.Mutex
 	folders []string
 	ctx     context.Context
-	tsUp    bool
+	ts      TSInfo
 }
 
 func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
@@ -57,7 +59,8 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 		}
 	}
 
-	s := &Server{cfg: cfg, db: db, id: id, log: log, web: web}
+	s := &Server{cfg: cfg, db: db, id: id, log: log, web: web, ts: TSInfo{State: "Off"}}
+	s.ps5 = newPS5Keeper(s)
 
 	s.folders = cfg.Library
 	if len(s.folders) == 0 {
@@ -96,11 +99,14 @@ func (s *Server) Run(ctx context.Context) error {
 
 	errc := make(chan error, 2)
 	go func() { errc <- httpSrv.ListenAndServe() }()
-	go func() { errc <- runDiscovery(ctx, s.cfg.DiscoveryPort, s.discoveryReply(), s.log) }()
+	go func() { errc <- runDiscovery(ctx, s.cfg.DiscoveryPort, s.discoveryReply, s.log) }()
 	go s.tc.Reap(ctx, 5*time.Minute)
+	if s.cfg.PS5KeepLauncher {
+		go s.ps5.run(ctx)
+	}
 	s.log.Info("FLEX listening", "http", s.cfg.HTTPPort, "name", s.cfg.Name, "id", s.id)
 
-	if s.cfg.TSAuthKey != "" {
+	if s.cfg.TSEnabled || s.cfg.TSAuthKey != "" {
 		ts, err := s.startTailscale(ctx, handler)
 		if err != nil {
 			s.log.Error("tailscale", "err", err)
@@ -152,13 +158,6 @@ func (s *Server) Scan() bool { return s.scanner.Start(s.bg(), s.Folders()) }
 
 func (s *Server) ScanStatus() ScanStatus { return s.scanner.Status() }
 
-// TailscaleUp reports whether the tsnet listener came up.
-func (s *Server) TailscaleUp() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.tsUp
-}
-
 // Config returns the configuration the server was started with.
 func (s *Server) Config() Config { return s.cfg }
 
@@ -171,9 +170,13 @@ func (s *Server) bg() context.Context {
 	return s.ctx
 }
 
+// discoveryReply is built per request so it carries the Tailscale address
+// once the node is up; consoles remember it for use away from home.
 func (s *Server) discoveryReply() []byte {
-	b, _ := json.Marshal(map[string]any{
-		"name": s.cfg.Name, "id": s.id, "port": s.cfg.HTTPPort, "version": Version,
-	})
+	reply := map[string]any{"name": s.cfg.Name, "id": s.id, "port": s.cfg.HTTPPort, "version": Version}
+	if ts := s.TailscaleInfo(); ts.State == "Running" && ts.IP != "" {
+		reply["ts_ip"] = ts.IP
+	}
+	b, _ := json.Marshal(reply)
 	return b
 }

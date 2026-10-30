@@ -24,8 +24,17 @@ type Config struct {
 	FFprobe string
 	Encoder string // auto | nvenc | qsv | amf | software
 
-	TSAuthKey  string // empty disables tsnet
+	// Remote access: TSEnabled joins the tailnet; without an auth key the
+	// node waits for an interactive sign-in (TailscaleInfo().AuthURL).
+	TSEnabled  bool
+	TSAuthKey  string
 	TSHostname string
+
+	// PS5KeepLauncher re-sends websrv (the homebrew launcher) to consoles
+	// that used FLEX once their elfldr is back after a reboot. PS5Hosts adds
+	// consoles by address in addition to the ones learned from requests.
+	PS5KeepLauncher bool
+	PS5Hosts        []string
 }
 
 // FromEnv reads FLEX_* variables. Call godotenv.Load first if you want .env.
@@ -41,7 +50,10 @@ func FromEnv() (Config, error) {
 		Encoder:       envOr("FLEX_ENCODER", "auto"),
 		TSAuthKey:     os.Getenv("FLEX_TS_AUTHKEY"),
 		TSHostname:    envOr("FLEX_TS_HOSTNAME", "flex"),
+
+		PS5KeepLauncher: envBool("FLEX_PS5_KEEP_LAUNCHER", true),
 	}
+	c.TSEnabled = envBool("FLEX_TS_ENABLE", false) || c.TSAuthKey != ""
 	sep := ":"
 	if runtime.GOOS == "windows" {
 		sep = ";"
@@ -51,7 +63,19 @@ func FromEnv() (Config, error) {
 			c.Library = append(c.Library, filepath.Clean(p))
 		}
 	}
+	for _, h := range strings.Split(os.Getenv("FLEX_PS5_HOSTS"), ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			c.PS5Hosts = append(c.PS5Hosts, h)
+		}
+	}
 	return c, c.Validate()
+}
+
+func envBool(key string, def bool) bool {
+	if v, err := strconv.ParseBool(os.Getenv(key)); err == nil {
+		return v
+	}
+	return def
 }
 
 func (c *Config) Validate() error {

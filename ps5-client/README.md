@@ -50,7 +50,13 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 | Episodes | Cross | play (resumes if partially watched) |
 | Episodes | Circle | back to the shows |
 | Player | Cross | pause / resume |
+| Player | D-pad left / right | back / forward 10 s (hold to repeat) |
+| Player | D-pad down / up | back / forward 60 s |
 | Player | Circle | stop (progress is saved) |
+
+Seeks add up: the jump happens 0.7 s after the last press, with a progress bar showing the target. Direct-play files seek in place; a transcoded movie restarts its server session at the new time (a second or two).
+
+Away from home the client falls back to the server's Tailscale address, which it learns while on the home network (second line of `/data/homebrew/FLEX/server.txt`).
 
 ## How it works
 

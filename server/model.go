@@ -151,11 +151,12 @@ type ScanStatus struct {
 }
 
 type ServerInfo struct {
-	Name     string   `json:"name"`
-	ID       string   `json:"id"`
-	Version  string   `json:"version"`
-	Features []string `json:"features"`
-	Remote   bool     `json:"remote"`
+	Name      string   `json:"name"`
+	ID        string   `json:"id"`
+	Version   string   `json:"version"`
+	Features  []string `json:"features"`
+	Remote    bool     `json:"remote"`
+	Tailscale *TSInfo  `json:"tailscale,omitempty"`
 }
 
-const Version = "0.1.0"
+const Version = "0.2.0"

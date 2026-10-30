@@ -33,6 +33,13 @@ Build order, each step produces something you can run.
    - [x] web UI: TV tab, episode list, play
    - [x] PS5: L1/R1 Movies/TV, episode list, play
    - [x] verified on the console with the real library (Bob's Burgers S09, TMDB metadata, playback, resume saved)
-6. **Later**
+6. **Comfort**
+   - [x] PS5: seeking (±10 s / ±60 s, progress OSD), letterboxing, direct-play resume without transcoding
+   - [x] PS5: remembers the server's Tailscale address; 3 s connect timeout
+   - [x] server: Tailscale sign-in from the desktop app, `remote` profile for tailnet clients
+   - [x] server: restarts websrv on known consoles after a PS5 reboot
+   - [x] desktop: tray icon, start with Windows, single instance, close-to-tray
+   - [ ] verified on hardware: seek, tray on the library PC, remote from a phone, reboot + rejailbreak
+7. **Later**
    - [ ] subtitles rendered client-side (SDL2_ttf) instead of burned in
    - [ ] PIN for LAN guests

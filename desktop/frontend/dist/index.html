@@ -4,31 +4,36 @@
 <meta charset="utf-8">
 <title>FLEX</title>
 <style>
-  :root { --bg:#0f1115; --panel:#181b22; --fg:#e8eaf0; --muted:#8a90a0; --accent:#5aa9ff; --bad:#ff6b6b; --ok:#5ad38a; }
+  :root { --bg:#0f1115; --panel:#181b22; --fg:#e8eaf0; --muted:#8a90a0; --accent:#5aa9ff; --bad:#ff6b6b; --ok:#5ad38a; --warn:#f0c060; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, sans-serif; padding:24px 32px; }
-  h1 { font-size:18px; letter-spacing:.2em; margin:0 0 16px; }
+  h1 { font-size:18px; letter-spacing:.2em; margin:0 0 4px; }
   h2 { font-size:13px; text-transform:uppercase; color:var(--muted); margin:24px 0 8px; }
   .row { display:flex; gap:12px; align-items:center; margin:6px 0; }
-  label { width:160px; color:var(--muted); }
+  label { width:160px; color:var(--muted); flex:none; }
+  label.check { width:auto; color:var(--fg); display:flex; gap:8px; align-items:center; }
   input, select, button { background:var(--panel); color:var(--fg); border:1px solid #2a2f3a; border-radius:6px; padding:7px 10px; font:inherit; }
-  input, select { flex:1; }
+  input[type=checkbox] { width:16px; height:16px; padding:0; accent-color: var(--accent); }
+  input:not([type=checkbox]), select { flex:1; }
   input:focus, select:focus { outline:none; border-color:var(--accent); }
   button { cursor:pointer; }
   button.primary { background:var(--accent); color:#000; border-color:var(--accent); font-weight:600; }
   ul { list-style:none; padding:0; margin:0; }
   li { display:flex; gap:8px; align-items:center; background:var(--panel); padding:6px 10px; border-radius:6px; margin:4px 0; }
   li span { flex:1; font-family: ui-monospace, monospace; }
-  .status { display:flex; gap:24px; flex-wrap:wrap; }
+  .status { display:flex; gap:12px; flex-wrap:wrap; }
   .pill { background:var(--panel); padding:6px 12px; border-radius:999px; }
-  .ok { color:var(--ok); } .bad { color:var(--bad); } .muted { color:var(--muted); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); } .muted { color:var(--muted); }
   code { font-family: ui-monospace, monospace; }
+  .note { color:var(--muted); font-size:13px; margin:2px 0 0; }
+  details summary { color:var(--muted); cursor:pointer; margin:6px 0; }
 </style>
 </head>
 <body>
 <h1>FLEX</h1>
+<p class="note">Closing this window keeps FLEX running in the tray. Use the tray icon's menu to quit.</p>
 
-<div class="status" id="status"></div>
+<div class="status" id="status" style="margin-top:12px"></div>
 
 <h2>Library</h2>
 <ul id="folders"></ul>
@@ -47,12 +52,22 @@
     <option value="auto">Auto-detect</option><option value="nvenc">NVIDIA NVENC</option>
     <option value="qsv">Intel QuickSync</option><option value="amf">AMD AMF</option><option value="software">Software (libx264)</option>
   </select></div>
-<div class="row"><label>FFmpeg path</label><input id="ffmpeg" placeholder="leave empty to use PATH"></div>
-<div class="row"><label>FFprobe path</label><input id="ffprobe" placeholder="leave empty to use PATH"></div>
+<div class="row"><label>FFmpeg path</label><input id="ffmpeg" placeholder="leave empty to use the bundled one or PATH"></div>
+<div class="row"><label>FFprobe path</label><input id="ffprobe" placeholder="leave empty to use the bundled one or PATH"></div>
+<div class="row"><label class="check"><input type="checkbox" id="autostart"> Start FLEX with Windows (in the tray)</label></div>
 
 <h2>Remote access (Tailscale)</h2>
-<div class="row"><label>Auth key</label><input id="ts_authkey" type="password" placeholder="tskey-auth-… (empty = off)"></div>
-<div class="row"><label>Hostname</label><input id="ts_hostname"></div>
+<div class="row"><label class="check"><input type="checkbox" id="ts_enabled"> Enable remote access through Tailscale</label></div>
+<p class="note">FLEX joins your tailnet as its own device. Phones and laptops with Tailscale can then open it from anywhere; a PS5 needs a travel router on your tailnet (see docs/remote.md).</p>
+<div class="row" id="ts_row"><span id="ts_status" class="muted">Off</span><button id="ts_signin" hidden>Sign in to Tailscale…</button></div>
+<div class="row"><label>Device name</label><input id="ts_hostname"></div>
+<details><summary>Advanced: auth key instead of signing in</summary>
+  <div class="row"><label>Auth key</label><input id="ts_authkey" type="password" placeholder="tskey-auth-… (optional)"></div>
+</details>
+
+<h2>PS5</h2>
+<div class="row"><label class="check"><input type="checkbox" id="ps5_keep_launcher"> Restart the Homebrew Launcher after the PS5 reboots</label></div>
+<p class="note">Payloads don't survive a console restart. When a PS5 that has used FLEX is jailbroken again (elfldr on port 9021) but its Homebrew Launcher (websrv) isn't running, FLEX sends websrv to it so the launcher tile works again.</p>
 
 <div class="row" style="margin-top:20px">
   <button class="primary" id="save">Save &amp; restart server</button>
@@ -63,11 +78,14 @@
 const App = () => window.go.main.App;
 let settings;
 const $ = id => document.getElementById(id);
-const fields = ['name','http_port','tmdb_key','encoder','ffmpeg','ffprobe','ts_authkey','ts_hostname'];
+const fields = ['name','http_port','tmdb_key','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher'];
 
 async function load() {
   settings = await App().GetSettings();
-  for (const f of fields) $(f).value = settings[f] ?? '';
+  for (const f of fields) {
+    if ($(f).type === 'checkbox') $(f).checked = !!settings[f];
+    else $(f).value = settings[f] ?? '';
+  }
   renderFolders();
   refresh();
 }
@@ -76,7 +94,8 @@ function renderFolders() {
   const ul = $('folders'); ul.innerHTML = '';
   (settings.library || []).forEach((p, i) => {
     const li = document.createElement('li');
-    li.innerHTML = `<span>${p}</span><button>Remove</button>`;
+    li.innerHTML = `<span></span><button>Remove</button>`;
+    li.querySelector('span').textContent = p;
     li.querySelector('button').onclick = () => { settings.library.splice(i, 1); renderFolders(); };
     ul.appendChild(li);
   });
@@ -86,22 +105,45 @@ function renderFolders() {
 async function refresh() {
   const st = await App().GetStatus();
   const pills = [];
-  pills.push(st.running ? '<span class="pill ok">● server running</span>' : `<span class="pill bad">● stopped ${st.error || ''}</span>`);
-  (st.lan_addrs || []).forEach(a => pills.push(`<span class="pill">LAN <code>${a}</code></span>`));
-  pills.push(`<span class="pill ${st.tailscale ? 'ok' : 'muted'}">Tailscale ${st.tailscale ? 'connected' : 'off'}</span>`);
-  if (st.scan) pills.push(`<span class="pill">${st.scan.scanning ? `scanning… ${st.scan.files_seen} files` : `${st.scan.movies} movies`}</span>`);
+  pills.push(st.running ? `<span class="pill ok">● server running</span>` : `<span class="pill bad">● stopped ${esc(st.error || '')}</span>`);
+  (st.lan_addrs || []).forEach(a => pills.push(`<span class="pill">LAN <code>${esc(a)}</code></span>`));
+  if (st.ts_state === 'Running') pills.push(`<span class="pill ok">Remote <code>http://${esc(st.ts_dns)}:${settings.http_port}</code></span>`);
+  if (st.scan) pills.push(`<span class="pill">${st.scan.scanning ? `scanning… ${st.scan.files_seen} files` : `${st.scan.movies} movies · ${st.scan.shows || 0} shows`}</span>`);
+  pills.push(`<span class="pill muted">v${esc(st.version)}</span>`);
   $('status').innerHTML = pills.join('');
+
+  $('autostart').checked = st.autostart;
+  let ts = 'Off', cls = 'muted';
+  if (st.ts_enabled) {
+    if (st.ts_state === 'Running') { ts = `Connected as ${st.ts_dns} (${st.ts_ip})`; cls = 'ok'; }
+    else if (st.ts_needs_login) { ts = 'Waiting for you to sign in to Tailscale'; cls = 'warn'; }
+    else if (st.ts_error) { ts = 'Error: ' + st.ts_error; cls = 'bad'; }
+    else ts = st.ts_state;
+  }
+  $('ts_status').textContent = ts;
+  $('ts_status').className = cls;
+  $('ts_signin').hidden = !st.ts_needs_login;
 }
 
 $('add').onclick = async () => { const p = await App().PickFolder(); if (p) { (settings.library ||= []).push(p); renderFolders(); } };
 $('scan').onclick = () => App().StartScan();
 $('open').onclick = () => App().OpenLibrary();
+$('ts_signin').onclick = () => App().TailscaleSignIn();
+$('autostart').onchange = async e => {
+  try { await App().SetAutostart(e.target.checked); } catch (err) { $('msg').textContent = 'Error: ' + err; }
+  refresh();
+};
 $('save').onclick = async () => {
-  for (const f of fields) settings[f] = f === 'http_port' ? +$(f).value : $(f).value;
+  for (const f of fields) {
+    if ($(f).type === 'checkbox') settings[f] = $(f).checked;
+    else settings[f] = f === 'http_port' ? +$(f).value : $(f).value;
+  }
   try { await App().SaveSettings(settings); $('msg').textContent = 'Saved.'; }
   catch (e) { $('msg').textContent = 'Error: ' + e; }
   refresh();
 };
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 load();
 setInterval(refresh, 2000);

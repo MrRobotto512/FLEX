@@ -38,7 +38,8 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 	audioOK := info.AudioCodec == "aac" && defaultAudio(mi, audio).Channels <= 2
 	containerOK := mi.Container == "mov" || mi.Container == "mp4"
 
-	if videoOK && audioOK && containerOK && sub < 0 && start == 0 {
+	// Direct play ignores start: the client seeks in the file itself.
+	if videoOK && audioOK && containerOK && sub < 0 {
 		info.Method = "direct"
 		info.URL = fileURL
 		return info, nil

@@ -44,20 +44,28 @@ func (s *Server) Handler() http.Handler {
 	if s.web != nil {
 		mux.Handle("/", http.FileServerFS(s.web))
 	}
-	return logging(s.log, cors(mux))
+	return logging(s.log, cors(s.notePS5(mux)))
+}
+
+// notePS5 lets the launcher keeper learn the consoles that use FLEX.
+func (s *Server) notePS5(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Flex-Client") == "ps5" {
+			s.ps5.note(r.RemoteAddr)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
-	features := []string{"direct", "hls", "tv"}
-	s.mu.Lock()
-	if s.tsUp {
+	features := []string{"direct", "hls", "tv", "seek"}
+	info := ServerInfo{Name: s.cfg.Name, ID: s.id, Version: Version, Remote: isTailnetAddr(r.RemoteAddr)}
+	if ts := s.TailscaleInfo(); ts.State == "Running" {
 		features = append(features, "tsnet")
+		info.Tailscale = &ts
 	}
-	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, ServerInfo{
-		Name: s.cfg.Name, ID: s.id, Version: Version, Features: features,
-		Remote: isTailnetAddr(r.RemoteAddr),
-	})
+	info.Features = features
+	writeJSON(w, http.StatusOK, info)
 }
 
 // ---------------------------------------------------------------- movies
@@ -183,15 +191,16 @@ func (s *Server) handlePlay(kind string) http.HandlerFunc {
 		}
 		q := r.URL.Query()
 		profile := q.Get("profile")
-		if profile == "" {
-			switch {
-			case r.Header.Get("X-Flex-Client") == "ps5":
-				profile = "ps5"
-			case isTailnetAddr(r.RemoteAddr):
-				profile = "remote"
-			default:
-				profile = "direct"
-			}
+		remote := isTailnetAddr(r.RemoteAddr)
+		switch {
+		case profile == "" && r.Header.Get("X-Flex-Client") == "ps5":
+			profile = "ps5"
+		case profile == "" && !remote:
+			profile = "direct"
+		}
+		// away from home the upload is the limit: same codecs, lower bitrate
+		if remote && (profile == "" || profile == "ps5") {
+			profile = "remote"
 		}
 		audio := intOr(q.Get("audio"), -1)
 		sub := intOr(q.Get("sub"), -1)
