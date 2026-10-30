@@ -12,6 +12,7 @@ typedef struct {
     int aspect;      /* ASPECT_* to start with */
     int upscaled;    /* the server is upscaling this stream (shown in the OSD) */
     int volume;      /* percent, 0..200 */
+    int picture[3];  /* PIC_*: saturation and contrast in percent (100 = as is), brightness -30..30 */
     int may_give_up; /* stop if the link can't keep up, so the caller asks for a stream it can carry */
     TTF_Font *font;  /* OSD text */
 } PlayOpts;
@@ -21,6 +22,9 @@ typedef struct {
  * screen and crops; STRETCH fills it and distorts. */
 enum { ASPECT_AUTO, ASPECT_16_9, ASPECT_4_3, ASPECT_235, ASPECT_ZOOM, ASPECT_STRETCH, ASPECT_COUNT };
 
+/* Picture adjustments (Options while playing), applied in the YUV->RGB step. */
+enum { PIC_SATURATION, PIC_BRIGHTNESS, PIC_CONTRAST, PIC_COUNT };
+
 typedef struct {
     double position; /* media time reached; -1 when the stream could not be opened */
     double seek_to;  /* >= 0: the user seeked in a non-seekable stream, restart it here */
@@ -28,6 +32,7 @@ typedef struct {
     int aspect;      /* ASPECT_* in use when playback stopped */
     int toggle_upscale; /* Triangle: restart at `position` with upscaling switched */
     int volume;      /* percent in use when playback stopped */
+    int picture[3];  /* PIC_* in use when playback stopped */
     int link_kbps;   /* how fast the stream came in while the reader was busy; 0 = not measured */
     int starved;     /* may_give_up: ran dry repeatedly; restart at `position` with a stream sized to the link */
 } PlayResult;
@@ -37,7 +42,8 @@ typedef struct {
  * sent the `ps5` profile (<=1080p H.264 + AAC).
  *
  * Controls: Cross pause, Circle stop, Square picture shape, Triangle
- * server upscaling on/off, L1/R1 volume -/+10 %, D-pad
+ * server upscaling on/off, L1/R1 volume -/+10 %, Options picture
+ * (saturation, brightness, contrast), D-pad
  * left/right -/+10 s, up/down +/-60 s (hold to repeat; the jump happens
  * 0.7 s after the last press so several presses add up). */
 PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o);

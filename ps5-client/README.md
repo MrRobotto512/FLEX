@@ -66,6 +66,7 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 | Player | Square | picture shape: Original → 16:9 → 4:3 → 2.35:1 → Zoom → Stretch (remembered per movie/episode) |
 | Player | Triangle | upscaling on/off: the server scales SD and 720p video to 1080p (Lanczos + light sharpening, deinterlaced) before sending it; restarts the stream where you are; remembered for everything |
 | Player | L1 / R1 | volume down / up in 10 % steps, 0–200 % (hold to repeat; above 100 % boosts quiet files); remembered for everything |
+| Player | Options | picture panel: Up/Down picks Saturation (0–200 %), Brightness (−30…+30) or Contrast (50–150 %), Left/Right changes it (hold to repeat), Square resets it, Options or Circle closes; applied in the decoder's colour conversion, so it costs nothing; remembered for everything (`picture.txt`) |
 | Player | Circle | stop (progress is saved) |
 
 Seeks add up: the jump happens 0.7 s after the last press, with a progress bar showing the target. Direct-play files seek in place; a transcoded movie restarts its server session at the new time (a second or two).

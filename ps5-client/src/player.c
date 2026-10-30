@@ -57,7 +57,14 @@ typedef struct {
     SDL_Texture *tex;
     int w, h;
 } OsdLine;
-enum { OSD_TITLE, OSD_TIME, OSD_STATE, OSD_PERF, OSD_LINES };
+enum { OSD_TITLE, OSD_TIME, OSD_STATE, OSD_PERF, OSD_PIC, OSD_PIC_END = OSD_PIC + PIC_COUNT, OSD_PIC_HINT = OSD_PIC_END,
+       OSD_LINES };
+
+/* the picture panel: name, range, step, neutral value */
+static const struct {
+    const char *name;
+    int min, max, step, neutral;
+} pic_def[PIC_COUNT] = {{"Saturation", 0, 200, 5, 100}, {"Brightness", -30, 30, 2, 0}, {"Contrast", 50, 150, 5, 100}};
 
 /* ---------- queues between the threads ---------- */
 
@@ -109,7 +116,9 @@ typedef struct {
     int laid_w, laid_h;                   /* what layout() last placed */
     SDL_atomic_t want_w, want_h;          /* size of the scaled frames (0: as decoded) */
     struct SwsContext *vsws;              /* video thread */
-    int vsws_key[7];
+    int vsws_key[10];
+    volatile int pic[PIC_COUNT];          /* picture adjustments, read by the video thread */
+    int adjusting, adj_row;               /* the picture panel is open; which line */
     int aspect;   /* ASPECT_* */
     SDL_Rect dst; /* where the picture goes on screen */
     SDL_AudioDeviceID dev;
@@ -436,7 +445,7 @@ static void trace(Player *p, const char *what) {
 }
 
 static int osd_visible(Player *p) {
-    return p->paused || p->buffering || p->pending >= 0 || SDL_GetTicks() < p->osd_until;
+    return p->paused || p->buffering || p->adjusting || p->pending >= 0 || SDL_GetTicks() < p->osd_until;
 }
 static void show_osd(Player *p) { p->osd_until = SDL_GetTicks() + OSD_MS; }
 static int seek_ready(Player *p) { return p->pending >= 0 && SDL_GetTicks() >= p->seek_at; }
@@ -506,6 +515,25 @@ static void draw_osd(Player *p) {
     osd_text(p, OSD_STATE, state, SCREEN_W / 2 - 300, SCREEN_H - 140, 0);
     osd_text(p, OSD_PERF, perf_text(p), SCREEN_W - 80, SCREEN_H - 50, 1);
 
+    if (p->adjusting) { /* the picture panel, top right */
+        SDL_Rect box = {SCREEN_W - 560, 60, 480, 70 + PIC_COUNT * 52};
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 190);
+        SDL_RenderFillRect(r, &box);
+        for (int i = 0; i < PIC_COUNT; i++) {
+            char line[64];
+            int v = p->pic[i];
+            if (i == PIC_BRIGHTNESS) snprintf(line, sizeof line, "%s   %+d", pic_def[i].name, v);
+            else snprintf(line, sizeof line, "%s   %d %%", pic_def[i].name, v);
+            if (i == p->adj_row) {
+                SDL_SetRenderDrawColor(r, 90, 169, 255, 255);
+                SDL_RenderFillRect(r, &(SDL_Rect){box.x, box.y + 14 + i * 52, 6, 40});
+            }
+            osd_text(p, OSD_PIC + i, line, box.x + 30, box.y + 18 + i * 52, 0);
+        }
+        osd_text(p, OSD_PIC_HINT, "Left/Right change  ·  Square resets  ·  Options closes", box.x + 30,
+                 box.y + 26 + PIC_COUNT * 52, 0);
+    }
+
     if (dur > 0) {
         int x = 80, y = SCREEN_H - 70, w = SCREEN_W - 160;
         double f = pos / dur;
@@ -565,6 +593,7 @@ static int key_button(SDL_Keycode k) {
     case SDLK_u: return SDL_CONTROLLER_BUTTON_Y;
     case SDLK_MINUS: return SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
     case SDLK_EQUALS: return SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+    case SDLK_p: return SDL_CONTROLLER_BUTTON_START;
     }
     return -1;
 }
@@ -638,9 +667,24 @@ static void change_volume(Player *p, int delta) {
     if (p->paused) redraw(p);
 }
 
-/* repeat_press acts on a button that repeats while held (seek, volume);
- * returns 0 for any other button. */
+/* change_picture steps the selected adjustment; the video thread rebuilds its
+ * converter for the next frames. */
+static void change_picture(Player *p, int dir) {
+    int i = p->adj_row, v = p->pic[i] + dir * pic_def[i].step;
+    if (v < pic_def[i].min) v = pic_def[i].min;
+    if (v > pic_def[i].max) v = pic_def[i].max;
+    p->pic[i] = v;
+    if (p->paused) redraw(p);
+}
+
+/* repeat_press acts on a button that repeats while held (seek, volume, a
+ * picture setting); returns 0 for any other button. */
 static int repeat_press(Player *p, int b) {
+    if (p->adjusting && (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {
+        change_picture(p, b == SDL_CONTROLLER_BUTTON_DPAD_LEFT ? -1 : 1);
+        return 1;
+    }
+    if (p->adjusting && (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN)) return 0;
     if (seek_delta(b) != 0) step_seek(p, seek_delta(b));
     else if (volume_delta(b) != 0) change_volume(p, volume_delta(b));
     else return 0;
@@ -659,9 +703,28 @@ static void handle_events(Player *p) {
             p->held = -1;
         if (b < 0) continue;
         show_osd(p);
+        if (p->adjusting) { /* the picture panel takes the D-pad, Square, Circle and Options */
+            if (b == SDL_CONTROLLER_BUTTON_START || b == SDL_CONTROLLER_BUTTON_B) {
+                p->adjusting = 0;
+                if (p->paused) redraw(p);
+                continue;
+            }
+            if (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+                p->adj_row = (p->adj_row + (b == SDL_CONTROLLER_BUTTON_DPAD_UP ? PIC_COUNT - 1 : 1)) % PIC_COUNT;
+                if (p->paused) redraw(p);
+                continue;
+            }
+            if (b == SDL_CONTROLLER_BUTTON_X) {
+                p->pic[p->adj_row] = pic_def[p->adj_row].neutral;
+                if (p->paused) redraw(p);
+                continue;
+            }
+        }
         if (repeat_press(p, b)) {
             p->held = b;
             p->next_repeat = SDL_GetTicks() + REPEAT_DELAY_MS;
+        } else if (b == SDL_CONTROLLER_BUTTON_START) {
+            p->adjusting = 1;
         } else if (b == SDL_CONTROLLER_BUTTON_B) {
             p->quit = 1;
         } else if (b == SDL_CONTROLLER_BUTTON_A) {
@@ -825,7 +888,8 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
     int w = SDL_AtomicGet(&p->want_w), h = SDL_AtomicGet(&p->want_h);
     if (w <= 0 || h <= 0) w = in->width, h = in->height; /* not laid out yet */
 
-    int key[7] = {in->width, in->height, in->format, w, h, matrix(in), full_range(in)};
+    int key[10] = {in->width, in->height, in->format, w, h, matrix(in), full_range(in),
+                   p->pic[PIC_SATURATION], p->pic[PIC_BRIGHTNESS], p->pic[PIC_CONTRAST]};
     if (!p->vsws || memcmp(key, p->vsws_key, sizeof key) != 0) {
         sws_freeContext(p->vsws);
         p->vsws = sws_alloc_context();
@@ -845,8 +909,11 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
             p->vsws = NULL;
             return in;
         }
+        /* the picture panel's settings ride along in the same conversion
+         * (16.16 fixed point; brightness as a percentage of full scale) */
         sws_setColorspaceDetails(p->vsws, sws_getCoefficients(matrix(in)), full_range(in),
-                                 sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+                                 sws_getCoefficients(SWS_CS_DEFAULT), 1, p->pic[PIC_BRIGHTNESS] * 65536 / 100,
+                                 p->pic[PIC_CONTRAST] * 65536 / 100, p->pic[PIC_SATURATION] * 65536 / 100);
         memcpy(p->vsws_key, key, sizeof key);
         static const char *names[] = {[SWS_CS_ITU709] = "BT.709", [SWS_CS_FCC] = "FCC", [SWS_CS_ITU601] = "BT.601",
                                       [SWS_CS_SMPTE240M] = "SMPTE 240M", [SWS_CS_BT2020] = "BT.2020"};
@@ -1192,6 +1259,10 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
                 .resync_audio = 1, .drop_before = -1e9, .sar = 1, .aspect = o->aspect, .volume = o->volume};
     if (p.aspect < 0 || p.aspect >= ASPECT_COUNT) p.aspect = ASPECT_AUTO;
     if (p.volume < 0 || p.volume > VOLUME_MAX) p.volume = 100;
+    for (int i = 0; i < PIC_COUNT; i++) {
+        int v = o->picture[i];
+        p.pic[i] = v >= pic_def[i].min && v <= pic_def[i].max && (v || i == PIC_BRIGHTNESS) ? v : pic_def[i].neutral;
+    }
     PlayResult res = {.position = -1, .seek_to = -1};
     pq_init(&p.vq);
     pq_init(&p.aq);
@@ -1287,6 +1358,7 @@ done:
     SDL_WaitThread(p.athread, NULL);
     res.aspect = p.aspect;
     res.volume = p.volume;
+    for (int i = 0; i < PIC_COUNT; i++) res.picture[i] = p.pic[i];
     if (p.dev) SDL_CloseAudioDevice(p.dev);
     free(p.ring);
     pq_destroy(&p.vq);

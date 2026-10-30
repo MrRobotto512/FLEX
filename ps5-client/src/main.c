@@ -34,6 +34,7 @@
 #define ASPECT_FILE APP_DIR "/aspect.txt"
 #define UPSCALE_FILE APP_DIR "/upscale.txt"
 #define VOLUME_FILE APP_DIR "/volume.txt"
+#define PICTURE_FILE APP_DIR "/picture.txt"
 #define LINK_FILE APP_DIR "/link.txt"
 
 /* What this player decodes itself (CPU, any container and audio FFmpeg
@@ -225,6 +226,25 @@ static void set_aspect(char kind, long id, int aspect) {
 /* Upscaling (Triangle while playing) and volume (L1/R1) are one setting for
  * everything, each kept in its own file. */
 static int g_upscale, g_volume = 100;
+
+/* Picture adjustments (Options while playing): saturation, brightness,
+ * contrast, one setting for everything, kept in picture.txt. */
+static int g_picture[PIC_COUNT] = {100, 0, 100};
+
+static void load_picture(void) {
+    FILE *f = fopen(PICTURE_FILE, "r");
+    if (!f) return;
+    int v[PIC_COUNT];
+    if (fscanf(f, "%d %d %d", &v[0], &v[1], &v[2]) == PIC_COUNT) memcpy(g_picture, v, sizeof v);
+    fclose(f);
+}
+
+static void save_picture(void) {
+    FILE *f = fopen(PICTURE_FILE, "w");
+    if (!f) return;
+    fprintf(f, "%d %d %d\n", g_picture[0], g_picture[1], g_picture[2]);
+    fclose(f);
+}
 
 /* How fast streams reach this console (kbit/s, 0 = not measured yet), kept
  * in link.txt and sent with /play so the server picks the best stream that
@@ -583,12 +603,17 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         PlayOpts o = {.url = url, .title = title, .offset = hls ? start : 0, .initial = hls ? 0 : start,
                       .duration = duration, .seekable = !hls, .aspect = aspect, .upscaled = upscaled,
                       .volume = g_volume, .may_give_up = hls ? step_downs < 2 : !no_direct, .font = g_small};
+        memcpy(o.picture, g_picture, sizeof o.picture);
         PlayResult r = player_play(ren, &o);
         if (!r.starved) note_link(r.link_kbps, !hls);
         aspect = r.aspect; /* carried across session restarts */
         if (r.volume != g_volume) {
             g_volume = r.volume;
             save_int(VOLUME_FILE, g_volume);
+        }
+        if (memcmp(r.picture, g_picture, sizeof g_picture) != 0) {
+            memcpy(g_picture, r.picture, sizeof g_picture);
+            save_picture();
         }
         fprintf(stderr, "FLEX: stopped at %.1fs%s\n", r.position, r.seek_to >= 0 ? " (seek)" : "");
 
@@ -1180,6 +1205,7 @@ int main(int argc, char **argv) {
     load_aspects();
     load_int(UPSCALE_FILE, &g_upscale);
     load_int(VOLUME_FILE, &g_volume);
+    load_picture();
     load_int(LINK_FILE, &g_link_kbps);
     if (getenv("FLEX_TEST_PATTERN")) test_pattern(ren);
     char status[256] = "Looking for a FLEX server…";
