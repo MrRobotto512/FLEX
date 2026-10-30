@@ -1,6 +1,10 @@
 package server
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -120,6 +124,29 @@ func TestHDRPipelines(t *testing.T) {
 	args = (&Transcoder{encoder: "h264_nvenc", hdrGPU: true}).args(r, t.TempDir())
 	if has(vf(args), "libplacebo") || !has(vf(args), "bwdif_cuda") {
 		t.Errorf("SDR 4K: %q", args)
+	}
+}
+
+// An encoder chosen in the settings that fails (NVENC on a GTX 10-series
+// card with ffmpeg 9) must not be used blindly.
+func TestDetectEncoderChosenButBroken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffmpeg is a shell script")
+	}
+	fake := filepath.Join(t.TempDir(), "ffmpeg")
+	script := "#!/bin/sh\ncase \"$*\" in *h264_nvenc*) echo '[h264_nvenc @ 0] The minimum required Nvidia driver for nvenc is 610.00 or newer' >&2; exit 1;; esac\nexit 0\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	enc, tests := DetectEncoder(context.Background(), fake, "nvenc")
+	if enc != "h264_qsv" {
+		t.Errorf("got %s; want the next encoder that works", enc)
+	}
+	if !strings.HasPrefix(tests["h264_nvenc"], "chosen in settings, but: The minimum required Nvidia driver") {
+		t.Errorf("the reason should be kept: %q", tests["h264_nvenc"])
+	}
+	if enc, _ := DetectEncoder(context.Background(), fake, "qsv"); enc != "h264_qsv" {
+		t.Errorf("a working choice is kept: %s", enc)
 	}
 }
 

@@ -81,7 +81,7 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 		log.Warn("no FLEX_TMDB_KEY set; movies will have no posters or descriptions")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // the settings' encoder, then the ladder
 	encoder, tests := DetectEncoder(ctx, cfg.FFmpeg, cfg.Encoder)
 	cancel()
 	s.encoderTests = tests

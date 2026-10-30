@@ -329,10 +329,11 @@ func (t *Transcoder) placeboFilter(w, h, maxH int, enc string) string {
 		"tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=%s", w, h, format)
 }
 
-// HDRTest tone maps half a second of synthetic HDR10 with libplacebo and
-// encodes it with enc. "ok" when this ffmpeg and GPU can do HDR on the GPU
-// (the build needs libplacebo and Vulkan: gyan.dev's full build has them,
-// the essentials build doesn't), else what went wrong.
+// HDRTest tone maps half a second of synthetic HDR10 with libplacebo. "ok"
+// when this ffmpeg and GPU can do HDR on the GPU (the build needs libplacebo
+// and Vulkan: gyan.dev's full build has them, the essentials build doesn't),
+// else what went wrong. Nothing is encoded, so a broken encoder (tested on
+// its own by DetectEncoder) can't hide whether libplacebo works.
 func HDRTest(ctx context.Context, ffmpeg, enc string) string {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -341,10 +342,7 @@ func HDRTest(ctx context.Context, ffmpeg, enc string) string {
 		"-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk",
 		"-f", "lavfi", "-i", "testsrc2=s=1280x720:d=0.5,format=yuv420p10le," +
 			"setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
-		"-vf", t.placeboFilter(1280, 720, 360, enc), "-c:v", enc}
-	if enc == "h264_mf" {
-		args = append(args, "-hw_encoding", "1")
-	}
+		"-vf", t.placeboFilter(1280, 720, 360, enc)}
 	out, err := exec.CommandContext(ctx, ffmpeg, append(args, "-f", "null", "-")...).CombinedOutput()
 	if err == nil {
 		return "ok"
@@ -472,16 +470,29 @@ func (t *Transcoder) Reap(ctx context.Context, idle time.Duration) {
 // libx264 shows why (no such GPU, driver too old, ...).
 func DetectEncoder(ctx context.Context, ffmpeg, pref string) (string, map[string]string) {
 	named := map[string]string{"nvenc": "h264_nvenc", "qsv": "h264_qsv", "amf": "h264_amf", "mf": "h264_mf", "software": "libx264"}
+	tests := map[string]string{}
 	if enc, ok := named[pref]; ok && pref != "auto" {
-		return enc, map[string]string{enc: "chosen in settings"}
+		// the settings' choice is tried first, but not trusted blindly: a GTX
+		// 10-series card set to NVENC fails on every job once ffmpeg needs a
+		// newer driver than the card gets, and each job then fell back to the CPU
+		if enc == "libx264" {
+			return enc, map[string]string{enc: "chosen in settings"}
+		}
+		msg := encoderTest(ctx, ffmpeg, enc)
+		if msg == "ok" {
+			return enc, map[string]string{enc: "ok (chosen in settings)"}
+		}
+		tests[enc] = "chosen in settings, but: " + msg
 	}
 	ladder := []string{"h264_nvenc", "h264_qsv", "h264_amf"}
 	if runtime.GOOS == "windows" {
 		// last resort before the CPU: any GPU whose driver ships an encoder
 		ladder = append(ladder, "h264_mf")
 	}
-	tests := map[string]string{}
 	for _, enc := range ladder {
+		if _, tried := tests[enc]; tried {
+			continue
+		}
 		msg := encoderTest(ctx, ffmpeg, enc)
 		tests[enc] = msg
 		if msg == "ok" {
