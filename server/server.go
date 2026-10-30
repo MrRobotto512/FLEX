@@ -88,6 +88,14 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 	s.gpus = detectGPUs()
 	log.Info("video encoder", "encoder", encoder, "gpus", s.gpus, "tests", tests)
 	s.tc = NewTranscoder(cfg.FFmpeg, encoder, cfg.TranscodeDir(), log)
+	// HDR tone mapping on the GPU (libplacebo) when this ffmpeg and card can;
+	// otherwise the CPU does it, which is slow for 4K
+	ctx, cancel = context.WithTimeout(context.Background(), 25*time.Second)
+	hdr := HDRTest(ctx, cfg.FFmpeg, encoder)
+	cancel()
+	tests["hdr_libplacebo"] = hdr
+	s.tc.SetHDRGPU(hdr == "ok")
+	log.Info("HDR tone mapping", "on", s.tc.HDRTonemap(), "test", hdr)
 	s.scanner = NewScanner(cfg, db, s.tmdb, log)
 	return s, nil
 }

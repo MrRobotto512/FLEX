@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Real ffmpeg 9.0 output from failed encoder tests.
 func TestFFmpegError(t *testing.T) {
@@ -72,6 +75,60 @@ func TestUpscaleBitrateCap(t *testing.T) {
 	r.Profile = profiles["remote"]
 	if a := tc.videoCodecArgs(r); !contains(a, "6000000") {
 		t.Errorf("remote profile is already below the cap: %q", a)
+	}
+}
+
+func TestHDRPipelines(t *testing.T) {
+	uhd := &MediaInfo{Video: VideoInfo{Codec: "hevc", Width: 3840, Height: 2160, BitDepth: 10, HDR: "hdr10"}}
+	r := transcodeRequest{Path: "tenet.mkv", Media: uhd, Profile: profiles["ps5"], Audio: -1, Sub: -1}
+	vf := func(args []string) string {
+		for i, a := range args {
+			if a == "-vf" {
+				return args[i+1]
+			}
+		}
+		return ""
+	}
+	has := func(s, sub string) bool { return strings.Contains(s, sub) }
+
+	// libplacebo works: one GPU pass, Vulkan set up before the input
+	tc := &Transcoder{encoder: "h264_nvenc", hdrGPU: true}
+	args := tc.args(r, t.TempDir())
+	if !contains(args, "vulkan=vk") || !has(vf(args), "libplacebo=w=1920:h=1080") || !has(vf(args), "tonemapping=bt.2390") ||
+		has(vf(args), "zscale") || !contains(args, "h264_nvenc") {
+		t.Errorf("HDR on the GPU: %q", args)
+	}
+
+	// no libplacebo, NVIDIA: CUDA decodes and shrinks, the CPU tone maps 1080p
+	tc = &Transcoder{encoder: "h264_nvenc"}
+	args = tc.args(r, t.TempDir())
+	if !contains(args, "cuda") || !has(vf(args), "scale_cuda=1920:1080:format=p010le,hwdownload") ||
+		!has(vf(args), "tonemap=hable") || has(vf(args), "bwdif") {
+		t.Errorf("HDR with CUDA scaling: %q", args)
+	}
+
+	// the retry after a GPU failure: everything on the CPU
+	r.NoGPU = true
+	args = tc.args(r, t.TempDir())
+	if contains(args, "vulkan=vk") || has(vf(args), "scale_cuda") || !has(vf(args), "zscale") {
+		t.Errorf("HDR CPU retry: %q", args)
+	}
+
+	// SDR keeps the all-CUDA path
+	r.NoGPU = false
+	r.Media = &MediaInfo{Video: VideoInfo{Codec: "hevc", Width: 3840, Height: 2160, BitDepth: 10}}
+	args = (&Transcoder{encoder: "h264_nvenc", hdrGPU: true}).args(r, t.TempDir())
+	if has(vf(args), "libplacebo") || !has(vf(args), "bwdif_cuda") {
+		t.Errorf("SDR 4K: %q", args)
+	}
+}
+
+func TestFitHeight(t *testing.T) {
+	cases := [][4]int{{3840, 2160, 1920, 1080}, {3840, 1600, 2592, 1080}, {1920, 800, 1920, 800}, {3836, 1600, 2590, 1080}}
+	for _, c := range cases {
+		if w, h := fitHeight(c[0], c[1], 1080); w != c[2] || h != c[3] {
+			t.Errorf("fitHeight(%d, %d) = %dx%d; want %dx%d", c[0], c[1], w, h, c[2], c[3])
+		}
 	}
 }
 

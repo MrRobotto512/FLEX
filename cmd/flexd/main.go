@@ -35,7 +35,7 @@ func main() {
 	}
 	// first run on a Windows PC without FFmpeg: fetch it (checked copy) first
 	if c := cfg; c.Validate() == nil && !c.FFmpegAvailable() && server.CanDownloadFFmpeg() && cfg.FFmpeg == "" {
-		log.Info("ffmpeg not found, downloading it (about 115 MB, once)", "to", cfg.DataDir)
+		log.Info("ffmpeg not found, downloading it (about 260 MB, once)", "to", cfg.DataDir)
 		last := -1
 		err := server.EnsureFFmpeg(context.Background(), cfg.DataDir, func(done, total int64) {
 			if pct := int(done * 100 / max(total, 1)); pct/10 != last/10 {

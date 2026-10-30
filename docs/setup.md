@@ -3,7 +3,7 @@
 ## The PC with the movies (Windows)
 
 1. Download `FLEX.exe` from the [latest release](https://github.com/MrRobotto512/FLEX/releases/latest) and put it in a folder of its own, e.g. `C:\FLEX`.
-2. Run it. On the first start FLEX downloads FFmpeg (about 115 MB, once; the window shows the progress) and then starts the server. If `ffmpeg.exe` and `ffprobe.exe` are already next to `FLEX.exe`, those are used instead.
+2. Run it. On the first start FLEX downloads FFmpeg (about 260 MB, once; the window shows the progress) and then starts the server. If `ffmpeg.exe` and `ffprobe.exe` are already next to `FLEX.exe`, those are used instead.
 3. In the window:
    - **Add movie folder…** for movies, **Add TV folder…** for TV shows (one subfolder per show; season folders optional). Don't list a TV folder as a movie folder too.
    - Paste your TMDB API key ([themoviedb.org/settings/api](https://www.themoviedb.org/settings/api)) for posters and descriptions.
