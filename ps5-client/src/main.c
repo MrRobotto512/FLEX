@@ -23,6 +23,7 @@
 #define FONT_PATH APP_DIR "/assets/DejaVuSans.ttf"
 #define ASPECT_FILE APP_DIR "/aspect.txt"
 #define UPSCALE_FILE APP_DIR "/upscale.txt"
+#define VOLUME_FILE APP_DIR "/volume.txt"
 #define SCREEN_W 1920
 #define SCREEN_H 1080
 
@@ -195,20 +196,22 @@ static void set_aspect(char kind, long id, int aspect) {
     fclose(f);
 }
 
-/* Upscaling (Triangle while playing) is one switch for everything. */
-static int g_upscale;
+/* Upscaling (Triangle while playing) and volume (L1/R1) are one setting for
+ * everything, each kept in its own file. */
+static int g_upscale, g_volume = 100;
 
-static void load_upscale(void) {
-    FILE *f = fopen(UPSCALE_FILE, "r");
+static void load_int(const char *path, int *v) {
+    FILE *f = fopen(path, "r");
     if (!f) return;
-    if (fscanf(f, "%d", &g_upscale) != 1) g_upscale = 0;
+    int n;
+    if (fscanf(f, "%d", &n) == 1) *v = n;
     fclose(f);
 }
 
-static void save_upscale(void) {
-    FILE *f = fopen(UPSCALE_FILE, "w");
+static void save_int(const char *path, int v) {
+    FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "%d\n", g_upscale);
+    fprintf(f, "%d\n", v);
     fclose(f);
 }
 
@@ -404,9 +407,13 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
 
         PlayOpts o = {.url = url, .title = title, .offset = hls ? start : 0, .initial = hls ? 0 : start,
                       .duration = duration, .seekable = !hls, .aspect = aspect, .upscaled = upscaled,
-                      .font = g_small};
+                      .volume = g_volume, .font = g_small};
         PlayResult r = player_play(ren, &o);
         aspect = r.aspect; /* carried across session restarts */
+        if (r.volume != g_volume) {
+            g_volume = r.volume;
+            save_int(VOLUME_FILE, g_volume);
+        }
         fprintf(stderr, "FLEX: stopped at %.1fs%s\n", r.position, r.seek_to >= 0 ? " (seek)" : "");
 
         if (hls && rel) {
@@ -420,7 +427,7 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         if (r.position >= 0) position = r.position;
         if (r.toggle_upscale) { /* restart where we are with the other setting */
             g_upscale = !g_upscale;
-            save_upscale();
+            save_int(UPSCALE_FILE, g_upscale);
             start = r.position > 0 ? r.position : start;
             continue;
         }
@@ -714,7 +721,8 @@ int main(int argc, char **argv) {
     }
 
     load_aspects();
-    load_upscale();
+    load_int(UPSCALE_FILE, &g_upscale);
+    load_int(VOLUME_FILE, &g_volume);
     char status[256] = "Looking for a FLEX server…";
     draw_grid(ren, KIND_MOVIE, NULL, 0, 0, 0, status);
     fprintf(stderr, "FLEX: first frame presented\n");

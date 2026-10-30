@@ -268,8 +268,16 @@ func (t *Transcoder) encoderFor(r transcodeRequest) string {
 	return t.encoder
 }
 
+// upscaleMaxBitrate caps upscaled streams: an SD picture blown up to 1080p
+// has no fine detail to spend 12 Mbit/s on, and every bit is decoded by the
+// PS5's CPU.
+const upscaleMaxBitrate = 8_000_000
+
 func (t *Transcoder) videoCodecArgs(r transcodeRequest) []string {
 	p := r.Profile
+	if r.Upscale && p.MaxBitrate > upscaleMaxBitrate {
+		p.MaxBitrate = upscaleMaxBitrate
+	}
 	br := fmt.Sprintf("%d", p.MaxBitrate)
 	rate := []string{"-b:v", br, "-maxrate", br, "-bufsize", fmt.Sprintf("%d", p.MaxBitrate*2),
 		"-g", "96", "-keyint_min", "96"}

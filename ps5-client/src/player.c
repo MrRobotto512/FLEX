@@ -2,23 +2,33 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/cpu.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Single-threaded demux/decode loop: audio frames are converted to S16
- * stereo and queued into SDL; video frames wait until the clock (audio, or
- * wall time for silent files) reaches their pts, then go to a YUV texture
- * drawn letterboxed. Seeking in direct files uses avformat_seek_file;
- * transcoded HLS sessions are not seekable, so the caller restarts them. */
+ * stereo and put in a ring the audio device drains; video frames wait until
+ * the clock (audio, or wall time for silent files) reaches their pts, then go
+ * to a YUV texture drawn letterboxed. Frames that are already late are
+ * decoded but not drawn, so a picture too heavy for the CPU drops frames
+ * instead of dragging the sound along. Seeking in direct files uses
+ * avformat_seek_file; transcoded HLS sessions are not seekable, so the caller
+ * restarts them. */
 
 #define AUDIO_RATE 48000
 #define AUDIO_CH 2
 #define BYTES_PER_SEC (AUDIO_RATE * AUDIO_CH * 2)
 #define MAX_QUEUED_AUDIO (BYTES_PER_SEC) /* keep ~1 s buffered */
+#define RING_BYTES (2 * BYTES_PER_SEC)
+#define VOLUME_STEP 10   /* percent */
+#define VOLUME_MAX 200   /* quiet rips (5.1 folded to stereo) need more than 100 */
+#define LATE_DROP_S 0.08 /* a frame this far behind the clock is skipped */
+#define MAX_DROPS_IN_ROW 6
 #define SCREEN_W 1920
 #define SCREEN_H 1080
 #define SEEK_COMMIT_MS 700
@@ -28,6 +38,14 @@
 #define MAX_STASH 600 /* video packets held back while waiting for audio after a seek */
 
 static const char *aspect_names[ASPECT_COUNT] = {"Original", "16:9", "4:3", "2.35:1", "Zoom", "Stretch"};
+
+/* OSD text is rendered once per change, not once per frame */
+typedef struct {
+    char text[160];
+    SDL_Texture *tex;
+    int w, h;
+} OsdLine;
+enum { OSD_TITLE, OSD_TIME, OSD_STATE, OSD_PERF, OSD_LINES };
 
 typedef struct {
     const PlayOpts *o;
@@ -44,6 +62,13 @@ typedef struct {
     int aspect;   /* ASPECT_* */
     SDL_Rect dst; /* where the picture goes on screen */
     SDL_AudioDeviceID dev;
+
+    /* Decoded audio waits in a ring the device callback drains (the callback
+     * runs with the device locked), so a volume change applies to what plays
+     * next rather than to audio queued a second earlier. */
+    Uint8 *ring;
+    int ring_head, ring_fill;
+    int volume; /* percent */
 
     double audio_written; /* stream time at the end of the queued audio */
     int resync_audio;     /* the next audio frame sets audio_written */
@@ -69,13 +94,89 @@ typedef struct {
     int held;
     Uint32 next_repeat;
     Uint32 osd_until;
+    OsdLine osd[OSD_LINES];
+
+    /* how playback keeps up, shown on the OSD */
+    double decode_acc;          /* ms spent decoding since the last frame came out */
+    double decode_ms, draw_ms;  /* moving averages per frame */
+    int dropped, drops_in_row;
+    Uint32 drop_window;         /* start of the 2 s window counting recent drops */
+    int drop_count, fast_decode;
+    char perf[160];
+    Uint32 perf_next;
 } Player;
 
 static double now_s(void) { return SDL_GetTicks() / 1000.0; }
 
+static double ms_since(Uint64 t0) {
+    return (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+}
+
+static void average(double *avg, double v) { *avg = *avg > 0 ? *avg * 0.9 + v * 0.1 : v; }
+
+/* ---------- audio ring ---------- */
+
+static void scale_s16(Sint16 *dst, const Sint16 *src, int n, int volume) {
+    if (volume == 100) {
+        memcpy(dst, src, (size_t)n * 2);
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        int v = src[i] * volume / 100;
+        dst[i] = (Sint16)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+    }
+}
+
+static void audio_cb(void *userdata, Uint8 *out, int len) {
+    Player *p = userdata;
+    int n = len < p->ring_fill ? len : p->ring_fill;
+    for (int done = 0; done < n;) {
+        int chunk = RING_BYTES - p->ring_head;
+        if (chunk > n - done) chunk = n - done;
+        scale_s16((Sint16 *)(out + done), (const Sint16 *)(p->ring + p->ring_head), chunk / 2, p->volume);
+        p->ring_head = (p->ring_head + chunk) % RING_BYTES;
+        done += chunk;
+    }
+    p->ring_fill -= n;
+    if (n < len) memset(out + n, 0, (size_t)(len - n)); /* ran dry: silence */
+}
+
+/* audio_write adds S16 stereo to the ring; returns the bytes taken. */
+static int audio_write(Player *p, const Uint8 *buf, int len) {
+    SDL_LockAudioDevice(p->dev);
+    int space = RING_BYTES - p->ring_fill;
+    if (len > space) len = space & ~3;
+    int tail = (p->ring_head + p->ring_fill) % RING_BYTES;
+    for (int done = 0; done < len;) {
+        int chunk = RING_BYTES - tail;
+        if (chunk > len - done) chunk = len - done;
+        memcpy(p->ring + tail, buf + done, (size_t)chunk);
+        tail = (tail + chunk) % RING_BYTES;
+        done += chunk;
+    }
+    p->ring_fill += len;
+    SDL_UnlockAudioDevice(p->dev);
+    return len;
+}
+
+static int audio_queued(Player *p) {
+    if (!p->dev) return 0;
+    SDL_LockAudioDevice(p->dev);
+    int n = p->ring_fill;
+    SDL_UnlockAudioDevice(p->dev);
+    return n;
+}
+
+static void audio_clear(Player *p) {
+    if (!p->dev) return;
+    SDL_LockAudioDevice(p->dev);
+    p->ring_fill = 0;
+    SDL_UnlockAudioDevice(p->dev);
+}
+
 static double clock_s(Player *p) {
     if (p->adec && p->dev && !p->wall_fallback)
-        return p->audio_written - (double)SDL_GetQueuedAudioSize(p->dev) / BYTES_PER_SEC;
+        return p->audio_written - (double)audio_queued(p) / BYTES_PER_SEC;
     return now_s() - p->wall_base;
 }
 
@@ -93,8 +194,8 @@ static void trace(Player *p, const char *what) {
     if (on < 0) on = getenv("FLEX_PLAYER_TRACE") != NULL;
     if (!on || SDL_GetTicks() < next) return;
     next = SDL_GetTicks() + 1000;
-    fprintf(stderr, "trace: %s pts=%.2f clock=%.2f audio_written=%.2f queued=%u\n", what, p->last_pts, clock_s(p),
-            p->audio_written, p->dev ? SDL_GetQueuedAudioSize(p->dev) : 0);
+    fprintf(stderr, "trace: %s pts=%.2f clock=%.2f audio_written=%.2f queued=%d decode=%.1fms draw=%.1fms dropped=%d\n",
+            what, p->last_pts, clock_s(p), p->audio_written, audio_queued(p), p->decode_ms, p->draw_ms, p->dropped);
 }
 
 static int osd_visible(Player *p) { return p->paused || p->pending >= 0 || SDL_GetTicks() < p->osd_until; }
@@ -109,17 +210,34 @@ static void fmt_time(char *b, size_t n, double s) {
     else snprintf(b, n, "%d:%02d", t / 60, t % 60);
 }
 
-static void osd_text(Player *p, const char *text, int x, int y, int right_align) {
+static void osd_text(Player *p, int slot, const char *text, int x, int y, int right_align) {
+    OsdLine *l = &p->osd[slot];
     if (!p->o->font || !text[0]) return;
-    SDL_Surface *s = TTF_RenderUTF8_Blended(p->o->font, text, (SDL_Color){232, 234, 240, 255});
-    if (!s) return;
-    SDL_Texture *t = SDL_CreateTextureFromSurface(p->ren, s);
-    if (t) {
-        SDL_Rect r = {right_align ? x - s->w : x, y, s->w, s->h};
-        SDL_RenderCopy(p->ren, t, NULL, &r);
-        SDL_DestroyTexture(t);
+    if (!l->tex || strcmp(l->text, text) != 0) {
+        if (l->tex) SDL_DestroyTexture(l->tex);
+        l->tex = NULL;
+        snprintf(l->text, sizeof l->text, "%s", text);
+        SDL_Surface *s = TTF_RenderUTF8_Blended(p->o->font, text, (SDL_Color){232, 234, 240, 255});
+        if (!s) return;
+        l->tex = SDL_CreateTextureFromSurface(p->ren, s);
+        l->w = s->w;
+        l->h = s->h;
+        SDL_FreeSurface(s);
+        if (!l->tex) return;
     }
-    SDL_FreeSurface(s);
+    SDL_RenderCopy(p->ren, l->tex, NULL, &(SDL_Rect){right_align ? x - l->w : x, y, l->w, l->h});
+}
+
+/* perf_text sums up how playback keeps up; refreshed once a second so the
+ * OSD isn't re-rendered every frame. */
+static const char *perf_text(Player *p) {
+    if (!p->perf[0] || SDL_GetTicks() >= p->perf_next) {
+        p->perf_next = SDL_GetTicks() + 1000;
+        snprintf(p->perf, sizeof p->perf, "%dx%d  ·  decode %.0f ms  ·  draw %.0f ms  ·  %d dropped  ·  %d threads%s",
+                 p->tex_w, p->tex_h, p->decode_ms, p->draw_ms, p->dropped, p->vdec ? p->vdec->thread_count : 0,
+                 p->fast_decode ? "  ·  fast decode" : "");
+    }
+    return p->perf;
 }
 
 static void draw_osd(Player *p) {
@@ -134,12 +252,13 @@ static void draw_osd(Player *p) {
     fmt_time(now, sizeof now, p->pending >= 0 ? p->pending : pos);
     fmt_time(total, sizeof total, dur);
     snprintf(line, sizeof line, "%s%s / %s", p->pending >= 0 ? "Seek to " : "", now, total);
-    osd_text(p, p->o->title ? p->o->title : "", 80, SCREEN_H - 140, 0);
-    osd_text(p, line, SCREEN_W - 80, SCREEN_H - 140, 1);
-    char shape[128];
-    snprintf(shape, sizeof shape, "%s%s  ·  Upscale %s  ·  %dx%d", p->paused ? "Paused  ·  " : "",
-             aspect_names[p->aspect], p->o->upscaled ? "on" : "off", p->tex_w, p->tex_h);
-    osd_text(p, shape, SCREEN_W / 2 - 300, SCREEN_H - 140, 0);
+    osd_text(p, OSD_TITLE, p->o->title ? p->o->title : "", 80, SCREEN_H - 140, 0);
+    osd_text(p, OSD_TIME, line, SCREEN_W - 80, SCREEN_H - 140, 1);
+    char state[128];
+    snprintf(state, sizeof state, "%s%s  ·  Upscale %s  ·  Volume %d%%", p->paused ? "Paused  ·  " : "",
+             aspect_names[p->aspect], p->o->upscaled ? "on" : "off", p->volume);
+    osd_text(p, OSD_STATE, state, SCREEN_W / 2 - 300, SCREEN_H - 140, 0);
+    osd_text(p, OSD_PERF, perf_text(p), SCREEN_W - 80, SCREEN_H - 50, 1);
 
     if (dur > 0) {
         int x = 80, y = SCREEN_H - 70, w = SCREEN_W - 160;
@@ -180,6 +299,14 @@ static double seek_delta(int button) {
     return 0;
 }
 
+static int volume_delta(int button) {
+    switch (button) {
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return -VOLUME_STEP;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return VOLUME_STEP;
+    }
+    return 0;
+}
+
 static int key_button(SDL_Keycode k) {
     switch (k) {
     case SDLK_LEFT: return SDL_CONTROLLER_BUTTON_DPAD_LEFT;
@@ -190,6 +317,8 @@ static int key_button(SDL_Keycode k) {
     case SDLK_ESCAPE: return SDL_CONTROLLER_BUTTON_B;
     case SDLK_TAB: return SDL_CONTROLLER_BUTTON_X;
     case SDLK_u: return SDL_CONTROLLER_BUTTON_Y;
+    case SDLK_MINUS: return SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+    case SDLK_EQUALS: return SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
     }
     return -1;
 }
@@ -228,6 +357,26 @@ static void step_seek(Player *p, double delta) {
     show_osd(p);
 }
 
+static void change_volume(Player *p, int delta) {
+    int v = p->volume + delta;
+    if (v < 0) v = 0;
+    if (v > VOLUME_MAX) v = VOLUME_MAX;
+    if (p->dev) SDL_LockAudioDevice(p->dev);
+    p->volume = v;
+    if (p->dev) SDL_UnlockAudioDevice(p->dev);
+    show_osd(p);
+    if (p->paused) redraw(p);
+}
+
+/* repeat_press acts on a button that repeats while held (seek, volume);
+ * returns 0 for any other button. */
+static int repeat_press(Player *p, int b) {
+    if (seek_delta(b) != 0) step_seek(p, seek_delta(b));
+    else if (volume_delta(b) != 0) change_volume(p, volume_delta(b));
+    else return 0;
+    return 1;
+}
+
 static void handle_events(Player *p) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -240,8 +389,7 @@ static void handle_events(Player *p) {
             p->held = -1;
         if (b < 0) continue;
         show_osd(p);
-        if (seek_delta(b) != 0) {
-            step_seek(p, seek_delta(b));
+        if (repeat_press(p, b)) {
             p->held = b;
             p->next_repeat = SDL_GetTicks() + REPEAT_DELAY_MS;
         } else if (b == SDL_CONTROLLER_BUTTON_B) {
@@ -258,7 +406,7 @@ static void handle_events(Player *p) {
         }
     }
     if (p->held >= 0 && SDL_GetTicks() >= p->next_repeat) {
-        step_seek(p, seek_delta(p->held));
+        repeat_press(p, p->held);
         p->next_repeat = SDL_GetTicks() + REPEAT_RATE_MS;
     }
 }
@@ -304,7 +452,7 @@ static void commit_seek(Player *p) {
     }
     avcodec_flush_buffers(p->vdec);
     if (p->adec) avcodec_flush_buffers(p->adec);
-    if (p->dev) SDL_ClearQueuedAudio(p->dev);
+    audio_clear(p);
     drop_stash(p);
     p->priming = p->adec != NULL;
     p->wall_fallback = 0;
@@ -325,7 +473,8 @@ static int open_decoder(AVFormatContext *fmt, enum AVMediaType type, AVCodecCont
     if (idx < 0) return -1;
     AVCodecContext *c = avcodec_alloc_context3(codec);
     avcodec_parameters_to_context(c, fmt->streams[idx]->codecpar);
-    c->thread_count = 0; /* let FFmpeg use all cores */
+    /* all cores; if FFmpeg can't count the PS5's, still use several */
+    c->thread_count = av_cpu_count() > 1 ? 0 : 6;
     c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
     if (avcodec_open2(c, codec, NULL) < 0) {
         avcodec_free_context(&c);
@@ -375,16 +524,13 @@ static void queue_audio(Player *p, AVFrame *f, double apts) {
     int out_samples = swr_get_out_samples(p->swr, f->nb_samples);
     uint8_t *buf = av_malloc(out_samples * AUDIO_CH * 2);
     int n = swr_convert(p->swr, &buf, out_samples, (const uint8_t **)f->extended_data, f->nb_samples);
-    if (n > 0) {
-        SDL_QueueAudio(p->dev, buf, n * AUDIO_CH * 2);
-        p->audio_written += (double)n / AUDIO_RATE;
-    }
+    if (n > 0) p->audio_written += (double)audio_write(p, buf, n * AUDIO_CH * 2) / BYTES_PER_SEC;
     av_free(buf);
 }
 
 static void audio_packet(Player *p, AVPacket *pkt, AVFrame *frame) {
     /* don't run too far ahead of the speaker */
-    while (SDL_GetQueuedAudioSize(p->dev) > MAX_QUEUED_AUDIO)
+    while (audio_queued(p) > MAX_QUEUED_AUDIO)
         if (!wait_step(p)) return;
     if (avcodec_send_packet(p->adec, pkt) != 0) return;
     while (avcodec_receive_frame(p->adec, frame) == 0) {
@@ -395,12 +541,37 @@ static void audio_packet(Player *p, AVPacket *pkt, AVFrame *frame) {
     }
 }
 
+/* note_drop: when frames keep coming late, stop deblocking (about a quarter
+ * of H.264 decoding time) for the rest of this stream. */
+static void note_drop(Player *p) {
+    p->dropped++;
+    p->drops_in_row++;
+    Uint32 now = SDL_GetTicks();
+    if (now - p->drop_window > 2000) {
+        p->drop_window = now;
+        p->drop_count = 0;
+    }
+    if (++p->drop_count >= 5 && !p->fast_decode) {
+        p->fast_decode = 1;
+        p->vdec->skip_loop_filter = AVDISCARD_ALL;
+        fprintf(stderr, "player: falling behind (decode %.1f ms, draw %.1f ms), skipping the deblocking filter\n",
+                p->decode_ms, p->draw_ms);
+    }
+}
+
 static void video_packet(Player *p, AVPacket *pkt, AVFrame *frame) {
+    Uint64 t0 = SDL_GetPerformanceCounter();
     if (avcodec_send_packet(p->vdec, pkt) != 0) return;
-    while (avcodec_receive_frame(p->vdec, frame) == 0) {
+    for (;;) {
+        int got = avcodec_receive_frame(p->vdec, frame) == 0;
+        p->decode_acc += ms_since(t0);
+        if (!got) break;
+        average(&p->decode_ms, p->decode_acc);
+        p->decode_acc = 0;
+
         double pts = frame->best_effort_timestamp == AV_NOPTS_VALUE ? p->last_pts
                                                                     : frame->best_effort_timestamp * p->vtb - p->start;
-        if (pts < p->drop_before - 0.05) continue; /* decoding up to the seek target */
+        if (pts < p->drop_before - 0.05) goto next; /* decoding up to the seek target */
         int stop = 0;
         while (clock_s(p) < pts - 0.005) {
             if (!wait_step(p)) {
@@ -409,16 +580,26 @@ static void video_packet(Player *p, AVPacket *pkt, AVFrame *frame) {
             }
             /* audio ran dry: its clock can't move until more packets are
              * read, so show the frame now instead of waiting forever */
-            if (!p->paused && p->dev && !p->wall_fallback && SDL_GetQueuedAudioSize(p->dev) == 0) break;
+            if (!p->paused && p->dev && !p->wall_fallback && audio_queued(p) == 0) break;
         }
         if (stop) {
-            av_frame_unref(frame);
-            continue; /* keep draining the decoder; the frames are dropped */
+            av_frame_unref(frame); /* keep draining the decoder; the frames are dropped */
+            goto next;
         }
         p->last_pts = pts;
+        if (p->tex && clock_s(p) - pts > LATE_DROP_S && p->drops_in_row < MAX_DROPS_IN_ROW) {
+            note_drop(p); /* behind the clock: skip drawing this one to catch up */
+            av_frame_unref(frame);
+            goto next;
+        }
+        p->drops_in_row = 0;
+        Uint64 d0 = SDL_GetPerformanceCounter();
         upload_frame(p, frame);
         redraw(p);
+        average(&p->draw_ms, ms_since(d0));
         trace(p, "frame");
+    next:
+        t0 = SDL_GetPerformanceCounter();
     }
 }
 
@@ -436,8 +617,10 @@ static void end_priming(Player *p, AVFrame *frame) {
 
 PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     Player p = {.o = o, .ren = ren, .vidx = -1, .aidx = -1, .pending = -1, .result_seek = -1, .held = -1,
-                .resync_audio = 1, .drop_before = -1e9, .stash_last = -1e9, .sar = 1, .aspect = o->aspect};
+                .resync_audio = 1, .drop_before = -1e9, .stash_last = -1e9, .sar = 1, .aspect = o->aspect,
+                .volume = o->volume};
     if (p.aspect < 0 || p.aspect >= ASPECT_COUNT) p.aspect = ASPECT_AUTO;
+    if (p.volume < 0 || p.volume > VOLUME_MAX) p.volume = 100;
     PlayResult res = {.position = -1, .seek_to = -1};
     avformat_network_init();
 
@@ -463,8 +646,9 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     fprintf(stderr, "player: video %s %dx%d, audio %s, %s\n", p.vdec->codec->name, p.vdec->width, p.vdec->height,
             p.adec ? p.adec->codec->name : "none", o->seekable ? "seekable" : "restart to seek");
 
-    SDL_AudioSpec want = {.freq = AUDIO_RATE, .format = AUDIO_S16SYS, .channels = AUDIO_CH, .samples = 1024};
-    if (p.adec) {
+    SDL_AudioSpec want = {.freq = AUDIO_RATE, .format = AUDIO_S16SYS, .channels = AUDIO_CH, .samples = 1024,
+                          .callback = audio_cb, .userdata = &p};
+    if (p.adec && (p.ring = malloc(RING_BYTES))) {
         p.dev = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
         if (!p.dev) fprintf(stderr, "player: no audio device (%s); using wall clock\n", SDL_GetError());
         else SDL_PauseAudioDevice(p.dev, 0);
@@ -519,7 +703,7 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
         av_packet_unref(pkt);
     }
     if (p.ended) /* let the last second of audio play out */
-        while (p.dev && SDL_GetQueuedAudioSize(p.dev) > 0)
+        while (audio_queued(&p) > 0)
             if (!wait_step(&p)) break;
 
     drop_stash(&p);
@@ -531,7 +715,11 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     res.toggle_upscale = p.toggle_upscale;
 done:
     res.aspect = p.aspect;
+    res.volume = p.volume;
     if (p.dev) SDL_CloseAudioDevice(p.dev);
+    free(p.ring);
+    for (int i = 0; i < OSD_LINES; i++)
+        if (p.osd[i].tex) SDL_DestroyTexture(p.osd[i].tex);
     if (p.tex) SDL_DestroyTexture(p.tex);
     if (p.sws) sws_freeContext(p.sws);
     if (p.swr) swr_free(&p.swr);

@@ -58,3 +58,28 @@ func TestMediaFoundationArgs(t *testing.T) {
 		t.Errorf("CPUOnly retry should use libx264: %q", args)
 	}
 }
+
+func TestUpscaleBitrateCap(t *testing.T) {
+	tc := &Transcoder{encoder: "libx264"}
+	r := transcodeRequest{Path: "x.mkv", Media: &MediaInfo{}, Profile: profiles["ps5"], Audio: -1, Sub: -1}
+	if a := tc.videoCodecArgs(r); !contains(a, "12000000") {
+		t.Errorf("plain ps5 stream should keep 12 Mbit/s: %q", a)
+	}
+	r.Upscale = true
+	if a := tc.videoCodecArgs(r); !contains(a, "8000000") || contains(a, "12000000") {
+		t.Errorf("upscaled stream should be capped at 8 Mbit/s: %q", a)
+	}
+	r.Profile = profiles["remote"]
+	if a := tc.videoCodecArgs(r); !contains(a, "6000000") {
+		t.Errorf("remote profile is already below the cap: %q", a)
+	}
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
