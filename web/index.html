@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLEX</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>FLEX</h1>
+  <span id="server" class="muted">connecting…</span>
+  <span class="spacer"></span>
+  <input id="search" type="search" placeholder="Search" autocomplete="off">
+  <button id="scan" title="Rescan library">Scan</button>
+</header>
+
+<main id="grid" role="grid" aria-label="Movies"></main>
+<p id="empty" class="muted" hidden>No movies yet. Add library folders in <code>.env</code> (FLEX_LIBRARY) and press Scan.</p>
+
+<section id="player" hidden>
+  <video id="video" playsinline></video>
+  <div id="osd">
+    <strong id="osd-title"></strong>
+    <span id="osd-info" class="muted"></span>
+  </div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.17/hls.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

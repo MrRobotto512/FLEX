@@ -1,0 +1,17 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "FLEX",
+  "outputfilename": "FLEX",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "MrR0botto"
+  },
+  "info": {
+    "productName": "FLEX",
+    "productVersion": "0.1.0",
+    "comments": "Home movie server with a PS5 client"
+  }
+}

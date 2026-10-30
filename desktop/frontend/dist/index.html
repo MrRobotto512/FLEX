@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FLEX</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --fg:#e8eaf0; --muted:#8a90a0; --accent:#5aa9ff; --bad:#ff6b6b; --ok:#5ad38a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, sans-serif; padding:24px 32px; }
+  h1 { font-size:18px; letter-spacing:.2em; margin:0 0 16px; }
+  h2 { font-size:13px; text-transform:uppercase; color:var(--muted); margin:24px 0 8px; }
+  .row { display:flex; gap:12px; align-items:center; margin:6px 0; }
+  label { width:160px; color:var(--muted); }
+  input, select, button { background:var(--panel); color:var(--fg); border:1px solid #2a2f3a; border-radius:6px; padding:7px 10px; font:inherit; }
+  input, select { flex:1; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  button { cursor:pointer; }
+  button.primary { background:var(--accent); color:#000; border-color:var(--accent); font-weight:600; }
+  ul { list-style:none; padding:0; margin:0; }
+  li { display:flex; gap:8px; align-items:center; background:var(--panel); padding:6px 10px; border-radius:6px; margin:4px 0; }
+  li span { flex:1; font-family: ui-monospace, monospace; }
+  .status { display:flex; gap:24px; flex-wrap:wrap; }
+  .pill { background:var(--panel); padding:6px 12px; border-radius:999px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .muted { color:var(--muted); }
+  code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>FLEX</h1>
+
+<div class="status" id="status"></div>
+
+<h2>Library</h2>
+<ul id="folders"></ul>
+<div class="row">
+  <button id="add">Add folder…</button>
+  <button id="scan">Scan now</button>
+  <button id="open">Open library in browser</button>
+</div>
+
+<h2>Server</h2>
+<div class="row"><label>Name</label><input id="name"></div>
+<div class="row"><label>HTTP port</label><input id="http_port" type="number"></div>
+<div class="row"><label>TMDB API key</label><input id="tmdb_key" type="password" placeholder="from themoviedb.org/settings/api"></div>
+<div class="row"><label>Encoder</label>
+  <select id="encoder">
+    <option value="auto">Auto-detect</option><option value="nvenc">NVIDIA NVENC</option>
+    <option value="qsv">Intel QuickSync</option><option value="amf">AMD AMF</option><option value="software">Software (libx264)</option>
+  </select></div>
+<div class="row"><label>FFmpeg path</label><input id="ffmpeg" placeholder="leave empty to use PATH"></div>
+<div class="row"><label>FFprobe path</label><input id="ffprobe" placeholder="leave empty to use PATH"></div>
+
+<h2>Remote access (Tailscale)</h2>
+<div class="row"><label>Auth key</label><input id="ts_authkey" type="password" placeholder="tskey-auth-… (empty = off)"></div>
+<div class="row"><label>Hostname</label><input id="ts_hostname"></div>
+
+<div class="row" style="margin-top:20px">
+  <button class="primary" id="save">Save &amp; restart server</button>
+  <span id="msg" class="muted"></span>
+</div>
+
+<script>
+const App = () => window.go.main.App;
+let settings;
+const $ = id => document.getElementById(id);
+const fields = ['name','http_port','tmdb_key','encoder','ffmpeg','ffprobe','ts_authkey','ts_hostname'];
+
+async function load() {
+  settings = await App().GetSettings();
+  for (const f of fields) $(f).value = settings[f] ?? '';
+  renderFolders();
+  refresh();
+}
+
+function renderFolders() {
+  const ul = $('folders'); ul.innerHTML = '';
+  (settings.library || []).forEach((p, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span>${p}</span><button>Remove</button>`;
+    li.querySelector('button').onclick = () => { settings.library.splice(i, 1); renderFolders(); };
+    ul.appendChild(li);
+  });
+  if (!settings.library?.length) ul.innerHTML = '<li class="muted">No folders yet</li>';
+}
+
+async function refresh() {
+  const st = await App().GetStatus();
+  const pills = [];
+  pills.push(st.running ? '<span class="pill ok">● server running</span>' : `<span class="pill bad">● stopped ${st.error || ''}</span>`);
+  (st.lan_addrs || []).forEach(a => pills.push(`<span class="pill">LAN <code>${a}</code></span>`));
+  pills.push(`<span class="pill ${st.tailscale ? 'ok' : 'muted'}">Tailscale ${st.tailscale ? 'connected' : 'off'}</span>`);
+  if (st.scan) pills.push(`<span class="pill">${st.scan.scanning ? `scanning… ${st.scan.files_seen} files` : `${st.scan.movies} movies`}</span>`);
+  $('status').innerHTML = pills.join('');
+}
+
+$('add').onclick = async () => { const p = await App().PickFolder(); if (p) { (settings.library ||= []).push(p); renderFolders(); } };
+$('scan').onclick = () => App().StartScan();
+$('open').onclick = () => App().OpenLibrary();
+$('save').onclick = async () => {
+  for (const f of fields) settings[f] = f === 'http_port' ? +$(f).value : $(f).value;
+  try { await App().SaveSettings(settings); $('msg').textContent = 'Saved.'; }
+  catch (e) { $('msg').textContent = 'Error: ' + e; }
+  refresh();
+};
+
+load();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

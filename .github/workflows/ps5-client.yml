@@ -1,0 +1,25 @@
+# Compile-checks the PS5 client against host SDL2/FFmpeg headers. This catches
+# C errors without the PS5 toolchain; the real ELF is built locally with the
+# ps5-payload-sdk (see ps5-client/README.md).
+name: ps5-client
+
+on:
+  push:
+    paths: ['ps5-client/**', '.github/workflows/ps5-client.yml']
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev
+      - name: Vendor cJSON
+        run: |
+          git clone --depth 1 https://github.com/DaveGamble/cJSON ps5-client/third_party/cJSON-src
+          cp ps5-client/third_party/cJSON-src/cJSON.[ch] ps5-client/third_party/cJSON/
+      - name: Compile (host headers)
+        working-directory: ps5-client
+        run: gcc -std=gnu11 -Wall -Wextra -fsyntax-only -Isrc -Ithird_party/cJSON $(sdl2-config --cflags) src/*.c

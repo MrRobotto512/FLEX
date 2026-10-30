@@ -1,0 +1,104 @@
+package server
+
+import "time"
+
+// Movie is one library entry as the API returns it. Path never leaves the
+// server; Media is only filled for the detail endpoint.
+type Movie struct {
+	ID       int64     `json:"id"`
+	Title    string    `json:"title"`
+	Year     int       `json:"year,omitempty"`
+	RuntimeS int       `json:"runtime_s,omitempty"`
+	Overview string    `json:"overview,omitempty"`
+	Poster   string    `json:"poster,omitempty"`
+	Backdrop string    `json:"backdrop,omitempty"`
+	ResumeS  int       `json:"resume_s"`
+	Watched  bool      `json:"watched"`
+	AddedAt  time.Time `json:"added_at"`
+	TMDBID   int64     `json:"tmdb_id,omitempty"`
+
+	Media *MediaInfo `json:"media,omitempty"`
+
+	Path         string `json:"-"`
+	posterPath   string
+	backdropPath string
+}
+
+// MediaInfo is what ffprobe told us about the file.
+type MediaInfo struct {
+	Container string      `json:"container"`
+	Size      int64       `json:"size"`
+	DurationS float64     `json:"duration_s"`
+	BitRate   int64       `json:"bit_rate,omitempty"`
+	Video     VideoInfo   `json:"video"`
+	Audio     []AudioInfo `json:"audio"`
+	Subtitles []SubInfo   `json:"subtitles"`
+}
+
+type VideoInfo struct {
+	Index    int     `json:"index"`
+	Codec    string  `json:"codec"`
+	Width    int     `json:"width"`
+	Height   int     `json:"height"`
+	BitDepth int     `json:"bit_depth"`
+	HDR      string  `json:"hdr,omitempty"` // "", hdr10, hlg, dolbyvision
+	FPS      float64 `json:"fps"`
+}
+
+type AudioInfo struct {
+	Index    int    `json:"index"` // absolute stream index, usable in ffmpeg -map 0:N
+	Codec    string `json:"codec"`
+	Channels int    `json:"channels"`
+	Lang     string `json:"lang,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Default  bool   `json:"default"`
+}
+
+type SubInfo struct {
+	Index  int    `json:"index"`
+	Codec  string `json:"codec"`
+	Lang   string `json:"lang,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Forced bool   `json:"forced"`
+}
+
+// Metadata is what a TMDB match (or a manual fix) writes back.
+type Metadata struct {
+	TMDBID       int64
+	Title        string
+	Year         int
+	Overview     string
+	RuntimeS     int
+	PosterPath   string // local file under PosterDir, "" if none
+	BackdropPath string
+}
+
+// PlayInfo answers GET /movies/{id}/play.
+type PlayInfo struct {
+	Method     string  `json:"method"` // direct | hls
+	URL        string  `json:"url"`
+	DurationS  float64 `json:"duration_s"`
+	Container  string  `json:"container,omitempty"`
+	VideoCodec string  `json:"video_codec"`
+	AudioCodec string  `json:"audio_codec"`
+	Width      int     `json:"width"`
+	Height     int     `json:"height"`
+}
+
+type ScanStatus struct {
+	Scanning  bool       `json:"scanning"`
+	FilesSeen int        `json:"files_seen"`
+	Movies    int        `json:"movies"`
+	LastScan  *time.Time `json:"last_scan,omitempty"`
+	LastError string     `json:"last_error,omitempty"`
+}
+
+type ServerInfo struct {
+	Name     string   `json:"name"`
+	ID       string   `json:"id"`
+	Version  string   `json:"version"`
+	Features []string `json:"features"`
+	Remote   bool     `json:"remote"`
+}
+
+const Version = "0.1.0"
