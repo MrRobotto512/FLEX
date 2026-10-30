@@ -35,6 +35,7 @@
 #define VOLUME_MAX 200   /* quiet rips (5.1 folded to stereo) need more than 100 */
 #define LATE_DROP_S 0.08 /* a frame this far behind the clock is skipped */
 #define MAX_DROPS_IN_ROW 6
+#define FAST_DECODE_MS 30000 /* this long without a drop: deblocking again */
 #define BUFFER_S 30.0           /* read this far ahead of the video decoder */
 #define BUFFER_BYTES (64 << 20) /* ...but never hold more than this */
 #define FRAME_QUEUE 8           /* decoded frames waiting for their time */
@@ -182,6 +183,7 @@ typedef struct {
     double decode_ms, draw_ms; /* moving averages per frame */
     int dropped, drops_in_row;
     Uint32 drop_window; /* start of the 2 s window counting recent drops */
+    Uint32 last_drop;
     int drop_count, fast_decode;
     char perf[200];
     Uint32 perf_next;
@@ -933,9 +935,9 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
 }
 
 static void decode_video(Player *p, AVPacket *pkt, AVFrame *frame, AVFrame *scaled, int serial) {
-    if (p->want_fast_decode && !p->fast_decode) {
-        p->fast_decode = 1;
-        p->vdec->skip_loop_filter = AVDISCARD_ALL;
+    if (p->want_fast_decode != p->fast_decode) { /* switched by the main thread, either way */
+        p->fast_decode = p->want_fast_decode;
+        p->vdec->skip_loop_filter = p->fast_decode ? AVDISCARD_ALL : AVDISCARD_DEFAULT;
     }
     Uint64 t0 = SDL_GetPerformanceCounter();
     if (avcodec_send_packet(p->vdec, pkt) != 0 && pkt) return;
@@ -1103,12 +1105,13 @@ static void dump_frame(Player *p, AVFrame *f) {
 }
 
 /* note_drop: when frames keep coming late, have the video thread stop
- * deblocking (about a quarter of H.264 decoding time) for the rest of this
- * stream. */
+ * deblocking (about a quarter of H.264 decoding time) until playback has
+ * been smooth for FAST_DECODE_MS again (fast_decode_check). */
 static void note_drop(Player *p) {
     p->dropped++;
     p->drops_in_row++;
     Uint32 now = SDL_GetTicks();
+    p->last_drop = now;
     if (now - p->drop_window > 2000) {
         p->drop_window = now;
         p->drop_count = 0;
@@ -1118,6 +1121,16 @@ static void note_drop(Player *p) {
         p->want_fast_decode = 1;
         fprintf(stderr, "player: falling behind (%d frames queued, draw %.1f ms), skipping the deblocking filter\n",
                 fq_count(&p->fq), p->draw_ms);
+    }
+}
+
+/* fast_decode_check: deblocking back on once nothing has been dropped for a
+ * while; a busy moment shouldn't cost picture quality for the rest of the
+ * film. If frames come late again, note_drop turns it off again. */
+static void fast_decode_check(Player *p) {
+    if (p->want_fast_decode && SDL_GetTicks() - p->last_drop > FAST_DECODE_MS) {
+        p->want_fast_decode = 0;
+        fprintf(stderr, "player: smooth for %d s, deblocking again\n", FAST_DECODE_MS / 1000);
     }
 }
 
@@ -1197,6 +1210,7 @@ static int show_next(Player *p) {
         return 1;
     }
     p->drops_in_row = 0;
+    fast_decode_check(p);
     Uint64 d0 = SDL_GetPerformanceCounter();
     upload_frame(p, f);
     dump_frame(p, f);
