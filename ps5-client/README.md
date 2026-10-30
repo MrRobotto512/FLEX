@@ -25,6 +25,8 @@ make run             # deploy, then start it on the TV via websrv's /hbldr (port
 
 **websrv must be running on the console.** It is the homebrew launcher from ps5-payload-dev. Only its `/hbldr` endpoint (what the launcher's tiles use) starts an ELF as a real app with the screen; payloads sent to `elfldr` (port 9021, `make run-headless`) or to websrv's `/elfldr` page run as background processes, which the launcher reports as "running in the background" with nothing on the TV.
 
+When FLEX is started from the launcher tile, the launcher first shows its log console ("The homebrew is running in the background…") on top of the app. Press **Circle** once to close that dialog; FLEX is underneath.
+
 websrv does not survive a console restart. The symptom is the Homebrew Launcher app opening with a "not connected to the internet" error (its web view can't reach 127.0.0.1:8080). Bring it back with:
 
 ```bash

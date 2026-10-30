@@ -32,7 +32,7 @@ Build order, each step produces something you can run.
    - [x] `/shows`, `/shows/{id}` (seasons, next episode), `/episodes/{id}` play/file/progress
    - [x] web UI: TV tab, episode list, play
    - [x] PS5: L1/R1 Movies/TV, episode list, play
-   - [ ] verified on the console with the real library
+   - [x] verified on the console with the real library (Bob's Burgers S09, TMDB metadata, playback, resume saved)
 6. **Later**
    - [ ] subtitles rendered client-side (SDL2_ttf) instead of burned in
    - [ ] PIN for LAN guests
