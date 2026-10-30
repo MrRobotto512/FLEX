@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -101,10 +102,10 @@ static int tcp_connect(const char *host, int port) {
     return s;
 }
 
-char *flex_http(const char *host, int port, const char *method, const char *path,
-                const char *json_body, size_t *len) {
+/* send_request connects and sends the request line and headers (and body). */
+static int send_request(const char *host, int port, const char *method, const char *path, const char *json_body) {
     int s = tcp_connect(host, port);
-    if (s < 0) return NULL;
+    if (s < 0) return -1;
 
     char req[2048];
     int n = snprintf(req, sizeof req,
@@ -116,8 +117,70 @@ char *flex_http(const char *host, int port, const char *method, const char *path
     n += snprintf(req + n, sizeof req - n, "\r\n");
     if (send(s, req, n, 0) < 0 || (json_body && send(s, json_body, strlen(json_body), 0) < 0)) {
         close(s);
-        return NULL;
+        return -1;
     }
+    return s;
+}
+
+long flex_download(const char *host, int port, const char *path, const char *dst,
+                   void (*progress)(long done, long total, void *arg), void *arg) {
+    int s = send_request(host, port, "GET", path, NULL);
+    if (s < 0) return -1;
+
+    /* headers: read until the blank line, keeping what follows it */
+    char head[8192];
+    size_t used = 0;
+    char *body = NULL;
+    while (!body && used < sizeof head - 1) {
+        ssize_t r = recv(s, head + used, sizeof head - 1 - used, 0);
+        if (r <= 0) break;
+        used += r;
+        head[used] = 0;
+        body = strstr(head, "\r\n\r\n");
+    }
+    int status = 0;
+    sscanf(head, "HTTP/%*d.%*d %d", &status);
+    if (!body || status != 200) {
+        fprintf(stderr, "flex_download: GET %s -> HTTP %d\n", path, status);
+        close(s);
+        return -1;
+    }
+    body += 4;
+    long total = 0;
+    for (char *h = head; h < body; h = strstr(h, "\r\n") + 2)
+        if (strncasecmp(h, "Content-Length:", 15) == 0) total = atol(h + 15);
+
+    FILE *f = fopen(dst, "wb");
+    if (!f) {
+        close(s);
+        return -1;
+    }
+    long done = (long)(used - (body - head));
+    int ok = fwrite(body, 1, done, f) == (size_t)done;
+    char *buf = malloc(1 << 16);
+    while (ok && buf) {
+        if (progress) progress(done, total, arg);
+        ssize_t r = recv(s, buf, 1 << 16, 0);
+        if (r < 0) ok = 0;
+        if (r <= 0) break;
+        ok = fwrite(buf, 1, r, f) == (size_t)r;
+        done += r;
+    }
+    free(buf);
+    close(s);
+    if (fclose(f) != 0) ok = 0;
+    if (!ok || (total && done != total)) {
+        fprintf(stderr, "flex_download: GET %s stopped at %ld of %ld bytes\n", path, done, total);
+        remove(dst);
+        return -1;
+    }
+    return done;
+}
+
+char *flex_http(const char *host, int port, const char *method, const char *path,
+                const char *json_body, size_t *len) {
+    int s = send_request(host, port, method, path, json_body);
+    if (s < 0) return NULL;
 
     size_t cap = 16384, used = 0;
     char *buf = malloc(cap);

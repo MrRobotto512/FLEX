@@ -37,6 +37,7 @@ func (a *App) trayReady() {
 	remote := systray.AddMenuItem("Remote access: off", "")
 	systray.AddSeparator()
 	auto := systray.AddMenuItemCheckbox("Start with Windows", "Run FLEX in the tray when you sign in", autostartEnabled())
+	update := systray.AddMenuItem("Check for updates", "Look for a newer FLEX on GitHub")
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Quit FLEX", "Stop the server and exit")
 
@@ -59,6 +60,16 @@ func (a *App) trayReady() {
 				on := !auto.Checked()
 				if err := a.SetAutostart(on); err != nil {
 					a.log.Warn("autostart", "err", err)
+				}
+			case <-update.ClickedCh:
+				if a.UpdateStatus().Available {
+					update.SetTitle("Updating…")
+					if err := a.InstallUpdate(); err != nil {
+						a.log.Warn("update", "err", err)
+						update.SetTitle("Update failed — try again")
+					}
+				} else {
+					update.SetTitle(updateLine(a.CheckUpdate()))
 				}
 			case <-quit.ClickedCh:
 				a.Quit()
@@ -86,6 +97,9 @@ func (a *App) trayReady() {
 			status.SetTitle(line)
 			systray.SetTooltip("FLEX — " + line)
 			remote.SetTitle(remoteLine(st))
+			if up := a.UpdateStatus(); up.Available {
+				update.SetTitle(updateLine(up))
+			}
 			if autostartEnabled() {
 				auto.Check()
 			} else {
@@ -106,6 +120,19 @@ func remoteLine(st Status) string {
 		return "Remote access: " + st.TSDNS
 	default:
 		return "Remote access: " + st.TSState
+	}
+}
+
+func updateLine(up UpdateInfo) string {
+	switch {
+	case up.Available:
+		return "Update to " + up.Latest + " (now " + up.Current + ")"
+	case up.Error != "":
+		return "Update check failed — try again"
+	case up.Latest != "":
+		return "Up to date (" + up.Current + ")"
+	default:
+		return "Check for updates"
 	}
 }
 

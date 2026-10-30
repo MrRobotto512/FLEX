@@ -15,12 +15,13 @@ import (
 var assets embed.FS
 
 func main() {
-	minimized := false // started by the "Start with Windows" entry
+	minimized := false // started by the "Start with Windows" entry, or after an update
 	for _, a := range os.Args[1:] {
 		if a == "--minimized" {
 			minimized = true
 		}
 	}
+	afterUpdate(os.Args[1:])
 	app := NewApp()
 	err := wails.Run(&options.App{
 		Title:             "FLEX",

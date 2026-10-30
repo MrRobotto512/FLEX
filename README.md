@@ -37,6 +37,10 @@ Then open `http://localhost:8484` in a browser. The PS5 client finds the server 
 
 Built with the [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) toolchain under WSL or Docker; see [ps5-client/README.md](ps5-client/README.md). During development the ELF is pushed straight to `elfldr` on the console; for day-to-day use it's installed under `/data/homebrew/FLEX/` and launched from the homebrew launcher.
 
+## Releases and updates
+
+Pushing a version tag (`git tag v0.3.0 && git push origin v0.3.0`) makes CI build `FLEX.exe`, `flexd.exe` and the PS5 client and publish them as a GitHub release with `SHA256SUMS`. The desktop app checks for new releases (tray menu and the Updates section of its window) and replaces itself; the server keeps the newest PS5 build and the console offers it on the grid (Options installs it). See "Client updates" in [docs/api.md](docs/api.md).
+
 ## Remote access
 
 The server can join your Tailscale network as its own node (`tsnet`), so phones and laptops running Tailscale reach it from anywhere with no port forwarding. The PS5 can't run Tailscale; away from home it needs a travel router that is on your tailnet. See [docs/remote.md](docs/remote.md).

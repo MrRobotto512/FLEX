@@ -5,8 +5,8 @@
 #   bash ps5-client/tools/setup-wsl.sh
 #
 # What it does:
-#   1. apt: clang-18/lld-18 (the SDK's wrappers call them), unzip, pkg-config,
-#      meson, socat, pyelftools, DejaVu fonts
+#   1. apt: clang-18/lld-18/llvm-18 (the SDK's wrappers call them), unzip, zip,
+#      pkg-config, meson, socat, pyelftools, DejaVu fonts
 #   2. prebuilt ports from ps5-payload-dev/pacbrew-repo (SDL2, SDL2_ttf,
 #      freetype, FFmpeg, ... as static libs) -> /opt/ps5-payload-sdk/target/user/homebrew
 #   3. the ps5-payload-dev/sdk release zip on top (toolchain + SDK libs)
@@ -26,7 +26,9 @@ SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
 echo "== apt packages"
 export DEBIAN_FRONTEND=noninteractive
 $SUDO apt-get update -qq
-$SUDO apt-get install -y -qq clang-18 lld-18 unzip pkg-config meson socat python3-pyelftools fonts-dejavu-core curl
+# llvm-18 provides llvm-config-18, which the SDK's wrappers use to find clang;
+# without it every compile fails with "/llvm-clang: No such file or directory"
+$SUDO apt-get install -y -qq clang-18 lld-18 llvm-18 unzip zip pkg-config meson socat python3-pyelftools fonts-dejavu-core curl
 
 echo "== prebuilt ports ($PORTS_TAG)"
 curl -sSL -o "$DL/ports.tar.gz" \

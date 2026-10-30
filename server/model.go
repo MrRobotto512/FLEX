@@ -165,4 +165,6 @@ type ServerInfo struct {
 	EncoderTests map[string]string `json:"encoder_tests,omitempty"`
 }
 
-const Version = "0.2.0"
+// Version is the release this build belongs to; CI sets it from the tag
+// (-ldflags "-X flex/server.Version=0.3.0"). Updates compare against it.
+var Version = "0.2.0"
