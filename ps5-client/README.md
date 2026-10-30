@@ -72,7 +72,8 @@ Away from home the client falls back to the server's Tailscale address, which it
 ## How it works
 
 - `net.c`: UDP discovery (`FLEX_DISCOVER` → JSON reply) and a tiny HTTP/1.0 client with the `X-Flex-Client: ps5` header.
-- `main.c`: SDL window, controller input, 6×2 poster grid (posters fetched from `/movies/{id}/poster`, decoded with SDL2_image, one per frame, cache capped at 48), saved server address at `/data/homebrew/FLEX/server.txt` (used when discovery finds nothing, e.g. over Tailscale).
+- `main.c`: SDL window, controller input, 6×2 poster grid, saved server address at `/data/homebrew/FLEX/server.txt` (used when discovery finds nothing, e.g. over Tailscale).
+- `posters.c`: four worker threads fetch posters (`/movies/{id}/poster`) and decode them with SDL2_image, so the grid never waits on the network; the rows on screen are asked for last and served first. Every poster is kept in `/data/homebrew/FLEX/cache/` (named kind, id and TMDB id, so a fixed match gets its new poster), and after the library loads the workers quietly fill that cache with the whole library (~65 KB a poster). At most 48 textures stay in memory.
 - `player.c`: four threads. A reader demuxes the URL the server returned (direct file or HLS) up to 30 s / 64 MB ahead, so slow links and segment requests don't stall decoding; a video thread decodes with all cores into a queue of 8 frames; an audio thread converts to S16 stereo for SDL; the main thread presents YUV frames in sync with the audio clock. After a seek the audio waits for the first video frame, so the frames between the keyframe and the target aren't counted late.
 - Updates: on connect the client asks `/api/v1/client/ps5`; Options downloads it to `eboot.elf.new`, checks size and SHA-256, keeps the old one as `eboot.elf.bak` and asks websrv (`127.0.0.1:8080/hbldr`) to start the new one, which also ends the running copy.
 - `third_party/cJSON/`: vendored cJSON 1.7.18.
@@ -80,6 +81,5 @@ Away from home the client falls back to the server's Tailscale address, which it
 ## Next steps
 
 - On-screen keyboard for entering a Tailscale address (`SceImeDialog` is already linked by the SDL port).
-- Load posters on a background thread and cache them under `/data/homebrew/FLEX/` (each one is ~0.2 s over Tailscale).
 - Seek: restart the HLS session with `start=`.
 - Audio track selection (`audio=` on `/play`).

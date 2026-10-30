@@ -17,7 +17,7 @@ PS5_PORT     ?= 9021
 PS5_FTP_PORT ?= 2121
 
 ELF  := build/FLEX.elf
-SRCS := src/main.c src/net.c src/player.c third_party/cJSON/cJSON.c
+SRCS := src/main.c src/net.c src/player.c src/posters.c third_party/cJSON/cJSON.c
 OBJS := $(patsubst %.c,build/%.o,$(SRCS))
 
 # Shown on the grid and compared with the update the server offers. CI sets
