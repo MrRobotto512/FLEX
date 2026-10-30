@@ -28,6 +28,9 @@ type Server struct {
 
 	ps5 *ps5Keeper
 
+	gpus         []string          // graphics adapters Windows reports
+	encoderTests map[string]string // hardware encoder -> "ok" or why not
+
 	mu      sync.Mutex
 	folders []string
 	ctx     context.Context
@@ -76,9 +79,11 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	encoder := DetectEncoder(ctx, cfg.FFmpeg, cfg.Encoder)
+	encoder, tests := DetectEncoder(ctx, cfg.FFmpeg, cfg.Encoder)
 	cancel()
-	log.Info("video encoder", "encoder", encoder)
+	s.encoderTests = tests
+	s.gpus = detectGPUs()
+	log.Info("video encoder", "encoder", encoder, "gpus", s.gpus, "tests", tests)
 	s.tc = NewTranscoder(cfg.FFmpeg, encoder, cfg.TranscodeDir(), log)
 	s.scanner = NewScanner(cfg, db, s.tmdb, log)
 	return s, nil

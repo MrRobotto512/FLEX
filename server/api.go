@@ -44,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/library/status", s.handleScanStatus)
 	mux.HandleFunc("GET /api/v1/library/folders", s.handleFoldersGet)
 	mux.HandleFunc("GET /api/v1/library/unmatched", s.handleUnmatched)
+	mux.HandleFunc("GET /api/v1/shows/{id}/files", s.handleShowFiles)
 	mux.HandleFunc("PUT /api/v1/library/folders", s.handleFoldersPut)
 	if s.web != nil {
 		mux.Handle("/", http.FileServerFS(s.web))
@@ -65,6 +66,9 @@ func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
 	features := []string{"direct", "hls", "tv", "seek"}
 	info := ServerInfo{Name: s.cfg.Name, ID: s.id, Version: Version, Remote: isTailnetAddr(r.RemoteAddr),
 		Encoder: s.tc.Encoder()}
+	if !info.Remote {
+		info.GPUs, info.EncoderTests = s.gpus, s.encoderTests
+	}
 	if ts := s.TailscaleInfo(); ts.State == "Running" {
 		features = append(features, "tsnet")
 		info.Tailscale = &ts
@@ -334,6 +338,25 @@ func (s *Server) handleUnmatched(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"movies": movies, "shows": shows})
+}
+
+// handleShowFiles lists where a show's episodes come from, to check how
+// folders were read. Home network only.
+func (s *Server) handleShowFiles(w http.ResponseWriter, r *http.Request) {
+	if isTailnetAddr(r.RemoteAddr) {
+		writeErr(w, http.StatusForbidden, "forbidden", "only available on the home network")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	files, err := s.db.ShowFiles(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, files)
 }
 
 func (s *Server) handleFoldersGet(w http.ResponseWriter, r *http.Request) {

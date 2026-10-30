@@ -43,7 +43,7 @@ var (
 	// where a show folder name stops being the show's name: "Bobs Burgers
 	// Season 3 Complete", "Chappelle's Show The Complete Series", "Mamas
 	// Family Complete Series 1-6 SD TVRIP", "Better Call Saul Season 2 (1080p"
-	showCutRe = regexp.MustCompile(`(?i)\b(?:the\s+)?complete(?:\s+(?:series|seasons?|collection|box\s*set))?\b|\b(?:season|series|staffel)s?[\s._\-]*\d|\bS\d{1,2}(?:\s*-\s*S?\d{1,2})?\b|\b(?:sd|tvrip|dvd\s?rips?|dvdrip|hdtv|web-?dl|webrip|bluray|1080p|720p|480p|x264|x265)\b|\s[\[(]`)
+	showCutRe = regexp.MustCompile(`(?i)\b(?:the\s+)?complete(?:\s+(?:series|seasons?|collection|box\s*set))?\b|\b(?:season|series|staffel)s?[\s._\-]*\d|\bS\d{1,2}E\d{1,3}|\bS\d{1,2}(?:\s*-\s*S?\d{1,2})?\b|\b(?:sd|tvrip|dvd\s?rips?|dvdrip|hdtv|web-?dl|webrip|bluray|1080p|720p|480p|x264|x265)\b|\s[\[(]`)
 
 	// folders whose contents are bonus material, not episodes or movies
 	extrasDirRe = regexp.MustCompile(`(?i)^(extras?|featurettes?|behind the scenes|deleted scenes|bonus( features)?|trailers?|samples?|interviews?|shorts)$`)

@@ -377,6 +377,32 @@ func (d *DB) Unmatched(limit int) (movies, shows []UnmatchedItem, err error) {
 	return movies, shows, rows.Err()
 }
 
+type EpisodeFile struct {
+	ID      int64  `json:"id"`
+	Season  int    `json:"season"`
+	Episode int    `json:"episode"`
+	Title   string `json:"title"`
+	Path    string `json:"path"`
+}
+
+func (d *DB) ShowFiles(showID int64) ([]EpisodeFile, error) {
+	rows, err := d.Query(`SELECT id, season, episode, title, path FROM episodes WHERE show_id = ?
+		ORDER BY season, episode, title`, showID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []EpisodeFile{}
+	for rows.Next() {
+		var f EpisodeFile
+		if err := rows.Scan(&f.ID, &f.Season, &f.Episode, &f.Title, &f.Path); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 func (d *DB) CountMovies() (int, error) {
 	var n int
 	err := d.QueryRow(`SELECT COUNT(*) FROM movies`).Scan(&n)

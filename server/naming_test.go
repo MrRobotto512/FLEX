@@ -63,6 +63,7 @@ func TestTVShowFolders(t *testing.T) {
 		// the show's own folder added as the TV folder
 		{filepath.FromSlash("D:/TV/Workaholics"), filepath.FromSlash("D:/TV/Workaholics/Season 3 [DVD Rips]/E05 Fat Cats.avi"), "Workaholics", 3, 5},
 		{root, p("2 stupid dogs/1994 Season 2 [Moonsong]/2 Stupid Dogs - 01a Stunt Dogs [Moonsong].avi"), "2 Stupid Dogs", 2, 1},
+		{root, p("Bobs.Burgers.S07E19.720p.HDTV.x264-AVS[rarbg]/Bobs.Burgers.S07E19.720p.HDTV.x264-AVS.mkv"), "Bobs Burgers", 7, 19},
 		{root, p("The Fresh Prince of Bel-Air/108+9 - Someday Your Prince Will Be In Effect.avi"), "The Fresh Prince of Bel-Air", 1, 8},
 		{root, p("Mr.Bean Complete DVDs Collection/02 Good Night, MrBean DVDRip XviD.avi"), "Mr Bean", 1, 2},
 		// double episodes

@@ -338,28 +338,44 @@ func (t *Transcoder) Reap(ctx context.Context, idle time.Duration) {
 }
 
 // DetectEncoder picks the best H.264 encoder ffmpeg offers on this machine.
-func DetectEncoder(ctx context.Context, ffmpeg, pref string) string {
+// It also reports what each hardware encoder said, so a PC that ends up on
+// libx264 shows why (no such GPU, driver too old, ...).
+func DetectEncoder(ctx context.Context, ffmpeg, pref string) (string, map[string]string) {
 	named := map[string]string{"nvenc": "h264_nvenc", "qsv": "h264_qsv", "amf": "h264_amf", "software": "libx264"}
 	if enc, ok := named[pref]; ok && pref != "auto" {
-		return enc
+		return enc, map[string]string{enc: "chosen in settings"}
 	}
+	tests := map[string]string{}
 	for _, enc := range []string{"h264_nvenc", "h264_qsv", "h264_amf"} {
-		if encoderWorks(ctx, ffmpeg, enc) {
-			return enc
+		msg := encoderTest(ctx, ffmpeg, enc)
+		tests[enc] = msg
+		if msg == "ok" {
+			return enc, tests
 		}
 	}
-	return "libx264"
+	return "libx264", tests
 }
 
-// encoderWorks encodes a few black frames with enc. ffmpeg lists every
-// hardware encoder it was built with even when the GPU isn't there, so a
-// real test encode is the only reliable check.
-func encoderWorks(ctx context.Context, ffmpeg, enc string) bool {
+// encoderTest encodes a few black frames with enc and returns "ok" or the
+// last thing ffmpeg complained about. ffmpeg lists every hardware encoder it
+// was built with even when the GPU isn't there, so a real test encode is
+// the only reliable check.
+func encoderTest(ctx context.Context, ffmpeg, enc string) string {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
 		"-f", "lavfi", "-i", "color=black:s=256x256:d=0.2", "-c:v", enc, "-f", "null", "-")
-	return cmd.Run() == nil
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return "ok"
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" && !strings.HasPrefix(l, "Error while") && !strings.HasPrefix(l, "Conversion failed") {
+			return l
+		}
+	}
+	return err.Error()
 }
 
 // subOrdinal converts an absolute stream index into the Nth subtitle stream,
