@@ -96,6 +96,7 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 	stderr, _ := cmd.StderrPipe()
 	t.log.Info("ffmpeg start", "key", key, "args", strings.Join(cmd.Args[1:], " "))
 	if err := cmd.Start(); err != nil {
+		close(s.done) // nothing will ever close it otherwise and remove() waits on it
 		t.remove(key)
 		return "", fmt.Errorf("start ffmpeg: %w", err)
 	}
@@ -174,7 +175,7 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 func (t *Transcoder) videoCodecArgs(p profile) []string {
 	br := fmt.Sprintf("%d", p.MaxBitrate)
 	common := []string{"-b:v", br, "-maxrate", br, "-bufsize", fmt.Sprintf("%d", p.MaxBitrate*2),
-		"-g", "96", "-keyint_min", "96", "-sc_threshold", "0", "-profile:v", "high", "-level", "4.1"}
+		"-g", "96", "-keyint_min", "96", "-profile:v", "high", "-level", "4.1"}
 	switch t.encoder {
 	case "h264_nvenc":
 		return append([]string{"-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-bf", "2"}, common...)
@@ -183,7 +184,7 @@ func (t *Transcoder) videoCodecArgs(p profile) []string {
 	case "h264_amf":
 		return append([]string{"-c:v", "h264_amf", "-quality", "balanced"}, common...)
 	default:
-		return append([]string{"-c:v", "libx264", "-preset", "veryfast", "-tune", "film"}, common...)
+		return append([]string{"-c:v", "libx264", "-preset", "veryfast", "-tune", "film", "-sc_threshold", "0"}, common...)
 	}
 }
 
@@ -266,16 +267,23 @@ func DetectEncoder(ctx context.Context, ffmpeg, pref string) string {
 	if enc, ok := named[pref]; ok && pref != "auto" {
 		return enc
 	}
-	out, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-encoders").Output()
-	if err != nil {
-		return "libx264"
-	}
 	for _, enc := range []string{"h264_nvenc", "h264_qsv", "h264_amf"} {
-		if strings.Contains(string(out), " "+enc+" ") {
+		if encoderWorks(ctx, ffmpeg, enc) {
 			return enc
 		}
 	}
 	return "libx264"
+}
+
+// encoderWorks encodes a few black frames with enc. ffmpeg lists every
+// hardware encoder it was built with even when the GPU isn't there, so a
+// real test encode is the only reliable check.
+func encoderWorks(ctx context.Context, ffmpeg, enc string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+		"-f", "lavfi", "-i", "color=black:s=256x256:d=0.2", "-c:v", enc, "-f", "null", "-")
+	return cmd.Run() == nil
 }
 
 // subOrdinal converts an absolute stream index into the Nth subtitle stream,

@@ -199,7 +199,18 @@ func parseName(name string) (string, int) {
 	if title == "" {
 		title = name
 	}
+	if title == strings.ToLower(title) {
+		title = titleCase(title) // "transcode test" -> "Transcode Test"
+	}
 	return title, year
+}
+
+func titleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
 }
 
 func looksLikeExtra(name string) bool {
