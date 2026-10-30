@@ -45,21 +45,21 @@ build/%.o: %.c
 # cJSON's isinf() trips a generic-selection warning in the SDK's math.h
 build/third_party/%.o: CFLAGS += -Wno-unreachable-code-generic-assoc
 
-# `run` goes through websrv (port 8080), which launches the ELF as a foreground
-# app with access to the screen and relays its stdout here. Plain elfldr
-# (`make run-headless`) starts it as a background process: fine for servers,
-# invisible for anything with a window.
-run: $(ELF)
-	curl -sS --form "elf=@$(ELF)" --url-query pipe=1 --url-query args=FLEX.elf \
-	     http://$(PS5_HOST):8080/elfldr
+# `run` deploys, then asks websrv's homebrew loader (/hbldr, port 8080) to
+# start the installed copy as a real app with the screen, relaying its stdout
+# here (Ctrl-C only stops the relay). websrv's /elfldr and plain elfldr
+# (`make run-headless`) start payloads as background processes: fine for
+# daemons, invisible for anything with a window.
+run: deploy
+	curl -sS -N "http://$(PS5_HOST):8080/hbldr?path=/data/homebrew/FLEX/eboot.elf&pipe=1&daemon=0"
 
 run-headless: $(ELF)
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p $(PS5_PORT) $(ELF)
 
 deploy: $(ELF)
-	curl --ftp-create-dirs -T $(ELF) ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/FLEX/eboot.elf
-	curl --ftp-create-dirs -T sce_sys/icon0.png ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/FLEX/sce_sys/icon0.png
-	curl --ftp-create-dirs -T assets/DejaVuSans.ttf ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/FLEX/assets/DejaVuSans.ttf
+	curl -sS --ftp-create-dirs -T $(ELF) ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/FLEX/eboot.elf
+	curl -sS --ftp-create-dirs -T sce_sys/icon0.png ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/FLEX/sce_sys/icon0.png
+	curl -sS --ftp-create-dirs -T assets/DejaVuSans.ttf ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/FLEX/assets/DejaVuSans.ttf
 
 clean:
 	rm -rf build

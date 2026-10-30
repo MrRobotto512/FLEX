@@ -127,9 +127,18 @@ static void play_movie(SDL_Renderer *ren, Movie *m) {
 /* ---------- UI ---------- */
 
 static void draw_text(SDL_Renderer *ren, TTF_Font *font, const char *text, int x, int y, SDL_Color c) {
+    static int reported;
     SDL_Surface *s = TTF_RenderUTF8_Blended(font, text, c);
-    if (!s) return;
+    if (!s) {
+        if (!reported++) fprintf(stderr, "TTF_RenderUTF8_Blended: %s\n", TTF_GetError());
+        return;
+    }
     SDL_Texture *t = SDL_CreateTextureFromSurface(ren, s);
+    if (!t) {
+        if (!reported++) fprintf(stderr, "SDL_CreateTextureFromSurface: %s\n", SDL_GetError());
+        SDL_FreeSurface(s);
+        return;
+    }
     SDL_Rect dst = {x, y, s->w, s->h};
     SDL_RenderCopy(ren, t, NULL, &dst);
     SDL_DestroyTexture(t);
@@ -180,24 +189,59 @@ int main(int argc, char **argv) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    TTF_Init();
-    SDL_Window *win = SDL_CreateWindow("FLEX", 0, 0, SCREEN_W, SCREEN_H, SDL_WINDOW_FULLSCREEN);
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    SDL_RenderSetLogicalSize(ren, SCREEN_W, SCREEN_H);
+    if (TTF_Init() != 0) fprintf(stderr, "TTF_Init: %s\n", TTF_GetError());
+
+    /* --- diagnostics: what SDL sees on this console --- */
+    SDL_DisplayMode dm;
+    fprintf(stderr, "FLEX: video driver %s, %d display(s)\n", SDL_GetCurrentVideoDriver(), SDL_GetNumVideoDisplays());
+    if (SDL_GetDesktopDisplayMode(0, &dm) == 0) fprintf(stderr, "FLEX: desktop mode %dx%d @%dHz\n", dm.w, dm.h, dm.refresh_rate);
+    for (int i = 0; i < SDL_GetNumRenderDrivers(); i++) {
+        SDL_RendererInfo ri;
+        if (SDL_GetRenderDriverInfo(i, &ri) == 0) fprintf(stderr, "FLEX: render driver %d: %s\n", i, ri.name);
+    }
+    fprintf(stderr, "FLEX: %d audio device(s), %d joystick(s)\n", SDL_GetNumAudioDevices(0), SDL_NumJoysticks());
+
+    /* Same setup as ps5-payload-dev/jtplay, which is known to display on the
+     * console: a plain 1920x1080 window and SDL's software renderer. The
+     * "accelerated" renderer on this SDL port goes through mesa and showed
+     * only a black screen (audio and input still worked). */
+    SDL_Window *win = SDL_CreateWindow("FLEX", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_W, SCREEN_H, 0);
+    if (!win) {
+        fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
+        return 1;
+    }
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
+    if (!ren) {
+        fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError());
+        return 1;
+    }
+    {
+        SDL_RendererInfo ri;
+        int w = 0, h = 0;
+        SDL_GetRendererInfo(ren, &ri);
+        SDL_GetRendererOutputSize(ren, &w, &h);
+        fprintf(stderr, "FLEX: renderer %s, output %dx%d\n", ri.name, w, h);
+    }
     for (int i = 0; i < SDL_NumJoysticks(); i++)
-        if (SDL_IsGameController(i)) SDL_GameControllerOpen(i);
+        if (SDL_IsGameController(i)) {
+            SDL_GameController *gc = SDL_GameControllerOpen(i);
+            fprintf(stderr, "FLEX: controller %d: %s\n", i, gc ? SDL_GameControllerName(gc) : SDL_GetError());
+        }
 
     TTF_Font *font = TTF_OpenFont(FONT_PATH, 36);
     TTF_Font *small = TTF_OpenFont(FONT_PATH, 24);
     if (!font) font = TTF_OpenFont("assets/DejaVuSans.ttf", 36);
     if (!small) small = TTF_OpenFont("assets/DejaVuSans.ttf", 24);
     if (!font || !small) {
-        fprintf(stderr, "font missing: put DejaVuSans.ttf in " APP_DIR "/assets\n");
+        fprintf(stderr, "font missing: put DejaVuSans.ttf in " APP_DIR "/assets (%s)\n", TTF_GetError());
         return 1;
     }
 
     char status[256] = "Looking for a FLEX server…";
     draw_list(ren, font, small, NULL, 0, 0, status);
+    fprintf(stderr, "FLEX: first frame presented\n");
     Movie *list = NULL;
     int n = 0, sel = 0, quit = 0;
 

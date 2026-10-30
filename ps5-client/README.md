@@ -18,12 +18,12 @@ Layout after setup: `$PS5_PAYLOAD_SDK/toolchain/prospero.mk` (defines `CC`, `PKG
 cd ps5-client
 make                 # -> build/FLEX.elf (~38 MB with debug info; FFmpeg is linked statically)
 make deploy          # upload ELF + icon + font to /data/homebrew/FLEX over FTP (port 2121)
-make run             # launch it on the TV through websrv (port 8080); the console's stdout is relayed to your shell
+make run             # deploy, then start it on the TV via websrv's /hbldr (port 8080); stdout is relayed to your shell
 ```
 
 `PS5_HOST` defaults to `192.168.0.176`; override with `make run PS5_HOST=…`.
 
-**websrv must be running on the console.** It is the homebrew launcher from ps5-payload-dev: payloads sent straight to `elfldr` (port 9021, `make run-headless`) start as background processes with no screen access, so a windowed app launched that way runs invisibly. websrv launches an ELF as a foreground app. If port 8080 is closed, start it (it lives until the console reboots):
+**websrv must be running on the console.** It is the homebrew launcher from ps5-payload-dev. Only its `/hbldr` endpoint (what the launcher's tiles use) starts an ELF as a real app with the screen; payloads sent to `elfldr` (port 9021, `make run-headless`) or to websrv's `/elfldr` page run as background processes, which the launcher reports as "running in the background" with nothing on the TV. If port 8080 is closed, start websrv (it lives until the console reboots):
 
 ```bash
 curl -sL https://github.com/ps5-payload-dev/websrv/releases/latest/download/websrv-ps5.elf | nc -q0 192.168.0.176 9021
