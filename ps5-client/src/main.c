@@ -5,6 +5,7 @@
 
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -172,6 +173,9 @@ static void draw_list(SDL_Renderer *ren, TTF_Font *font, TTF_Font *small, Movie 
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
+    /* stdout/stderr may be a pipe back to the dev machine (websrv pipe=1);
+     * when that side hangs up we must not die on the next log line */
+    signal(SIGPIPE, SIG_IGN);
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;

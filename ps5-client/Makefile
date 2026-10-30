@@ -45,7 +45,15 @@ build/%.o: %.c
 # cJSON's isinf() trips a generic-selection warning in the SDK's math.h
 build/third_party/%.o: CFLAGS += -Wno-unreachable-code-generic-assoc
 
+# `run` goes through websrv (port 8080), which launches the ELF as a foreground
+# app with access to the screen and relays its stdout here. Plain elfldr
+# (`make run-headless`) starts it as a background process: fine for servers,
+# invisible for anything with a window.
 run: $(ELF)
+	curl -sS --form "elf=@$(ELF)" --url-query pipe=1 --url-query args=FLEX.elf \
+	     http://$(PS5_HOST):8080/elfldr
+
+run-headless: $(ELF)
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p $(PS5_PORT) $(ELF)
 
 deploy: $(ELF)
@@ -56,4 +64,4 @@ deploy: $(ELF)
 clean:
 	rm -rf build
 
-.PHONY: all run deploy clean
+.PHONY: all run run-headless deploy clean
