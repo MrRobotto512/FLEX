@@ -99,6 +99,7 @@ typedef struct {
     SwrContext *swr;
     SDL_Texture *tex;
     int tex_w, tex_h;
+    Uint32 tex_fmt;
     double sar;   /* pixel aspect of the stream */
 
     /* The video thread scales every frame to the size it takes on screen
@@ -108,7 +109,7 @@ typedef struct {
     int laid_w, laid_h;                   /* what layout() last placed */
     SDL_atomic_t want_w, want_h;          /* size of the scaled frames (0: as decoded) */
     struct SwsContext *vsws;              /* video thread */
-    int vsws_key[5];
+    int vsws_key[7];
     int aspect;   /* ASPECT_* */
     SDL_Rect dst; /* where the picture goes on screen */
     SDL_AudioDeviceID dev;
@@ -787,25 +788,44 @@ static int reader_thread(void *arg) {
     return 0;
 }
 
-/* to_display returns the frame at the size it takes on screen, as 8-bit
- * 4:2:0 (what the texture takes): Lanczos on several threads, so 4K comes
- * out as a sharp 1080p picture and SD/720p are upscaled better than the
- * renderer's bilinear stretch would. A frame that already fits is passed
- * through untouched; out is scratch space for the scaled copy. */
+/* matrix: the YUV->RGB coefficients a frame was made with. Untagged video
+ * follows the usual rule: HD is BT.709, SD is BT.601. */
+static int matrix(const AVFrame *f) {
+    switch (f->colorspace) {
+    case AVCOL_SPC_BT709: return SWS_CS_ITU709;
+    case AVCOL_SPC_BT470BG:
+    case AVCOL_SPC_SMPTE170M: return SWS_CS_ITU601;
+    case AVCOL_SPC_SMPTE240M: return SWS_CS_SMPTE240M;
+    case AVCOL_SPC_FCC: return SWS_CS_FCC;
+    case AVCOL_SPC_BT2020_NCL:
+    case AVCOL_SPC_BT2020_CL: return SWS_CS_BT2020;
+    default: return f->height >= 720 ? SWS_CS_ITU709 : SWS_CS_ITU601;
+    }
+}
+
+static int full_range(const AVFrame *f) {
+    return f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P || f->format == AV_PIX_FMT_YUVJ422P ||
+           f->format == AV_PIX_FMT_YUVJ444P;
+}
+
+/* to_display returns the frame ready for the screen: at the size it takes
+ * there (Lanczos on several threads, so 4K comes out as a sharp 1080p
+ * picture and SD/720p are upscaled better than the renderer's bilinear
+ * stretch) and already in RGB, converted with the frame's own matrix and
+ * range rather than whatever SDL would infer from the texture, and off the
+ * main thread. (Checked with FLEX_DUMP_FRAME: the result matches a textbook
+ * decode of the file pixel for pixel.) out is scratch space. */
 static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
     if (in->width != p->src_w || in->height != p->src_h) {
         p->sar = in->sample_aspect_ratio.num && in->sample_aspect_ratio.den ? av_q2d(in->sample_aspect_ratio) : 1.0;
-        p->src_bt709 = in->colorspace == AVCOL_SPC_BT709 ||
-                       (in->colorspace != AVCOL_SPC_BT470BG && in->colorspace != AVCOL_SPC_SMPTE170M && in->height >= 720);
+        p->src_bt709 = matrix(in) == SWS_CS_ITU709;
         p->src_h = in->height;
         p->src_w = in->width; /* last: the main thread lays out when it changes */
     }
     int w = SDL_AtomicGet(&p->want_w), h = SDL_AtomicGet(&p->want_h);
     if (w <= 0 || h <= 0) w = in->width, h = in->height; /* not laid out yet */
-    int yuv420 = in->format == AV_PIX_FMT_YUV420P || in->format == AV_PIX_FMT_YUVJ420P;
-    if (yuv420 && in->width == w && in->height == h) return in;
 
-    int key[5] = {in->width, in->height, in->format, w, h};
+    int key[7] = {in->width, in->height, in->format, w, h, matrix(in), full_range(in)};
     if (!p->vsws || memcmp(key, p->vsws_key, sizeof key) != 0) {
         sws_freeContext(p->vsws);
         p->vsws = sws_alloc_context();
@@ -814,8 +834,10 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
         av_opt_set_int(p->vsws, "src_format", in->format, 0);
         av_opt_set_int(p->vsws, "dstw", w, 0);
         av_opt_set_int(p->vsws, "dsth", h, 0);
-        av_opt_set_int(p->vsws, "dst_format", AV_PIX_FMT_YUV420P, 0);
-        av_opt_set_int(p->vsws, "sws_flags", SWS_LANCZOS | SWS_ACCURATE_RND, 0);
+        av_opt_set_int(p->vsws, "dst_format", AV_PIX_FMT_BGRA, 0); /* SDL's ARGB8888 in memory order */
+        /* full-resolution chroma both ways: sharper colour edges than the default */
+        av_opt_set_int(p->vsws, "sws_flags",
+                       SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP, 0);
         av_opt_set_int(p->vsws, "threads", av_cpu_count() > 1 ? av_cpu_count() / 2 : 4, 0);
         if (sws_init_context(p->vsws, NULL, NULL) < 0) {
             fprintf(stderr, "player: cannot scale %dx%d to %dx%d\n", in->width, in->height, w, h);
@@ -823,11 +845,16 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
             p->vsws = NULL;
             return in;
         }
+        sws_setColorspaceDetails(p->vsws, sws_getCoefficients(matrix(in)), full_range(in),
+                                 sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
         memcpy(p->vsws_key, key, sizeof key);
-        fprintf(stderr, "player: scaling %dx%d %s to %dx%d (Lanczos)\n", in->width, in->height,
-                av_get_pix_fmt_name(in->format), w, h);
+        static const char *names[] = {[SWS_CS_ITU709] = "BT.709", [SWS_CS_FCC] = "FCC", [SWS_CS_ITU601] = "BT.601",
+                                      [SWS_CS_SMPTE240M] = "SMPTE 240M", [SWS_CS_BT2020] = "BT.2020"};
+        fprintf(stderr, "player: %dx%d %s (%s, %s range) to %dx%d RGB (Lanczos)\n", in->width, in->height,
+                av_get_pix_fmt_name(in->format), names[matrix(in)] ? names[matrix(in)] : "?",
+                full_range(in) ? "full" : "limited", w, h);
     }
-    out->format = AV_PIX_FMT_YUV420P;
+    out->format = AV_PIX_FMT_BGRA;
     out->width = w;
     out->height = h;
     if (sws_scale_frame(p->vsws, out, in) < 0) {
@@ -955,15 +982,19 @@ static int open_decoder(AVFormatContext *fmt, enum AVMediaType type, AVCodecCont
 
 static void upload_frame(Player *p, AVFrame *f) {
     if (p->src_w != p->laid_w || p->src_h != p->laid_h) layout(p); /* a new picture size */
-    if (!p->tex || p->tex_w != f->width || p->tex_h != f->height) {
+    int rgb = f->format == AV_PIX_FMT_BGRA; /* what to_display makes; YUV only if it failed */
+    Uint32 fmt = rgb ? SDL_PIXELFORMAT_ARGB8888 : SDL_PIXELFORMAT_IYUV;
+    if (!p->tex || p->tex_w != f->width || p->tex_h != f->height || p->tex_fmt != fmt) {
         if (p->tex) SDL_DestroyTexture(p->tex);
-        /* the matrix of the source, not of the (scaled) texture size SDL would guess from */
-        SDL_SetYUVConversionMode(p->src_bt709 ? SDL_YUV_CONVERSION_BT709 : SDL_YUV_CONVERSION_BT601);
-        p->tex = SDL_CreateTexture(p->ren, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, f->width, f->height);
+        if (!rgb) SDL_SetYUVConversionMode(p->src_bt709 ? SDL_YUV_CONVERSION_BT709 : SDL_YUV_CONVERSION_BT601);
+        p->tex = SDL_CreateTexture(p->ren, fmt, SDL_TEXTUREACCESS_STREAMING, f->width, f->height);
         p->tex_w = f->width;
         p->tex_h = f->height;
+        p->tex_fmt = fmt;
     }
-    if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
+    if (rgb) {
+        SDL_UpdateTexture(p->tex, NULL, f->data[0], f->linesize[0]);
+    } else if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
         SDL_UpdateYUVTexture(p->tex, NULL, f->data[0], f->linesize[0], f->data[1], f->linesize[1], f->data[2],
                              f->linesize[2]);
     } else {
@@ -977,6 +1008,31 @@ static void upload_frame(Player *p, AVFrame *f) {
         SDL_UpdateYUVTexture(p->tex, NULL, dst[0], dstls[0], dst[1], dstls[1], dst[2], dstls[2]);
         av_freep(&dst[0]);
     }
+}
+
+/* dump_frame: with FLEX_DUMP_FRAME set, 5 s into playback, saves the frame as
+ * the player converted it (frame.bmp) and the screen as the renderer drew
+ * it (screen.bmp) in the app folder, to compare colours with the source. */
+static void dump_frame(Player *p, AVFrame *f) {
+    static int on = -1, done;
+    if (on < 0) on = getenv("FLEX_DUMP_FRAME") != NULL;
+    if (!on || done || f->format != AV_PIX_FMT_BGRA || SDL_GetTicks() - p->gate_opened < 5000) return;
+    done = 1;
+    SDL_Surface *s = SDL_CreateRGBSurfaceWithFormatFrom(f->data[0], f->width, f->height, 32, f->linesize[0],
+                                                        SDL_PIXELFORMAT_ARGB8888);
+    if (s) {
+        SDL_SaveBMP(s, "/data/homebrew/FLEX/frame.bmp");
+        SDL_FreeSurface(s);
+    }
+    redraw(p); /* draw it, then read back what the renderer made of it */
+    SDL_Surface *scr = SDL_CreateRGBSurfaceWithFormat(0, SCREEN_W, SCREEN_H, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (scr && SDL_RenderReadPixels(p->ren, NULL, SDL_PIXELFORMAT_ARGB8888, scr->pixels, scr->pitch) == 0)
+        SDL_SaveBMP(scr, "/data/homebrew/FLEX/screen.bmp");
+    if (scr) SDL_FreeSurface(scr);
+    SDL_RendererInfo ri;
+    SDL_GetRendererInfo(p->ren, &ri);
+    fprintf(stderr, "player: dumped the frame at pts %.3f (renderer %s, window format %s)\n", p->last_pts, ri.name,
+            SDL_GetPixelFormatName(SDL_GetWindowPixelFormat(SDL_RenderGetWindow(p->ren))));
 }
 
 /* note_drop: when frames keep coming late, have the video thread stop
@@ -1076,6 +1132,7 @@ static int show_next(Player *p) {
     p->drops_in_row = 0;
     Uint64 d0 = SDL_GetPerformanceCounter();
     upload_frame(p, f);
+    dump_frame(p, f);
     fq_pop(&p->fq);
     redraw(p);
     average(&p->draw_ms, ms_since(d0));
@@ -1104,8 +1161,12 @@ static void note_waiting(Player *p) {
         if (!p->empty_since) p->empty_since = now;
         p->buffering = now - p->empty_since >= BUFFERING_MS;
         /* the network can't keep up: hold the sound and the clock instead of
-         * playing on and dropping every late frame */
-        if (p->buffering && !p->gate && SDL_AtomicGet(&p->read_eof) != cur_serial(p) + 1) {
+         * playing on and dropping every late frame. Only when the read-ahead
+         * is really empty (no frames but packets waiting is the decoder
+         * catching up), and not in the first seconds after a start or seek,
+         * when the pipeline is still filling. */
+        if (p->buffering && !p->gate && SDL_AtomicGet(&p->read_eof) != cur_serial(p) + 1 && buffered_s(p) < 0.5 &&
+            now - p->gate_opened > 5000) {
             fprintf(stderr, "player: ran dry at %.1fs, buffering %.0f s\n", p->last_pts, REBUFFER_S);
             /* a file whose peaks the link can't carry (its average says nothing about
              * an action scene): hand back so the caller asks for a converted stream */
