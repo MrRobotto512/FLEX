@@ -908,6 +908,46 @@ static void check_update(void) {
 
 /* draw_message fills the screen with one or two centred lines and a bar
  * (frac < 0: no bar). */
+/* test_pattern (FLEX_TEST_PATTERN set): labelled colour bars, each drawn
+ * twice, with a plain fill (as the menus are) and from an ARGB8888 texture
+ * (as video frames are), to see on the TV what the output path does to
+ * colours. Waits for a button. */
+static void test_pattern(SDL_Renderer *ren) {
+    static const struct {
+        const char *name;
+        Uint8 r, g, b;
+    } bars[] = {{"Red", 255, 0, 0},      {"Green", 0, 255, 0},     {"Blue", 0, 0, 255},     {"Yellow", 255, 255, 0},
+                {"Cyan", 0, 255, 255},   {"Magenta", 255, 0, 255}, {"Pink", 255, 105, 180}, {"Skin", 224, 172, 105},
+                {"Orange", 255, 128, 0}, {"Grey", 128, 128, 128},  {"White", 255, 255, 255}};
+    int n = sizeof bars / sizeof bars[0], bw = (SCREEN_W - 2 * MARGIN_X) / n;
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    SDL_RenderClear(ren);
+    draw_text(ren, g_font, "FLEX colour test", MARGIN_X, 60, C_FG);
+    draw_text(ren, g_small, "Top row: plain fill (menus)   ·   Bottom row: texture (video)   ·   any button continues",
+              MARGIN_X, 120, C_MUTED);
+    Uint32 *px = malloc(sizeof(Uint32) * bw * 300);
+    for (int i = 0; i < n; i++) {
+        int x = MARGIN_X + i * bw;
+        fill(ren, (SDL_Rect){x, 200, bw - 10, 300}, (SDL_Color){bars[i].r, bars[i].g, bars[i].b, 255});
+        SDL_Texture *t = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, bw - 10, 300);
+        for (int k = 0; px && k < (bw - 10) * 300; k++)
+            px[k] = 0xFF000000u | (Uint32)bars[i].r << 16 | (Uint32)bars[i].g << 8 | bars[i].b;
+        if (t && px) {
+            SDL_UpdateTexture(t, NULL, px, (bw - 10) * 4);
+            SDL_RenderCopy(ren, t, NULL, &(SDL_Rect){x, 540, bw - 10, 300});
+        }
+        if (t) SDL_DestroyTexture(t);
+        draw_text(ren, g_tiny, bars[i].name, x, 860, C_FG);
+    }
+    free(px);
+    SDL_RenderPresent(ren);
+    fprintf(stderr, "FLEX: showing the colour test pattern\n");
+    SDL_Delay(500);
+    for (SDL_Event e;;)
+        if (SDL_WaitEventTimeout(&e, 100) && (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_KEYDOWN || e.type == SDL_QUIT))
+            break;
+}
+
 static void draw_message(SDL_Renderer *ren, const char *line1, const char *line2, double frac) {
     SDL_SetRenderDrawColor(ren, C_BG.r, C_BG.g, C_BG.b, 255);
     SDL_RenderClear(ren);
@@ -1141,6 +1181,7 @@ int main(int argc, char **argv) {
     load_int(UPSCALE_FILE, &g_upscale);
     load_int(VOLUME_FILE, &g_volume);
     load_int(LINK_FILE, &g_link_kbps);
+    if (getenv("FLEX_TEST_PATTERN")) test_pattern(ren);
     char status[256] = "Looking for a FLEX server…";
     draw_grid(ren, TAB_MOVIES, NULL, 0, 0, 0, status, 0);
     fprintf(stderr, "FLEX: first frame presented\n");
