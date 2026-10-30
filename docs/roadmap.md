@@ -14,8 +14,9 @@ Build order, each step produces something you can run.
    - [ ] library folder picker, scan status, fix-match UI
    - [ ] show LAN + tailnet addresses, Tailscale toggle
 3. **PS5 client** (`ps5-client/`)
-   - [ ] hello-world ELF via elfldr, controller input
-   - [ ] SDL window, poster grid from `/movies`
+   - [x] toolchain in WSL (`tools/setup-wsl.sh`), FLEX.elf builds and runs via elfldr
+   - [x] SDL window, controller input, movie list from `/movies` (discovery works on the LAN)
+   - [ ] poster grid
    - [ ] FFmpeg playback of one HLS URL (decode → swscale → SDL texture, PCM → SDL audio)
    - [ ] resume, seek (restart session with `start=`), audio track pick
    - [ ] install to `/data/homebrew/FLEX/` + launcher icon

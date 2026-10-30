@@ -129,6 +129,8 @@ double player_play(SDL_Renderer *ren, const char *url) {
     p.vidx = open_decoder(p.fmt, AVMEDIA_TYPE_VIDEO, &p.vdec);
     p.aidx = open_decoder(p.fmt, AVMEDIA_TYPE_AUDIO, &p.adec);
     if (p.vidx < 0) goto fail;
+    fprintf(stderr, "player: video %s %dx%d, audio %s\n", p.vdec->codec->name, p.vdec->width, p.vdec->height,
+            p.adec ? p.adec->codec->name : "none");
 
     SDL_AudioSpec want = {.freq = AUDIO_RATE, .format = AUDIO_S16SYS, .channels = AUDIO_CH, .samples = 1024};
     p.dev = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);

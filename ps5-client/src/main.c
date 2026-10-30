@@ -99,8 +99,10 @@ static void play_movie(SDL_Renderer *ren, Movie *m) {
     cJSON *dur = cJSON_GetObjectItem(info, "duration_s");
     char url[512];
     snprintf(url, sizeof url, "http://%s:%d%s", g_host, g_port, rel ? rel : "");
+    fprintf(stderr, "FLEX: play \"%s\" via %s: %s\n", m->title, method ? method : "?", url);
 
     double pos = player_play(ren, url);
+    fprintf(stderr, "FLEX: stopped at %.1fs\n", pos);
 
     if (pos >= 0) {
         /* HLS sessions start at `start`, direct files at 0 */
@@ -196,9 +198,12 @@ int main(int argc, char **argv) {
     int n = 0, sel = 0, quit = 0;
 
     if (find_server() == 0) {
+        fprintf(stderr, "FLEX: server %s:%d\n", g_host, g_port);
         list = fetch_movies(&n);
+        fprintf(stderr, "FLEX: %d movies\n", n);
         snprintf(status, sizeof status, "%s:%d  ·  %d movies", g_host, g_port, n);
     } else {
+        fprintf(stderr, "FLEX: no server found (discovery timed out, no saved address)\n");
         snprintf(status, sizeof status, "No server found. Start FLEX on your PC (same network), or put \"host port\" in " SAVED_SERVER);
     }
 
