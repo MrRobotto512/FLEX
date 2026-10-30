@@ -11,7 +11,7 @@ import (
 
 // decidePlay picks direct play, remux or transcode for an item (kind is
 // "movie" or "episode") and profile.
-func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path string, mi *MediaInfo, profileName string, audio, sub int, start float64) (PlayInfo, error) {
+func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path string, mi *MediaInfo, profileName string, audio, sub int, start float64, upscale bool) (PlayInfo, error) {
 	if mi == nil {
 		return PlayInfo{}, fmt.Errorf("%s %d has not been probed", kind, id)
 	}
@@ -38,6 +38,14 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 	audioOK := info.AudioCodec == "aac" && defaultAudio(mi, audio).Channels <= 2
 	containerOK := mi.Container == "mov" || mi.Container == "mp4"
 
+	// Upscaling SD and 720p on the server (Lanczos, then NVENC/x264) looks
+	// better than the console stretching the small picture itself; it means
+	// a transcode even for files that could play directly.
+	upscale = upscale && mi.Video.Height > 0 && mi.Video.Height < p.MaxHeight*9/10
+	if upscale {
+		videoOK = false
+	}
+
 	// Direct play ignores start: the client seeks in the file itself.
 	if videoOK && audioOK && containerOK && sub < 0 {
 		info.Method = "direct"
@@ -53,6 +61,7 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 		Sub:     sub,
 		Start:   start,
 		CopyVid: videoOK && sub < 0,
+		Upscale: upscale,
 	})
 	if err != nil {
 		return PlayInfo{}, err
@@ -63,11 +72,12 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 	info.AudioCodec = "aac"
 	if !(videoOK && sub < 0) {
 		info.VideoCodec = "h264"
-		if mi.Video.Height > p.MaxHeight {
+		if mi.Video.Height > p.MaxHeight || upscale {
 			info.Width = mi.Video.Width * p.MaxHeight / mi.Video.Height / 2 * 2
 			info.Height = p.MaxHeight
 		}
 	}
+	info.Upscaled = upscale
 	return info, nil
 }
 

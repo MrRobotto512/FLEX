@@ -138,6 +138,7 @@ type PlayInfo struct {
 	AudioCodec string  `json:"audio_codec"`
 	Width      int     `json:"width"`
 	Height     int     `json:"height"`
+	Upscaled   bool    `json:"upscaled,omitempty"`
 }
 
 type ScanStatus struct {

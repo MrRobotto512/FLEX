@@ -53,6 +53,7 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 | Player | D-pad left / right | back / forward 10 s (hold to repeat) |
 | Player | D-pad down / up | back / forward 60 s |
 | Player | Square | picture shape: Original → 16:9 → 4:3 → 2.35:1 → Zoom → Stretch (remembered per movie/episode) |
+| Player | Triangle | upscaling on/off: the server scales SD and 720p video to 1080p (Lanczos + light sharpening, deinterlaced) before sending it; restarts the stream where you are; remembered for everything |
 | Player | Circle | stop (progress is saved) |
 
 Seeks add up: the jump happens 0.7 s after the last press, with a progress bar showing the target. Direct-play files seek in place; a transcoded movie restarts its server session at the new time (a second or two).

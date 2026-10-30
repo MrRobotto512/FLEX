@@ -10,6 +10,7 @@ typedef struct {
     double duration; /* whole item, for the progress bar */
     int seekable;    /* direct file: seek in place; otherwise the caller restarts the stream at seek_to */
     int aspect;      /* ASPECT_* to start with */
+    int upscaled;    /* the server is upscaling this stream (shown in the OSD) */
     TTF_Font *font;  /* OSD text */
 } PlayOpts;
 
@@ -23,13 +24,15 @@ typedef struct {
     double seek_to;  /* >= 0: the user seeked in a non-seekable stream, restart it here */
     int ended;       /* played to the end */
     int aspect;      /* ASPECT_* in use when playback stopped */
+    int toggle_upscale; /* Triangle: restart at `position` with upscaling switched */
 } PlayResult;
 
 /* Plays one stream until it ends, the user backs out, or (non-seekable
  * streams) the user seeks. Decoding is on the CPU, so the server must have
  * sent the `ps5` profile (<=1080p H.264 + AAC).
  *
- * Controls: Cross pause, Circle stop, Square picture shape, D-pad
+ * Controls: Cross pause, Circle stop, Square picture shape, Triangle
+ * server upscaling on/off, D-pad
  * left/right -/+10 s, up/down +/-60 s (hold to repeat; the jump happens
  * 0.7 s after the last press so several presses add up). */
 PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o);

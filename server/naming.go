@@ -17,9 +17,11 @@ var (
 	noiseRe     = regexp.MustCompile(`(?i)[\s._\-](1080p|2160p|720p|480p|4k|uhd|bluray|blu-ray|bdrip|brrip|web-?dl|webrip|hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|remux|hdr|dv|atmos|dts|aac|ac3|proper|repack)\b.*$`)
 	spaceRe     = regexp.MustCompile(`[._]+|\s+`)
 
-	// "Show Name S01E02 Episode Title", "show.name.1x02", "S01E01E02", with
-	// an optional "(2011)" after the show name
-	episodeRe = regexp.MustCompile(`(?i)^(?:(.*?)[\s._\-]+)?(?:S(\d{1,2})[\s._\-]*E(\d{1,3})(?:[\s._\-]*E\d{1,3})*|(\d{1,2})x(\d{2,3}))(?:[\s._\-]+(.*))?$`)
+	// "Show Name S01E02 Episode Title", "show.name.1x02": the first such token
+	// splits the name into series and episode title
+	episodeTokRe = regexp.MustCompile(`(?i)\bS(\d{1,2})[\s._\-]*E(\d{1,3})|\b(\d{1,2})x(\d{2,3})\b`)
+	// the rest of a multi-episode name: "S01E01E02", "S01E01-E02", "7x24 & 7x25"
+	moreEpsRe = regexp.MustCompile(`(?i)^(?:[\s._]*(?:-\s*)?E\d{1,3}\b|\s*[&+,-]\s*(?:\d{1,2}x\d{2,3}|S\d{1,2}E\d{1,3}|E\d{1,3})\b)+`)
 
 	// looser episode numbering, only trusted inside TV folders
 	bracketRe = regexp.MustCompile(`\[(\d{1,2})[\s.x]?(\d{2})\]`)              // [5 02] [401] [3x09]
@@ -29,10 +31,15 @@ var (
 	dashSERe  = regexp.MustCompile(`\b(\d{1,2})-(\d{2})\b`)                    // 1-04 Title
 	leadNumRe = regexp.MustCompile(`^(\d{1,4})(?:\s*[-._)]\s*|\s+|$)`)         // 01 Title, 1 - Title, 119 - Title, 507
 
-	seasonWordRe = regexp.MustCompile(`(?i)\b(?:season|series|staffel)[\s._\-]*(\d{1,2})\b`)
+	seasonWordRe = regexp.MustCompile(`(?i)\b(?:season|series|staffel)[\s._\-]*(\d{1,2})\b(\s*-\s*\d)?`)
 	seasonCodeRe = regexp.MustCompile(`(?i)^s(\d{1,2})$`)
 	specialsRe   = regexp.MustCompile(`(?i)^specials?$`)
 	seasonSufRe  = regexp.MustCompile(`(?i)\s*-?\s*\b(?:season|series)\s*\d+\s*$`)
+
+	// where a show folder name stops being the show's name: "Bobs Burgers
+	// Season 3 Complete", "Chappelle's Show The Complete Series", "Mamas
+	// Family Complete Series 1-6 SD TVRIP", "Better Call Saul Season 2 (1080p"
+	showCutRe = regexp.MustCompile(`(?i)\b(?:the\s+)?complete(?:\s+(?:series|seasons?|collection|box\s*set))?\b|\b(?:season|series|staffel)s?[\s._\-]*\d|\bS\d{1,2}(?:\s*-\s*S?\d{1,2})?\b|\b(?:sd|tvrip|dvd\s?rips?|dvdrip|hdtv|web-?dl|webrip|bluray|1080p|720p|480p|x264|x265)\b|\s[\[(]`)
 
 	// folders whose contents are bonus material, not episodes or movies
 	extrasDirRe = regexp.MustCompile(`(?i)^(extras?|featurettes?|behind the scenes|deleted scenes|bonus( features)?|trailers?|samples?|interviews?|shorts)$`)
@@ -129,22 +136,21 @@ type episodeName struct {
 
 // parseEpisode recognises the unambiguous forms (S01E02, 1x02) anywhere.
 func parseEpisode(name string) (episodeName, bool) {
-	m := episodeRe.FindStringSubmatch(name)
+	m := episodeTokRe.FindStringSubmatchIndex(name)
 	if m == nil {
 		return episodeName{}, false
 	}
+	num := func(i int) int { n, _ := strconv.Atoi(name[m[i]:m[i+1]]); return n }
 	var e episodeName
-	if m[2] != "" {
-		e.Season, _ = strconv.Atoi(m[2])
-		e.Episode, _ = strconv.Atoi(m[3])
+	if m[2] >= 0 {
+		e.Season, e.Episode = num(2), num(4)
 	} else {
-		e.Season, _ = strconv.Atoi(m[4])
-		e.Episode, _ = strconv.Atoi(m[5])
+		e.Season, e.Episode = num(6), num(8)
 	}
-	if strings.TrimSpace(m[1]) != "" {
-		e.Series, e.Year = parseName(m[1])
+	if prefix := strings.Trim(name[:m[0]], " ._-[("); prefix != "" {
+		e.Series, e.Year = parseName(prefix)
 	}
-	e.Title = cleanEpisodeTitle(m[6], "")
+	e.Title = cleanEpisodeTitle(moreEpsRe.ReplaceAllString(name[m[1]:], ""), "")
 	return e, true
 }
 
@@ -154,13 +160,33 @@ func seasonFromDir(name string) (int, bool) {
 	if specialsRe.MatchString(name) {
 		return 0, true
 	}
-	for _, re := range []*regexp.Regexp{seasonCodeRe, seasonWordRe} {
-		if m := re.FindStringSubmatch(name); m != nil {
-			n, _ := strconv.Atoi(m[1])
-			return n, true
-		}
+	if m := seasonCodeRe.FindStringSubmatch(name); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		return n, true
+	}
+	// "Season 3", but not "Complete Series 1-6"
+	if m := seasonWordRe.FindStringSubmatch(name); m != nil && m[2] == "" {
+		n, _ := strconv.Atoi(m[1])
+		return n, true
 	}
 	return 0, false
+}
+
+// cleanShowName turns a show folder name into the series title. It returns
+// "" when the folder is only a season ("Season 3 [DVD Rips]").
+func cleanShowName(dir string) (string, int) {
+	name, year := parseName(dir)
+	if loc := showCutRe.FindStringIndex(name); loc != nil {
+		cut := strings.TrimSpace(strings.Trim(strings.TrimSpace(name[:loc[0]]), "-._,"))
+		if cut == "" {
+			if _, ok := seasonFromDir(name); ok {
+				return "", 0
+			}
+			return name, year // "Complete Savages" is a title, not noise
+		}
+		name = cut
+	}
+	return name, year
 }
 
 // seriesFromDirs handles "Show Name/Season 01/S01E01.mkv": the show is the
@@ -204,22 +230,30 @@ func relDirs(path, root string) []string {
 func parseTVEpisode(path, root string) episodeName {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	dirs := relDirs(path, root)
-	season, haveSeason, showDir := 1, false, ""
+	season, haveSeason, seasonIdx := 1, false, -1
 	for i, d := range dirs {
 		if n, ok := seasonFromDir(d); ok {
-			season, haveSeason = n, true
-			if i > 0 {
-				showDir = dirs[i-1]
-			}
+			season, haveSeason, seasonIdx = n, true, i
 		}
 	}
-	if showDir == "" && len(dirs) > 0 {
-		showDir = dirs[0]
-	}
 
+	// The show is the nearest folder above the season folder that is more
+	// than a season ("That 70's Show - Season 4" is both); without a season
+	// folder, the first folder under the root. A season folder right under
+	// the root means the root itself is the show's folder.
 	var e episodeName
-	if showDir != "" {
-		e.Series, e.Year = parseName(showDir)
+	last := len(dirs) - 1
+	if seasonIdx >= 0 {
+		last = seasonIdx
+	}
+	if seasonIdx < 0 && len(dirs) > 0 {
+		last = 0
+	}
+	for i := last; i >= 0 && e.Series == ""; i-- {
+		e.Series, e.Year = cleanShowName(dirs[i])
+	}
+	if e.Series == "" && seasonIdx >= 0 {
+		e.Series, e.Year = cleanShowName(filepath.Base(root))
 	}
 	if strict, ok := parseEpisode(base); ok {
 		if e.Series == "" {

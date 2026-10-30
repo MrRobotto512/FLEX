@@ -70,7 +70,9 @@ Playback and progress work exactly like movies with the `/episodes/{id}` prefix:
 
 ## Playback
 
-`GET /movies/{id}/play?profile=direct|ps5|remote&audio=<index>&sub=<index>&start=<seconds>` (or `/episodes/{id}/play`)
+`GET /movies/{id}/play?profile=direct|ps5|remote&audio=<index>&sub=<index>&start=<seconds>&upscale=0|1` (or `/episodes/{id}/play`)
+
+`upscale=1` scales video below ~1000 lines up to the profile's height on the server (Lanczos, light unsharp, NVENC/x264); the answer says `"upscaled":true` and is always `hls`. Every transcode deinterlaces frames flagged interlaced.
 
 The server decides how to deliver the file for that profile and returns:
 ```json
@@ -106,6 +108,7 @@ If the source is already within a profile's limits the server remuxes (`-c:v cop
 - `GET /library/status` → `{"scanning":true,"files_seen":812,"movies":790,"shows":12,"episodes":240,"last_scan":"…"}`
 - `GET /library/folders`, `PUT /library/folders` body `["D:\\Movies","E:\\More"]` — desktop UI only.
 - `POST /movies/{id}/match` body `{"tmdb_id":949}` — fix a wrong metadata match.
+- `GET /library/unmatched` → `{"movies":[{"id","title","year","path"}],"shows":[{"id","title","year","path","episodes"}]}` — what TMDB could not identify, with file paths. Home network only.
 
 ## Auth
 

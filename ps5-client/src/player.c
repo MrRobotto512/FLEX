@@ -65,6 +65,7 @@ typedef struct {
     double pending; /* media time the user is seeking to, -1 = none */
     Uint32 seek_at; /* commit the pending seek at this tick */
     double result_seek;
+    int toggle_upscale;
     int held;
     Uint32 next_repeat;
     Uint32 osd_until;
@@ -135,9 +136,10 @@ static void draw_osd(Player *p) {
     snprintf(line, sizeof line, "%s%s / %s", p->pending >= 0 ? "Seek to " : "", now, total);
     osd_text(p, p->o->title ? p->o->title : "", 80, SCREEN_H - 140, 0);
     osd_text(p, line, SCREEN_W - 80, SCREEN_H - 140, 1);
-    char shape[48];
-    snprintf(shape, sizeof shape, "%sPicture: %s", p->paused ? "Paused  ·  " : "", aspect_names[p->aspect]);
-    osd_text(p, shape, SCREEN_W / 2 - 160, SCREEN_H - 140, 0);
+    char shape[128];
+    snprintf(shape, sizeof shape, "%s%s  ·  Upscale %s  ·  %dx%d", p->paused ? "Paused  ·  " : "",
+             aspect_names[p->aspect], p->o->upscaled ? "on" : "off", p->tex_w, p->tex_h);
+    osd_text(p, shape, SCREEN_W / 2 - 300, SCREEN_H - 140, 0);
 
     if (dur > 0) {
         int x = 80, y = SCREEN_H - 70, w = SCREEN_W - 160;
@@ -187,6 +189,7 @@ static int key_button(SDL_Keycode k) {
     case SDLK_SPACE: case SDLK_RETURN: return SDL_CONTROLLER_BUTTON_A;
     case SDLK_ESCAPE: return SDL_CONTROLLER_BUTTON_B;
     case SDLK_TAB: return SDL_CONTROLLER_BUTTON_X;
+    case SDLK_u: return SDL_CONTROLLER_BUTTON_Y;
     }
     return -1;
 }
@@ -245,6 +248,9 @@ static void handle_events(Player *p) {
             p->quit = 1;
         } else if (b == SDL_CONTROLLER_BUTTON_A) {
             set_paused(p, !p->paused);
+        } else if (b == SDL_CONTROLLER_BUTTON_Y) {
+            p->toggle_upscale = 1;
+            p->quit = 1;
         } else if (b == SDL_CONTROLLER_BUTTON_X) {
             p->aspect = (p->aspect + 1) % ASPECT_COUNT;
             layout(p);
@@ -522,6 +528,7 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     res.position = position(&p);
     res.seek_to = p.result_seek;
     res.ended = p.ended;
+    res.toggle_upscale = p.toggle_upscale;
 done:
     res.aspect = p.aspect;
     if (p.dev) SDL_CloseAudioDevice(p.dev);

@@ -241,6 +241,13 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 			}
 			if err != nil {
 				s.log.Warn("tmdb: no show match", "title", series, "year", year, "err", err)
+			} else if other := s.db.ShowByTMDB(md.TMDBID, id); other != 0 {
+				// same series under another folder name: one show
+				s.log.Info("scan: merging show", "folder", series, "into", other)
+				if err := s.db.MergeShow(id, other); err == nil {
+					showID = other
+					s.shows[key] = other
+				}
 			} else if err := s.db.SetShowMetadata(id, md); err != nil {
 				s.log.Warn("tmdb: save show", "id", id, "err", err)
 			}
@@ -252,6 +259,15 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 	if err != nil {
 		return err
 	}
+	title := ep.Title
+	if title == "" {
+		title = fmt.Sprintf("Episode %d", ep.Episode)
+	}
+	if existing != nil && (existing.ShowID != showID || existing.Season != ep.Season || existing.Episode != ep.Episode) {
+		if err := s.db.PlaceEpisode(existing.ID, showID, ep.Season, ep.Episode, title); err != nil {
+			return err
+		}
+	}
 	if existing != nil && existing.Size == size && existing.MTime == mtime {
 		return s.db.TouchEpisodeSeen(existing.ID, now)
 	}
@@ -261,10 +277,6 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 	}
 	if existing != nil {
 		return s.db.UpdateEpisodeFile(existing.ID, size, mtime, media, now)
-	}
-	title := ep.Title
-	if title == "" {
-		title = fmt.Sprintf("Episode %d", ep.Episode)
 	}
 	if _, err := s.db.InsertEpisode(showID, ep.Season, ep.Episode, title, path, size, mtime, media, now); err != nil {
 		return err

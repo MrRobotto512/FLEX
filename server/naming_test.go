@@ -44,6 +44,46 @@ func TestParseTVEpisode(t *testing.T) {
 	}
 }
 
+// Folder layouts seen in the same library after the first TV scan.
+func TestTVShowFolders(t *testing.T) {
+	root := filepath.FromSlash("D:/TV Shows")
+	p := func(s string) string { return filepath.Join(root, filepath.FromSlash(s)) }
+	cases := []struct {
+		root, path      string
+		series          string
+		season, episode int
+	}{
+		{root, p("Bobs Burgers Season 3 Complete/Bobs.Burgers.S03E01.mkv"), "Bobs Burgers", 3, 1},
+		{root, p("That 70's Show - Season 4/01 - That 70's Show - Hyde Moves In.avi"), "That 70's Show", 4, 1},
+		{root, p("Better Call Saul Season 2 (1080p x265 Joy)/Better Call Saul S02E03.mkv"), "Better Call Saul", 2, 3},
+		{root, p("Mamas Family Complete Series 1-6 SD TVRIP kellycarl/Season 2/03 Mama Learns to Drive.avi"), "Mamas Family", 2, 3},
+		{root, p("Chappelle's Show The Complete Series/Season 1/101 - Episode One.avi"), "Chappelle's Show", 1, 1},
+		{root, p("Futurama Complete/Season 1/Futurama 1x02 The Series Has Landed.avi"), "Futurama", 1, 2},
+		{root, p("A Series of Unfortunate Events/S01E01.mkv"), "A Series of Unfortunate Events", 1, 1},
+		// the show's own folder added as the TV folder
+		{filepath.FromSlash("D:/TV/Workaholics"), filepath.FromSlash("D:/TV/Workaholics/Season 3 [DVD Rips]/E05 Fat Cats.avi"), "Workaholics", 3, 5},
+		// double episodes
+		{root, p("Will & Grace/Season 7/7x24 & 7x25 - It's A Dad, Dad, Dad, Dad World.avi"), "Will & Grace", 7, 24},
+		{root, p("Will & Grace/Season 8/8x01 & 8x02 - Alive and Schticking.avi"), "Will & Grace", 8, 1},
+	}
+	for _, c := range cases {
+		e := parseTVEpisode(c.path, c.root)
+		if e.Series != c.series || e.Season != c.season || e.Episode != c.episode {
+			t.Errorf("parseTVEpisode(%q)\n got  %q S%02dE%02d (%q)\n want %q S%02dE%02d",
+				c.path, e.Series, e.Season, e.Episode, e.Title, c.series, c.season, c.episode)
+		}
+	}
+	if _, ok := seasonFromDir("Mamas Family Complete Series 1-6"); ok {
+		t.Error(`"Complete Series 1-6" is a range, not a season`)
+	}
+	if e, _ := parseEpisode("Friends S10E17E18 The Last One"); e.Title != "The Last One" {
+		t.Errorf("double episode title = %q", e.Title)
+	}
+	if e, _ := parseEpisode("7x24 & 7x25 - It's A Dad, Dad, Dad, Dad World"); e.Series != "" || e.Title != "It's A Dad, Dad, Dad, Dad World" {
+		t.Errorf("7x24 & 7x25: series %q title %q", e.Series, e.Title)
+	}
+}
+
 func TestParseNameYearFirstAndIndex(t *testing.T) {
 	cases := []struct {
 		in    string

@@ -22,6 +22,7 @@
 #define SAVED_SERVER APP_DIR "/server.txt"
 #define FONT_PATH APP_DIR "/assets/DejaVuSans.ttf"
 #define ASPECT_FILE APP_DIR "/aspect.txt"
+#define UPSCALE_FILE APP_DIR "/upscale.txt"
 #define SCREEN_W 1920
 #define SCREEN_H 1080
 
@@ -191,6 +192,23 @@ static void set_aspect(char kind, long id, int aspect) {
     FILE *f = fopen(ASPECT_FILE, "w");
     if (!f) return;
     for (int j = 0; j < g_naspects; j++) fprintf(f, "%c %ld %d\n", g_aspects[j].kind, g_aspects[j].id, g_aspects[j].aspect);
+    fclose(f);
+}
+
+/* Upscaling (Triangle while playing) is one switch for everything. */
+static int g_upscale;
+
+static void load_upscale(void) {
+    FILE *f = fopen(UPSCALE_FILE, "r");
+    if (!f) return;
+    if (fscanf(f, "%d", &g_upscale) != 1) g_upscale = 0;
+    fclose(f);
+}
+
+static void save_upscale(void) {
+    FILE *f = fopen(UPSCALE_FILE, "w");
+    if (!f) return;
+    fprintf(f, "%d\n", g_upscale);
     fclose(f);
 }
 
@@ -366,7 +384,8 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
     int aspect = get_aspect(kc, id);
     char path[256];
     for (;;) {
-        snprintf(path, sizeof path, "/api/v1/%s/%ld/play?profile=ps5&start=%d", kind, id, (int)start);
+        snprintf(path, sizeof path, "/api/v1/%s/%ld/play?profile=ps5&start=%d&upscale=%d", kind, id, (int)start,
+                 g_upscale);
         char *body = flex_get(g_host, g_port, path);
         if (!body) break;
         cJSON *info = cJSON_Parse(body);
@@ -378,12 +397,14 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         cJSON *dur = cJSON_GetObjectItem(info, "duration_s");
         if (cJSON_IsNumber(dur) && dur->valuedouble > 0) duration = dur->valuedouble;
         int hls = method && strcmp(method, "hls") == 0;
+        int upscaled = cJSON_IsTrue(cJSON_GetObjectItem(info, "upscaled"));
         char url[512];
         snprintf(url, sizeof url, "http://%s:%d%s", g_host, g_port, rel ? rel : "");
         fprintf(stderr, "FLEX: play \"%s\" via %s from %.0fs: %s\n", title, method ? method : "?", start, url);
 
         PlayOpts o = {.url = url, .title = title, .offset = hls ? start : 0, .initial = hls ? 0 : start,
-                      .duration = duration, .seekable = !hls, .aspect = aspect, .font = g_small};
+                      .duration = duration, .seekable = !hls, .aspect = aspect, .upscaled = upscaled,
+                      .font = g_small};
         PlayResult r = player_play(ren, &o);
         aspect = r.aspect; /* carried across session restarts */
         fprintf(stderr, "FLEX: stopped at %.1fs%s\n", r.position, r.seek_to >= 0 ? " (seek)" : "");
@@ -397,6 +418,12 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         }
         cJSON_Delete(info);
         if (r.position >= 0) position = r.position;
+        if (r.toggle_upscale) { /* restart where we are with the other setting */
+            g_upscale = !g_upscale;
+            save_upscale();
+            start = r.position > 0 ? r.position : start;
+            continue;
+        }
         if (r.seek_to < 0) break;
         start = r.seek_to;
     }
@@ -687,6 +714,7 @@ int main(int argc, char **argv) {
     }
 
     load_aspects();
+    load_upscale();
     char status[256] = "Looking for a FLEX server…";
     draw_grid(ren, KIND_MOVIE, NULL, 0, 0, 0, status);
     fprintf(stderr, "FLEX: first frame presented\n");

@@ -59,6 +59,7 @@ type transcodeRequest struct {
 	Sub     int     // absolute stream index, -1 = none (burned in when set)
 	Start   float64 // seconds
 	CopyVid bool    // remux video instead of re-encoding
+	Upscale bool    // scale up to the profile's height (Lanczos + light sharpening)
 }
 
 func NewTranscoder(ffmpeg, encoder, dir string, log *slog.Logger) *Transcoder {
@@ -67,7 +68,7 @@ func NewTranscoder(ffmpeg, encoder, dir string, log *slog.Logger) *Transcoder {
 
 // Key identifies a session by everything that changes the output.
 func (r transcodeRequest) Key() string {
-	h := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%d|%.0f|%v", r.Path, r.Profile.Name, r.Audio, r.Sub, r.Start, r.CopyVid)))
+	h := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%d|%.0f|%v|%v", r.Path, r.Profile.Name, r.Audio, r.Sub, r.Start, r.CopyVid, r.Upscale)))
 	return hex.EncodeToString(h[:6])
 }
 
@@ -148,7 +149,14 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 	if r.CopyVid {
 		a = append(a, "-c:v", "copy")
 	} else {
-		vf := []string{fmt.Sprintf("scale=-2:'min(%d,ih)'", r.Profile.MaxHeight)}
+		// deinterlace frames flagged interlaced (old TV and DVD rips); progressive
+		// frames pass through untouched
+		vf := []string{"bwdif=mode=send_frame:deint=interlaced"}
+		if r.Upscale {
+			vf = append(vf, fmt.Sprintf("scale=-2:%d:flags=lanczos", r.Profile.MaxHeight), "unsharp=5:5:0.5:5:5:0")
+		} else {
+			vf = append(vf, fmt.Sprintf("scale=-2:'min(%d,ih)'", r.Profile.MaxHeight))
+		}
 		if r.Media.Video.HDR != "" {
 			// needs an ffmpeg built with libzimg (the gyan.dev Windows builds have it)
 			vf = append(vf, "zscale=t=linear:npl=100", "format=gbrpf32le", "zscale=p=bt709",

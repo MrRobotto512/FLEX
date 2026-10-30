@@ -211,6 +211,9 @@ type fileRow struct {
 	MTime    int64
 	HasMeta  bool // movie: tmdb_id set; episode: meta flag
 	MatchVer int  // movie: matcher version of the last TMDB attempt
+
+	ShowID          int64 // episode placement, to move it when parsing improves
+	Season, Episode int
 }
 
 func (d *DB) LookupFile(path string) (*fileRow, error) {
@@ -289,6 +292,47 @@ func (d *DB) SetMetadata(id int64, md Metadata) error {
 	return err
 }
 
+// UnmatchedItem is a movie or show without TMDB data and where it lives.
+type UnmatchedItem struct {
+	ID       int64  `json:"id"`
+	Title    string `json:"title"`
+	Year     int    `json:"year,omitempty"`
+	Path     string `json:"path"`               // the movie file, or one episode of the show
+	Episodes int    `json:"episodes,omitempty"` // shows
+}
+
+func (d *DB) Unmatched(limit int) (movies, shows []UnmatchedItem, err error) {
+	movies, shows = []UnmatchedItem{}, []UnmatchedItem{}
+	rows, err := d.Query(`SELECT id, title, COALESCE(year, 0), path FROM movies WHERE tmdb_id IS NULL
+		ORDER BY path LIMIT ?`, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var u UnmatchedItem
+		if err := rows.Scan(&u.ID, &u.Title, &u.Year, &u.Path); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		movies = append(movies, u)
+	}
+	rows.Close()
+	rows, err = d.Query(`SELECT s.id, s.title, COALESCE(s.year, 0), MIN(e.path), COUNT(*) FROM shows s
+		JOIN episodes e ON e.show_id = s.id WHERE s.tmdb_id IS NULL GROUP BY s.id ORDER BY s.title LIMIT ?`, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var u UnmatchedItem
+		if err := rows.Scan(&u.ID, &u.Title, &u.Year, &u.Path, &u.Episodes); err != nil {
+			return nil, nil, err
+		}
+		shows = append(shows, u)
+	}
+	return movies, shows, rows.Err()
+}
+
 func (d *DB) CountMovies() (int, error) {
 	var n int
 	err := d.QueryRow(`SELECT COUNT(*) FROM movies`).Scan(&n)
@@ -299,14 +343,27 @@ func (d *DB) CountMovies() (int, error) {
 
 var showKeyRe = regexp.MustCompile(`[^a-z0-9]+`)
 
-// ShowKey normalises a series title (+ year) so "Bob's Burgers" and
-// "bobs.burgers" land on the same show.
+// ShowKey normalises a series title so "Bob's Burgers (2011)" and
+// "bobs.burgers" land on the same show. The year is left out: folder names
+// carry it inconsistently; shows that still split are merged by TMDB id.
 func ShowKey(title string, year int) string {
-	k := showKeyRe.ReplaceAllString(strings.ToLower(title), "")
-	if year != 0 {
-		k += fmt.Sprintf("|%d", year)
+	return showKeyRe.ReplaceAllString(strings.ToLower(title), "")
+}
+
+// ShowByTMDB finds another show already matched to the same TMDB series.
+func (d *DB) ShowByTMDB(tmdbID, except int64) int64 {
+	var id int64
+	d.QueryRow(`SELECT id FROM shows WHERE tmdb_id = ? AND id != ? ORDER BY id LIMIT 1`, tmdbID, except).Scan(&id)
+	return id
+}
+
+// MergeShow moves every episode of `from` into `into` and drops `from`.
+func (d *DB) MergeShow(from, into int64) error {
+	if _, err := d.Exec(`UPDATE episodes SET show_id = ? WHERE show_id = ?`, into, from); err != nil {
+		return err
 	}
-	return k
+	_, err := d.Exec(`DELETE FROM shows WHERE id = ?`, from)
+	return err
 }
 
 // UpsertShow returns the show id for a key, creating the row if needed.
@@ -484,8 +541,8 @@ func scanEpisode(r rowScanner, withMedia bool) (*Episode, error) {
 func (d *DB) LookupEpisodeFile(path string) (*fileRow, error) {
 	var r fileRow
 	var meta int
-	err := d.QueryRow(`SELECT id, size, mtime, meta FROM episodes WHERE path = ?`, path).
-		Scan(&r.ID, &r.Size, &r.MTime, &meta)
+	err := d.QueryRow(`SELECT id, size, mtime, meta, show_id, season, episode FROM episodes WHERE path = ?`, path).
+		Scan(&r.ID, &r.Size, &r.MTime, &meta, &r.ShowID, &r.Season, &r.Episode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -517,6 +574,14 @@ func (d *DB) UpdateEpisodeFile(id int64, size, mtime int64, media *MediaInfo, no
 	}
 	_, err = d.Exec(`UPDATE episodes SET size = ?, mtime = ?, media_json = ?, seen_at = ? WHERE id = ?`,
 		size, mtime, mj, now.UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// PlaceEpisode moves an episode to another show / number; its TMDB data is
+// fetched again for the new place.
+func (d *DB) PlaceEpisode(id, showID int64, season, episode int, title string) error {
+	_, err := d.Exec(`UPDATE episodes SET show_id = ?, season = ?, episode = ?, title = ?, overview = NULL,
+		runtime_s = NULL, still_path = NULL, meta = 0 WHERE id = ?`, showID, season, episode, title, id)
 	return err
 }
 

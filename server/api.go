@@ -40,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/library/scan", s.handleScan)
 	mux.HandleFunc("GET /api/v1/library/status", s.handleScanStatus)
 	mux.HandleFunc("GET /api/v1/library/folders", s.handleFoldersGet)
+	mux.HandleFunc("GET /api/v1/library/unmatched", s.handleUnmatched)
 	mux.HandleFunc("PUT /api/v1/library/folders", s.handleFoldersPut)
 	if s.web != nil {
 		mux.Handle("/", http.FileServerFS(s.web))
@@ -205,8 +206,9 @@ func (s *Server) handlePlay(kind string) http.HandlerFunc {
 		audio := intOr(q.Get("audio"), -1)
 		sub := intOr(q.Get("sub"), -1)
 		start, _ := strconv.ParseFloat(q.Get("start"), 64)
+		upscale := q.Get("upscale") == "1"
 
-		info, err := s.decidePlay(r.Context(), it.kind, it.id, it.path, it.media, profile, audio, sub, start)
+		info, err := s.decidePlay(r.Context(), it.kind, it.id, it.path, it.media, profile, audio, sub, start, upscale)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "ffmpeg_failed", err.Error())
 			return
@@ -313,6 +315,21 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.ScanStatus())
+}
+
+// handleUnmatched lists movies and shows TMDB could not identify, with their
+// file paths, to see why. Home network only: paths stay off the tailnet.
+func (s *Server) handleUnmatched(w http.ResponseWriter, r *http.Request) {
+	if isTailnetAddr(r.RemoteAddr) {
+		writeErr(w, http.StatusForbidden, "forbidden", "only available on the home network")
+		return
+	}
+	movies, shows, err := s.db.Unmatched(intOr(r.URL.Query().Get("limit"), 1000))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"movies": movies, "shows": shows})
 }
 
 func (s *Server) handleFoldersGet(w http.ResponseWriter, r *http.Request) {

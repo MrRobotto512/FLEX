@@ -42,7 +42,11 @@ Build order, each step produces something you can run.
    - [x] PS5: picture shape (Square), remembered per item; seek no longer stalls waiting for audio
    - [x] TV folders (everything inside is an episode), many numbering styles, season folders in movie folders
    - [x] title cleanup + TMDB retry ladder (leading index, year-first, " - Genre", editions, "Part 1")
-   - [ ] verified on hardware: seek, tray on the library PC, remote from a phone, reboot + rejailbreak
+   - [x] show names from "X Season 3 Complete" / "The Complete Series" folders, season folders right under a TV folder, double episodes, shows merged by TMDB id, episodes re-placed when parsing improves
+   - [x] server-side upscaling (Triangle on the PS5), deinterlacing for every transcode
+   - [x] `/library/unmatched` with file paths
+   - [x] verified on hardware: seek
+   - [ ] verified on hardware: tray on the library PC, remote from a phone, reboot + rejailbreak
 7. **Later**
    - [ ] subtitles rendered client-side (SDL2_ttf) instead of burned in
    - [ ] PIN for LAN guests
