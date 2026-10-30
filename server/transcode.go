@@ -49,6 +49,33 @@ type session struct {
 	lastUsed time.Time
 	done     chan struct{}
 	err      error
+	info     SessionInfo
+}
+
+// SessionInfo describes a running transcode for the API and the desktop app.
+type SessionInfo struct {
+	Key      string    `json:"key"`
+	File     string    `json:"file"`
+	Start    float64   `json:"start_s"`
+	Mode     string    `json:"mode"` // remux | transcode | upscale
+	Started  time.Time `json:"started"`
+	LastUsed time.Time `json:"last_used"`
+}
+
+// Encoder is the H.264 encoder sessions use.
+func (t *Transcoder) Encoder() string { return t.encoder }
+
+// Sessions lists the running transcodes.
+func (t *Transcoder) Sessions() []SessionInfo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := []SessionInfo{}
+	for _, s := range t.sessions {
+		i := s.info
+		i.LastUsed = s.lastUsed
+		out = append(out, i)
+	}
+	return out
 }
 
 type transcodeRequest struct {
@@ -60,6 +87,7 @@ type transcodeRequest struct {
 	Start   float64 // seconds
 	CopyVid bool    // remux video instead of re-encoding
 	Upscale bool    // scale up to the profile's height (Lanczos + light sharpening)
+	NoGPU   bool    // CPU filters even with NVENC (retry after the GPU pipeline failed)
 }
 
 func NewTranscoder(ffmpeg, encoder, dir string, log *slog.Logger) *Transcoder {
@@ -91,11 +119,17 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 	cctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(cctx, t.ffmpeg, t.args(r, dir)...)
 	s := &session{key: key, dir: dir, cmd: cmd, cancel: cancel, lastUsed: time.Now(), done: make(chan struct{})}
+	s.info = SessionInfo{Key: key, File: filepath.Base(r.Path), Start: r.Start, Mode: "transcode", Started: time.Now()}
+	if r.CopyVid {
+		s.info.Mode = "remux"
+	} else if r.Upscale {
+		s.info.Mode = "upscale"
+	}
 	t.sessions[key] = s
 	t.mu.Unlock()
 
 	stderr, _ := cmd.StderrPipe()
-	t.log.Info("ffmpeg start", "key", key, "args", strings.Join(cmd.Args[1:], " "))
+	t.log.Info("ffmpeg start", "key", key, "gpu", t.useGPU(r), "args", strings.Join(cmd.Args[1:], " "))
 	if err := cmd.Start(); err != nil {
 		close(s.done) // nothing will ever close it otherwise and remove() waits on it
 		t.remove(key)
@@ -123,6 +157,12 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		select {
 		case <-s.done:
 			t.remove(key)
+			if t.useGPU(r) {
+				// e.g. a codec the GPU can't decode: same job with CPU filters
+				t.log.Warn("ffmpeg GPU pipeline failed, retrying on the CPU", "key", key, "err", s.err)
+				r.NoGPU = true
+				return t.Start(ctx, r)
+			}
 			return "", fmt.Errorf("ffmpeg failed before producing output: %v", s.err)
 		case <-ctx.Done():
 			t.remove(key)
@@ -136,6 +176,21 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 
 func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 	a := []string{"-hide_banner", "-loglevel", "warning", "-nostdin"}
+	gpu := t.useGPU(r)
+	if !r.CopyVid {
+		// Decode on the GPU: with NVENC the frames stay on the card through
+		// deinterlacing, scaling and encoding (almost no CPU); otherwise
+		// -hwaccel auto at least takes decoding off the CPU, falling back to
+		// software by itself. Then encode only a little faster than playback
+		// after a first minute in one go, instead of converting the whole film
+		// flat out while nobody watches.
+		if gpu {
+			a = append(a, "-hwaccel", "cuda", "-hwaccel_output_format", "cuda")
+		} else {
+			a = append(a, "-hwaccel", "auto")
+		}
+		a = append(a, "-readrate", "1.5", "-readrate_initial_burst", "60")
+	}
 	if r.Start > 0 {
 		a = append(a, "-ss", fmt.Sprintf("%.3f", r.Start))
 	}
@@ -148,6 +203,13 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 
 	if r.CopyVid {
 		a = append(a, "-c:v", "copy")
+	} else if gpu {
+		scale := fmt.Sprintf("scale_cuda=-2:'min(%d,ih)':format=yuv420p", r.Profile.MaxHeight)
+		if r.Upscale {
+			scale = fmt.Sprintf("scale_cuda=-2:%d:interp_algo=lanczos:format=yuv420p", r.Profile.MaxHeight)
+		}
+		a = append(a, "-vf", "bwdif_cuda=mode=send_frame:deint=interlaced,"+scale)
+		a = append(a, t.videoCodecArgs(r.Profile)...)
 	} else {
 		// deinterlace frames flagged interlaced (old TV and DVD rips); progressive
 		// frames pass through untouched
@@ -178,6 +240,12 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 		"-hls_segment_filename", filepath.Join(dir, "seg%d.ts"),
 		filepath.Join(dir, "index.m3u8"))
 	return a
+}
+
+// useGPU: the all-CUDA pipeline needs NVENC and no CPU-only filters
+// (HDR tone mapping, burned-in subtitles).
+func (t *Transcoder) useGPU(r transcodeRequest) bool {
+	return t.encoder == "h264_nvenc" && !r.CopyVid && !r.NoGPU && r.Media.Video.HDR == "" && r.Sub < 0
 }
 
 func (t *Transcoder) videoCodecArgs(p profile) []string {

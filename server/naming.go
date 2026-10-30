@@ -24,16 +24,20 @@ var (
 	moreEpsRe = regexp.MustCompile(`(?i)^(?:[\s._]*(?:-\s*)?E\d{1,3}\b|\s*[&+,-]\s*(?:\d{1,2}x\d{2,3}|S\d{1,2}E\d{1,3}|E\d{1,3})\b)+`)
 
 	// looser episode numbering, only trusted inside TV folders
-	bracketRe = regexp.MustCompile(`\[(\d{1,2})[\s.x]?(\d{2})\]`)              // [5 02] [401] [3x09]
-	codeRe    = regexp.MustCompile(`^[A-Za-z]{2,5}(\d{1,2})(\d{2})\b`)         // FUT407
-	epWordRe  = regexp.MustCompile(`(?i)\b(?:episode|ep)[\s._\-]*(\d{1,3})\b`) // Episode 02, Ep.5
-	eNumRe    = regexp.MustCompile(`(?i)^e(\d{1,3})\b`)                        // E05 Title
-	dashSERe  = regexp.MustCompile(`\b(\d{1,2})-(\d{2})\b`)                    // 1-04 Title
-	leadNumRe = regexp.MustCompile(`^(\d{1,4})(?:\s*[-._)]\s*|\s+|$)`)         // 01 Title, 1 - Title, 119 - Title, 507
+	bracketRe  = regexp.MustCompile(`\[(\d{1,2})[\s.x]?(\d{2})\]`)                          // [5 02] [401] [3x09]
+	codeRe     = regexp.MustCompile(`^[A-Za-z]{2,5}(\d{1,2})(\d{2})\b`)                     // FUT407
+	epWordRe   = regexp.MustCompile(`(?i)\b(?:episode|ep)[\s._\-]*(\d{1,3})\b`)             // Episode 02, Ep.5
+	eNumRe     = regexp.MustCompile(`(?i)^e(\d{1,3})\b`)                                    // E05 Title
+	dashSERe   = regexp.MustCompile(`\b(\d{1,2})-(\d{2})\b`)                                // 1-04 Title
+	leadNumRe  = regexp.MustCompile(`^(\d{1,4})(?:\+\d{1,3}|[a-d])?(?:\s*[-._)]\s*|\s+|$)`) // 01 Title, 1 - Title, 119 - Title, 507, 108+9 - Title, 01a Title
+	groupTagRe = regexp.MustCompile(`\s*\[[^\]]*\]\s*$`)                                    // "Stunt Dogs [Moonsong]"
 
 	seasonWordRe = regexp.MustCompile(`(?i)\b(?:season|series|staffel)[\s._\-]*(\d{1,2})\b(\s*-\s*\d)?`)
 	seasonCodeRe = regexp.MustCompile(`(?i)^s(\d{1,2})$`)
 	specialsRe   = regexp.MustCompile(`(?i)^specials?$`)
+	onlyDigitsRe = regexp.MustCompile(`^\d+$`)
+	// movie-list folders that obviously hold TV
+	tvRootNameRe = regexp.MustCompile(`(?i)^(tv|tv[\s._-]*shows?|tv[\s._-]*series|television|shows|series)$`)
 	seasonSufRe  = regexp.MustCompile(`(?i)\s*-?\s*\b(?:season|series)\s*\d+\s*$`)
 
 	// where a show folder name stops being the show's name: "Bobs Burgers
@@ -75,6 +79,9 @@ func parseName(name string) (string, int) {
 		title = noiseRe.ReplaceAllString(title, "")
 	}
 	title = indexRe.ReplaceAllString(spaceRe.ReplaceAllString(title, " "), "")
+	if m := candSiteRe.FindStringSubmatch(title); m != nil { // "www HDSector com - Zoolander"
+		title = m[1]
+	}
 	title = strings.TrimSpace(strings.Trim(strings.TrimSpace(title), "-"))
 	if title == "" {
 		title = name
@@ -89,8 +96,12 @@ var (
 	candIndexRe   = regexp.MustCompile(`^\d{1,3}\s*[-.)]?\s+`)
 	candEditionRe = regexp.MustCompile(`(?i)\s*[(\[]?\b(extended|director'?s|theatrical|unrated|uncut|special|collector'?s|anniversary|ultimate|final|remastered|restored|imax)\b(\s+(cut|edition|version))?[)\]]?|\s*\b(reboot|remastered)\b`)
 	candPrefixRe  = regexp.MustCompile(`(?i)^(watch\s+|www\S*\s+\S+\s+[a-z]{2}\s+|disney'?s?\s+)`)
-	candPartRe    = regexp.MustCompile(`(?i)^(.+?)\s+part\s+(\d+|one|i)\b.*$`)
-	candTrailNum  = regexp.MustCompile(`\s+\d$`)
+	// "www HDSector com - Zoolander", "Crazy4TV com - Spider-Man Homecoming"
+	candSiteRe = regexp.MustCompile(`(?i)^(?:www\s+)?\S+\s+(?:com|net|org|to|tv|me|cc|io|pl|ru|in)\s*-\s*(.+)$`)
+	// "A Killer on Floor 32 l Watch the FULL Documentary" ("|" saved as "l")
+	candPipeRe   = regexp.MustCompile(`\s+[|l]\s+`)
+	candPartRe   = regexp.MustCompile(`(?i)^(.+?)\s+part\s+(\d+|one|i)\b.*$`)
+	candTrailNum = regexp.MustCompile(`\s+\d$`)
 )
 
 // titleCandidates lists search strings for a messy file title, most literal
@@ -101,7 +112,7 @@ func titleCandidates(title string) []string {
 	seen := map[string]bool{}
 	add := func(s string) {
 		s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), "-:"))
-		if k := strings.ToLower(s); s != "" && !seen[k] && len(out) < 6 {
+		if k := strings.ToLower(s); s != "" && !seen[k] && len(out) < 8 {
 			seen[k] = true
 			out = append(out, s)
 		}
@@ -109,8 +120,16 @@ func titleCandidates(title string) []string {
 	add(title)
 	t := candIndexRe.ReplaceAllString(title, "")
 	add(t)
+	if m := candSiteRe.FindStringSubmatch(t); m != nil {
+		t = m[1]
+		add(t)
+	}
 	t = candPrefixRe.ReplaceAllString(t, "")
 	add(t)
+	if loc := candPipeRe.FindStringIndex(t); loc != nil {
+		t = t[:loc[0]]
+		add(t)
+	}
 	if i := strings.Index(t, " - "); i > 0 {
 		t = t[:i]
 		add(t)
@@ -121,6 +140,11 @@ func titleCandidates(title string) []string {
 		add(m[1])
 	}
 	add(candTrailNum.ReplaceAllString(t, ""))
+	// a wrong word in a long title ("…The True Story…" for "…The Untold
+	// Story…"): the first words plus the year usually still find it
+	if w := strings.Fields(t); len(w) >= 4 {
+		add(strings.Join(w[:2], " "))
+	}
 	return out
 }
 
@@ -178,6 +202,9 @@ func cleanShowName(dir string) (string, int) {
 	name, year := parseName(dir)
 	if loc := showCutRe.FindStringIndex(name); loc != nil {
 		cut := strings.TrimSpace(strings.Trim(strings.TrimSpace(name[:loc[0]]), "-._,"))
+		if onlyDigitsRe.MatchString(cut) { // "1994 Season 2 [Moonsong]" is a season, not a show called 1994
+			cut = ""
+		}
 		if cut == "" {
 			if _, ok := seasonFromDir(name); ok {
 				return "", 0
@@ -356,6 +383,7 @@ func normKey(s string) string {
 
 func cleanEpisodeTitle(s, series string) string {
 	s = noiseRe.ReplaceAllString(" "+s, "")
+	s = groupTagRe.ReplaceAllString(s, "")
 	s = spaceRe.ReplaceAllString(s, " ")
 	s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), "-"))
 	s = strings.TrimSpace(seasonSufRe.ReplaceAllString(s, ""))

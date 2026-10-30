@@ -87,6 +87,7 @@ or, when the file already fits the profile:
 - `GET /movies/{id}/file` — the original file, `Accept-Ranges: bytes`, honours `Range`.
 - `GET /hls/{session}/index.m3u8`, `GET /hls/{session}/seg{n}.ts` — FFmpeg output for one transcode session. 4 s MPEG-TS segments. Sessions are keyed by movie + profile + tracks + start; idle sessions are reaped after 5 min.
 - `DELETE /hls/{session}` — client is done; stop FFmpeg now.
+- `GET /transcodes` → `[{"key","file","start_s","mode":"remux|transcode|upscale","started","last_used"}]` — running sessions. ffmpeg converts the first 60 s at full speed, then at 1.5× playback speed. With NVENC the whole chain runs on the GPU (falls back to CPU filters if the GPU can't decode the file).
 
 ### Profiles
 

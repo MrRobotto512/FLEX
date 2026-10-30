@@ -77,6 +77,9 @@ func (a *App) trayReady() {
 				if st.Scan.Scanning {
 					line = fmt.Sprintf("Scanning… %d files", st.Scan.FilesSeen)
 				}
+				if n := len(st.Transcodes); n > 0 {
+					line += fmt.Sprintf(" · converting %d for playback", n)
+				}
 			} else if st.Error != "" {
 				line = "Error: " + st.Error
 			}

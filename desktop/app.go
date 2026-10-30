@@ -37,12 +37,14 @@ type Settings struct {
 }
 
 type Status struct {
-	Running   bool              `json:"running"`
-	Error     string            `json:"error,omitempty"`
-	LANAddrs  []string          `json:"lan_addrs"`
-	Scan      server.ScanStatus `json:"scan"`
-	Autostart bool              `json:"autostart"`
-	Version   string            `json:"version"`
+	Running    bool                 `json:"running"`
+	Error      string               `json:"error,omitempty"`
+	LANAddrs   []string             `json:"lan_addrs"`
+	Scan       server.ScanStatus    `json:"scan"`
+	Autostart  bool                 `json:"autostart"`
+	Version    string               `json:"version"`
+	Encoder    string               `json:"encoder"`
+	Transcodes []server.SessionInfo `json:"transcodes"`
 
 	TSEnabled    bool   `json:"ts_enabled"`
 	TSState      string `json:"ts_state"`
@@ -109,6 +111,8 @@ func (a *App) GetStatus() Status {
 	}
 	if a.srv != nil {
 		st.Scan = a.srv.ScanStatus()
+		st.Encoder = a.srv.Encoder()
+		st.Transcodes = a.srv.Transcodes()
 		ts := a.srv.TailscaleInfo()
 		st.TSState, st.TSDNS, st.TSIP, st.TSError = ts.State, ts.DNSName, ts.IP, ts.Error
 		st.TSNeedsLogin = ts.State == "NeedsLogin" && ts.AuthURL != ""

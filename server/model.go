@@ -148,6 +148,7 @@ type ScanStatus struct {
 	Shows     int        `json:"shows"`
 	Episodes  int        `json:"episodes"`
 	LastScan  *time.Time `json:"last_scan,omitempty"`
+	Current   string     `json:"current,omitempty"` // what the scan is doing right now
 	LastError string     `json:"last_error,omitempty"`
 }
 
@@ -158,6 +159,7 @@ type ServerInfo struct {
 	Features  []string `json:"features"`
 	Remote    bool     `json:"remote"`
 	Tailscale *TSInfo  `json:"tailscale,omitempty"`
+	Encoder   string   `json:"encoder,omitempty"`
 }
 
 const Version = "0.2.0"

@@ -120,6 +120,9 @@ async function refresh() {
   (st.lan_addrs || []).forEach(a => pills.push(`<span class="pill">LAN <code>${esc(a)}</code></span>`));
   if (st.ts_state === 'Running') pills.push(`<span class="pill ok">Remote <code>http://${esc(st.ts_dns)}:${settings.http_port}</code></span>`);
   if (st.scan) pills.push(`<span class="pill">${st.scan.scanning ? `scanning… ${st.scan.files_seen} files` : `${st.scan.movies} movies · ${st.scan.shows || 0} shows`}</span>`);
+  if (st.scan && st.scan.scanning && st.scan.current) pills.push(`<span class="pill muted">${esc(st.scan.current)}</span>`);
+  if (st.encoder) pills.push(`<span class="pill ${st.encoder === 'libx264' ? 'warn' : 'muted'}">encoder ${esc(st.encoder)}${st.encoder === 'libx264' ? ' (CPU)' : ''}</span>`);
+  (st.transcodes || []).forEach(t => pills.push(`<span class="pill warn">${esc(t.mode)}: ${esc(t.file)}</span>`));
   pills.push(`<span class="pill muted">v${esc(st.version)}</span>`);
   $('status').innerHTML = pills.join('');
 

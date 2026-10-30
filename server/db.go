@@ -261,15 +261,21 @@ func (d *DB) TouchSeen(id int64, now time.Time) error {
 }
 
 // DeleteUnseen drops movies and episodes whose file was not seen by the scan
-// that started at `since`, then shows left without episodes and orphaned progress.
-func (d *DB) DeleteUnseen(since time.Time) (int64, error) {
+// that started at `since`, then shows left without episodes and orphaned
+// progress. Files under `keep` (folders the scan could not read) stay.
+func (d *DB) DeleteUnseen(since time.Time, keep []string) (int64, error) {
 	ts := since.UTC().Format(time.RFC3339)
-	res, err := d.Exec(`DELETE FROM movies WHERE seen_at < ?`, ts)
+	where, args := `seen_at < ?`, []any{ts}
+	for _, k := range keep {
+		where += ` AND substr(path, 1, length(?)) != ?`
+		args = append(args, k, k)
+	}
+	res, err := d.Exec(`DELETE FROM movies WHERE `+where, args...)
 	if err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	res, err = d.Exec(`DELETE FROM episodes WHERE seen_at < ?`, ts)
+	res, err = d.Exec(`DELETE FROM episodes WHERE `+where, args...)
 	if err != nil {
 		return n, err
 	}
@@ -278,6 +284,44 @@ func (d *DB) DeleteUnseen(since time.Time) (int64, error) {
 	d.Exec(`DELETE FROM progress WHERE kind = 'movie' AND item_id NOT IN (SELECT id FROM movies)`)
 	d.Exec(`DELETE FROM progress WHERE kind = 'episode' AND item_id NOT IN (SELECT id FROM episodes)`)
 	return n + ne, nil
+}
+
+func (d *DB) SetTitle(id int64, title string, year int) {
+	d.Exec(`UPDATE movies SET title = ?, year = ? WHERE id = ? AND tmdb_id IS NULL`, title, nullInt(year), id)
+}
+
+// MergeDuplicateShows folds shows matched to the same TMDB series (folders
+// named differently, or split before shows were merged during scans) into
+// the oldest of them. Returns how many were folded.
+func (d *DB) MergeDuplicateShows() (int, error) {
+	rows, err := d.Query(`SELECT tmdb_id, MIN(id) FROM shows WHERE tmdb_id IS NOT NULL
+		GROUP BY tmdb_id HAVING COUNT(*) > 1`)
+	if err != nil {
+		return 0, err
+	}
+	type dup struct{ tmdb, keep int64 }
+	var dups []dup
+	for rows.Next() {
+		var x dup
+		rows.Scan(&x.tmdb, &x.keep)
+		dups = append(dups, x)
+	}
+	rows.Close()
+	n := 0
+	for _, x := range dups {
+		res, err := d.Exec(`UPDATE episodes SET show_id = ? WHERE show_id IN
+			(SELECT id FROM shows WHERE tmdb_id = ? AND id != ?)`, x.keep, x.tmdb, x.keep)
+		if err != nil {
+			return n, err
+		}
+		res, err = d.Exec(`DELETE FROM shows WHERE tmdb_id = ? AND id != ?`, x.tmdb, x.keep)
+		if err != nil {
+			return n, err
+		}
+		c, _ := res.RowsAffected()
+		n += int(c)
+	}
+	return n, nil
 }
 
 func (d *DB) SetMatchVersion(id int64, v int) {

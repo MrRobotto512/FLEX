@@ -37,6 +37,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/hls/{session}/{file}", s.handleHLS)
 	mux.HandleFunc("DELETE /api/v1/hls/{session}", s.handleHLSStop)
+	mux.HandleFunc("GET /api/v1/transcodes", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, s.tc.Sessions())
+	})
 	mux.HandleFunc("POST /api/v1/library/scan", s.handleScan)
 	mux.HandleFunc("GET /api/v1/library/status", s.handleScanStatus)
 	mux.HandleFunc("GET /api/v1/library/folders", s.handleFoldersGet)
@@ -60,7 +63,8 @@ func (s *Server) notePS5(next http.Handler) http.Handler {
 
 func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
 	features := []string{"direct", "hls", "tv", "seek"}
-	info := ServerInfo{Name: s.cfg.Name, ID: s.id, Version: Version, Remote: isTailnetAddr(r.RemoteAddr)}
+	info := ServerInfo{Name: s.cfg.Name, ID: s.id, Version: Version, Remote: isTailnetAddr(r.RemoteAddr),
+		Encoder: s.tc.Encoder()}
 	if ts := s.TailscaleInfo(); ts.State == "Running" {
 		features = append(features, "tsnet")
 		info.Tailscale = &ts

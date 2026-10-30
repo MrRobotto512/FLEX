@@ -170,6 +170,10 @@ func (s *Server) roots() []Root {
 
 func (s *Server) ScanStatus() ScanStatus { return s.scanner.Status() }
 
+// Transcodes lists running ffmpeg sessions; Encoder is the one they use.
+func (s *Server) Transcodes() []SessionInfo { return s.tc.Sessions() }
+func (s *Server) Encoder() string           { return s.tc.Encoder() }
+
 // Config returns the configuration the server was started with.
 func (s *Server) Config() Config { return s.cfg }
 

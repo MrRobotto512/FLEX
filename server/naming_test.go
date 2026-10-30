@@ -62,6 +62,9 @@ func TestTVShowFolders(t *testing.T) {
 		{root, p("A Series of Unfortunate Events/S01E01.mkv"), "A Series of Unfortunate Events", 1, 1},
 		// the show's own folder added as the TV folder
 		{filepath.FromSlash("D:/TV/Workaholics"), filepath.FromSlash("D:/TV/Workaholics/Season 3 [DVD Rips]/E05 Fat Cats.avi"), "Workaholics", 3, 5},
+		{root, p("2 stupid dogs/1994 Season 2 [Moonsong]/2 Stupid Dogs - 01a Stunt Dogs [Moonsong].avi"), "2 Stupid Dogs", 2, 1},
+		{root, p("The Fresh Prince of Bel-Air/108+9 - Someday Your Prince Will Be In Effect.avi"), "The Fresh Prince of Bel-Air", 1, 8},
+		{root, p("Mr.Bean Complete DVDs Collection/02 Good Night, MrBean DVDRip XviD.avi"), "Mr Bean", 1, 2},
 		// double episodes
 		{root, p("Will & Grace/Season 7/7x24 & 7x25 - It's A Dad, Dad, Dad, Dad World.avi"), "Will & Grace", 7, 24},
 		{root, p("Will & Grace/Season 8/8x01 & 8x02 - Alive and Schticking.avi"), "Will & Grace", 8, 1},
@@ -96,6 +99,8 @@ func TestParseNameYearFirstAndIndex(t *testing.T) {
 		{"01:08 (2019)", "01:08", 2019},
 		{"2 Fast 2 Furious (2003)", "2 Fast 2 Furious", 2003},
 		{"1917 (2019)", "1917", 2019},
+		{"www.HDSector.com - Zoolander.2001.BluRay.1080p.x264.AAC.5.1.-.Hon3y", "Zoolander", 2001},
+		{"Crazy4TV.com - Spider-Man.Homecoming.2017.1080p.BluRay.x265-HETeam", "Spider-Man Homecoming", 2017},
 	}
 	for _, c := range cases {
 		title, year := parseName(c.in)

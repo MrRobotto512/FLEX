@@ -22,7 +22,11 @@ type Root struct {
 // matcherVersion is bumped when title parsing or TMDB matching improves, so
 // movies that found no match are tried once more on the next scan (and only
 // then).
-const matcherVersion = 2
+const matcherVersion = 3
+
+// scanWorkers files are probed and matched at a time: ffprobe on a slow
+// drive and TMDB round trips are both mostly waiting.
+const scanWorkers = 4
 
 var videoExt = map[string]bool{
 	".mkv": true, ".mp4": true, ".m4v": true, ".mov": true, ".avi": true,
@@ -40,9 +44,17 @@ type Scanner struct {
 	mu     sync.Mutex
 	status ScanStatus
 
-	// per-scan caches
+	// per-scan caches, guarded by showMu (show creation and TMDB show
+	// matching run one at a time so two workers never create the same show)
+	showMu  sync.Mutex
 	shows   map[string]int64 // show key -> id
 	touched map[int64]bool   // shows seen this scan (episode metadata pass)
+}
+
+func (s *Scanner) setCurrent(what string) {
+	s.mu.Lock()
+	s.status.Current = what
+	s.mu.Unlock()
 }
 
 func NewScanner(cfg Config, db *DB, tmdb *TMDB, log *slog.Logger) *Scanner {
@@ -77,6 +89,7 @@ func (s *Scanner) Start(ctx context.Context, roots []Root) bool {
 		now := time.Now()
 		s.mu.Lock()
 		s.status.Scanning = false
+		s.status.Current = ""
 		s.status.LastScan = &now
 		if err != nil {
 			s.status.LastError = err.Error()
@@ -92,15 +105,51 @@ func (s *Scanner) scan(ctx context.Context, roots []Root) error {
 	s.touched = map[int64]bool{}
 	s.log.Info("scan started", "roots", roots)
 	tvRoots := map[string]bool{}
-	for _, r := range roots {
+	for i, r := range roots {
+		// a folder called "TV Shows" in the movie list is a TV folder
+		if !r.TV && tvRootNameRe.MatchString(filepath.Base(filepath.Clean(r.Path))) {
+			s.log.Info("scan: treating as a TV folder", "path", r.Path)
+			roots[i].TV = true
+			r.TV = true
+		}
 		if r.TV {
 			tvRoots[strings.ToLower(filepath.Clean(r.Path))] = true
 		}
 	}
+	type job struct {
+		root Root
+		path string
+		d    fs.DirEntry
+	}
+	jobs := make(chan job, 64)
+	var wg sync.WaitGroup
+	for i := 0; i < scanWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				if err := s.file(ctx, j.root, j.path, j.d); err != nil {
+					s.log.Warn("scan: file", "path", j.path, "err", err)
+				}
+			}
+		}()
+	}
+
+	// a library folder that can't be read (drive unplugged, NAS asleep) must
+	// not make everything in it look deleted
+	var unreachable []string
+	var walkErr error
 	for _, root := range roots {
+		s.setCurrent("Listing " + root.Path)
 		err := filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				s.log.Warn("scan: skipping", "path", path, "err", err)
+				if filepath.Clean(path) == filepath.Clean(root.Path) {
+					unreachable = append(unreachable, root.Path)
+				}
 				return nil
 			}
 			if ctx.Err() != nil {
@@ -119,17 +168,31 @@ func (s *Scanner) scan(ctx context.Context, roots []Root) error {
 			if !videoExt[strings.ToLower(filepath.Ext(d.Name()))] || looksLikeExtra(d.Name()) {
 				return nil
 			}
-			if err := s.file(ctx, root, path, d); err != nil {
-				s.log.Warn("scan: file", "path", path, "err", err)
-			}
+			jobs <- job{root, path, d}
 			return nil
 		})
 		if err != nil {
-			return err
+			walkErr = err
+			break
 		}
 	}
+	close(jobs)
+	wg.Wait()
+	if walkErr != nil {
+		return walkErr
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	s.setCurrent("Merging shows")
+	if n, err := s.db.MergeDuplicateShows(); err != nil {
+		s.log.Warn("scan: merging shows", "err", err)
+	} else if n > 0 {
+		s.log.Info("scan: merged duplicate shows", "count", n)
+	}
 	s.episodeMetadata(ctx)
-	removed, err := s.db.DeleteUnseen(start)
+	s.setCurrent("Cleaning up")
+	removed, err := s.db.DeleteUnseen(start, unreachable)
 	if err != nil {
 		return err
 	}
@@ -170,6 +233,7 @@ func (s *Scanner) movieFile(ctx context.Context, root, path string, size, mtime 
 		return s.db.TouchSeen(existing.ID, now)
 	}
 
+	s.setCurrent("Reading " + filepath.Base(path))
 	media, err := Probe(ctx, s.cfg.FFprobe, path)
 	if err != nil {
 		return err
@@ -192,15 +256,36 @@ func (s *Scanner) movieFile(ctx context.Context, root, path string, size, mtime 
 
 func (s *Scanner) enrichMovie(ctx context.Context, id int64, path, root string) {
 	title, year := guessTitle(path, root)
+	type try struct {
+		title string
+		year  int
+	}
+	var tries []try
+	for _, c := range titleCandidates(title) {
+		tries = append(tries, try{c, year})
+	}
+	// the folder often says it better than the file ("Zoolander.2001.BluRay…/
+	// www.HDSector.com - Zoolander…mkv")
+	if parent := filepath.Dir(path); filepath.Clean(parent) != filepath.Clean(root) {
+		ft, fy := parseName(filepath.Base(parent))
+		if fy == 0 {
+			fy = year
+		}
+		for _, c := range titleCandidates(ft)[:min(3, len(titleCandidates(ft)))] {
+			tries = append(tries, try{c, fy})
+		}
+	}
+	s.setCurrent("Looking up " + title + " on TMDB")
 	var md Metadata
 	var err error
-	for _, c := range titleCandidates(title) {
-		if md, err = s.tmdb.Match(ctx, c, year); err == nil {
+	for _, t := range tries {
+		if md, err = s.tmdb.Match(ctx, t.title, t.year); err == nil {
 			break
 		}
 	}
 	s.db.SetMatchVersion(id, matcherVersion)
 	if err != nil {
+		s.db.SetTitle(id, title, year) // at least show the cleaned-up name
 		s.log.Warn("tmdb: no match", "title", title, "year", year, "err", err)
 		return
 	}
@@ -220,10 +305,13 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 	}
 
 	key := ShowKey(series, year)
+	s.showMu.Lock()
 	showID, ok := s.shows[key]
 	if !ok {
+		s.setCurrent("Looking up " + series + " on TMDB")
 		id, created, err := s.db.UpsertShow(key, series, year, now)
 		if err != nil {
+			s.showMu.Unlock()
 			return err
 		}
 		showID = id
@@ -254,6 +342,7 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 		}
 	}
 	s.touched[showID] = true
+	s.showMu.Unlock()
 
 	existing, err := s.db.LookupEpisodeFile(path)
 	if err != nil {
@@ -271,6 +360,7 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 	if existing != nil && existing.Size == size && existing.MTime == mtime {
 		return s.db.TouchEpisodeSeen(existing.ID, now)
 	}
+	s.setCurrent("Reading " + filepath.Base(path))
 	media, err := Probe(ctx, s.cfg.FFprobe, path)
 	if err != nil {
 		return err
@@ -300,6 +390,7 @@ func (s *Scanner) episodeMetadata(ctx context.Context) {
 		if err != nil || len(need) == 0 {
 			continue
 		}
+		s.setCurrent(fmt.Sprintf("Episode details (%d) from TMDB", len(need)))
 		seasons := map[int64]map[int]EpisodeMeta{}
 		for _, r := range need {
 			id, season, episode := r[0], r[1], int(r[2])
