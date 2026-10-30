@@ -27,9 +27,9 @@ FFLIBS      := libavformat libavcodec libswscale libswresample libavutil
 
 CFLAGS += -Wall -Wextra -O2 -std=gnu11 -Isrc -Ithird_party/cJSON \
           $(shell $(SDL2_CONFIG) --cflags) \
-          $(shell $(PKG_CONFIG) --cflags $(FFLIBS) freetype2)
+          $(shell $(PKG_CONFIG) --cflags $(FFLIBS) freetype2 SDL2_image)
 LDADD  += $(shell $(SDL2_CONFIG) --libs) -lSDL2_ttf \
-          $(shell $(PKG_CONFIG) --libs --static $(FFLIBS) freetype2) \
+          $(shell $(PKG_CONFIG) --libs --static SDL2_image $(FFLIBS) freetype2) \
           -lm -lpthread
 
 all: $(ELF)

@@ -37,23 +37,22 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 
 | Where | Button | Action |
 | --- | --- | --- |
-| List | D-pad up/down | move |
-| List | Cross | play (resumes if partially watched) |
-| List | Triangle | re-discover the server and refresh |
-| List | Circle | quit |
+| Grid | D-pad | move (hold to repeat) |
+| Grid | Cross | play (resumes if partially watched) |
+| Grid | Triangle | re-discover the server and refresh |
+| Grid | Circle | quit |
 | Player | Cross | pause / resume |
 | Player | Circle | stop (progress is saved) |
 
 ## How it works
 
 - `net.c`: UDP discovery (`FLEX_DISCOVER` → JSON reply) and a tiny HTTP/1.0 client with the `X-Flex-Client: ps5` header.
-- `main.c`: SDL window, controller input, movie list, saved server address at `/data/homebrew/FLEX/server.txt` (used when discovery finds nothing, e.g. over Tailscale).
+- `main.c`: SDL window, controller input, 6×2 poster grid (posters fetched from `/movies/{id}/poster`, decoded with SDL2_image, one per frame, cache capped at 48), saved server address at `/data/homebrew/FLEX/server.txt` (used when discovery finds nothing, e.g. over Tailscale).
 - `player.c`: `avformat_open_input` on the URL the server returned (direct file or HLS), decodes with all cores, converts audio to S16 stereo for SDL, presents YUV frames in sync with the audio clock.
 - `third_party/cJSON/`: vendored cJSON 1.7.18.
 
 ## Next steps
 
-- Poster grid (SDL2_image is in the prebuilt ports).
 - On-screen keyboard for entering a Tailscale address (`SceImeDialog` is already linked by the SDL port).
 - Separate decode thread and a frame queue if 1080p stutters.
 - Seek: restart the HLS session with `start=`.
