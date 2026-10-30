@@ -74,6 +74,10 @@ jobs:
     needs: [ps5, windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          sparse-checkout: .github/release-notes.md
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -88,5 +92,7 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "FLEX $TAG" --generate-notes
+            # the setup notes come first, the generated list of changes after them
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "FLEX $TAG" \
+              --notes-file .github/release-notes.md --generate-notes
           fi

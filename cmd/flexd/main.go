@@ -33,6 +33,21 @@ func main() {
 		log.Error("config", "err", err)
 		os.Exit(1)
 	}
+	// first run on a Windows PC without FFmpeg: fetch it (checked copy) first
+	if c := cfg; c.Validate() == nil && !c.FFmpegAvailable() && server.CanDownloadFFmpeg() && cfg.FFmpeg == "" {
+		log.Info("ffmpeg not found, downloading it (about 115 MB, once)", "to", cfg.DataDir)
+		last := -1
+		err := server.EnsureFFmpeg(context.Background(), cfg.DataDir, func(done, total int64) {
+			if pct := int(done * 100 / max(total, 1)); pct/10 != last/10 {
+				last = pct
+				log.Info("ffmpeg download", "percent", pct)
+			}
+		})
+		if err != nil {
+			log.Error("ffmpeg", "err", err)
+			os.Exit(1)
+		}
+	}
 	srv, err := server.New(cfg, log, web.Files)
 	if err != nil {
 		log.Error("start", "err", err)

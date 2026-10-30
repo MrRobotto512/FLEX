@@ -91,6 +91,8 @@ func (a *App) trayReady() {
 				if n := len(st.Transcodes); n > 0 {
 					line += fmt.Sprintf(" · converting %d for playback", n)
 				}
+			} else if st.FFmpegDownloading {
+				line = fmt.Sprintf("First start: downloading FFmpeg… %.0f%%", st.FFmpegProgress*100)
 			} else if st.Error != "" {
 				line = "Error: " + st.Error
 			}

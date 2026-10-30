@@ -22,7 +22,11 @@ Phone / laptop (browser) ── Tailscale ────────────�
 | `ps5-client/` | Native PS5 homebrew player (ps5-payload-sdk, SDL2, FFmpeg) | C |
 | `docs/api.md` | The JSON API contract every client follows | |
 
-## Quick start (server)
+## Install
+
+Download `FLEX.exe` (Windows) and `FLEX-ps5.zip` from the [latest release](https://github.com/MrRobotto512/FLEX/releases/latest); FLEX fetches FFmpeg itself on the first start. Step by step: [docs/setup.md](docs/setup.md).
+
+## Quick start (server, from source)
 
 Requirements: Go 1.23+, FFmpeg (`ffmpeg` and `ffprobe` on `PATH`), a free [TMDB API key](https://www.themoviedb.org/settings/api).
 
