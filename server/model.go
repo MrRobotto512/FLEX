@@ -161,6 +161,7 @@ type ServerInfo struct {
 	Remote    bool     `json:"remote"`
 	Tailscale *TSInfo  `json:"tailscale,omitempty"`
 	Encoder   string   `json:"encoder,omitempty"`
+	HDR       string   `json:"hdr_tonemap,omitempty"` // "gpu" (libplacebo) | "cpu"
 	// why a hardware encoder was or wasn't used (home network only)
 	GPUs         []string          `json:"gpus,omitempty"`
 	EncoderTests map[string]string `json:"encoder_tests,omitempty"`

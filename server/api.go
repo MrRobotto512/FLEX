@@ -68,7 +68,7 @@ func (s *Server) notePS5(next http.Handler) http.Handler {
 func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
 	features := []string{"direct", "hls", "tv", "seek"}
 	info := ServerInfo{Name: s.cfg.Name, ID: s.id, Version: Version, Remote: isTailnetAddr(r.RemoteAddr),
-		Encoder: s.tc.Encoder()}
+		Encoder: s.tc.Encoder(), HDR: s.tc.HDRTonemap()}
 	if !info.Remote {
 		info.GPUs, info.EncoderTests = s.gpus, s.encoderTests
 	}

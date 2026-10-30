@@ -38,6 +38,7 @@ type Transcoder struct {
 	encoder string // h264_nvenc | h264_qsv | h264_amf | h264_mf | libx264
 	dir     string
 	log     *slog.Logger
+	hdrGPU  bool // HDRTest passed: libplacebo tone maps and scales HDR on the GPU
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -66,6 +67,17 @@ type SessionInfo struct {
 
 // Encoder is the H.264 encoder sessions use.
 func (t *Transcoder) Encoder() string { return t.encoder }
+
+// SetHDRGPU switches HDR conversion to libplacebo on the GPU (after HDRTest).
+func (t *Transcoder) SetHDRGPU(ok bool) { t.hdrGPU = ok }
+
+// HDRTonemap says where HDR is tone mapped: "gpu" (libplacebo) or "cpu" (zscale).
+func (t *Transcoder) HDRTonemap() string {
+	if t.hdrGPU {
+		return "gpu"
+	}
+	return "cpu"
+}
 
 // Sessions lists the running transcodes.
 func (t *Transcoder) Sessions() []SessionInfo {
@@ -127,12 +139,16 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		s.info.Mode = "remux"
 	} else if r.Upscale {
 		s.info.Mode = "upscale"
+	} else if t.hdrOnGPU(r) {
+		s.info.Mode = "transcode, HDR on the GPU"
+	} else if r.Media.Video.HDR != "" {
+		s.info.Mode = "transcode, HDR on the CPU"
 	}
 	t.sessions[key] = s
 	t.mu.Unlock()
 
 	stderr, _ := cmd.StderrPipe()
-	t.log.Info("ffmpeg start", "key", key, "gpu", t.useGPU(r), "args", strings.Join(cmd.Args[1:], " "))
+	t.log.Info("ffmpeg start", "key", key, "gpu", t.useGPU(r), "hdr_gpu", t.hdrOnGPU(r), "args", strings.Join(cmd.Args[1:], " "))
 	if err := cmd.Start(); err != nil {
 		close(s.done) // nothing will ever close it otherwise and remove() waits on it
 		t.remove(key)
@@ -160,7 +176,7 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		select {
 		case <-s.done:
 			t.remove(key)
-			if t.useGPU(r) {
+			if t.useGPU(r) || t.hdrOnGPU(r) || t.hdrCUDAScale(r) {
 				// e.g. a codec the GPU can't decode: same job with CPU filters
 				t.log.Warn("ffmpeg GPU pipeline failed, retrying on the CPU", "key", key, "err", s.err)
 				r.NoGPU = true
@@ -186,6 +202,7 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 	a := []string{"-hide_banner", "-loglevel", "warning", "-nostdin"}
 	gpu := t.useGPU(r)
+	hdrGPU, cudaScale := t.hdrOnGPU(r), t.hdrCUDAScale(r)
 	if !r.CopyVid {
 		// Decode on the GPU: with NVENC the frames stay on the card through
 		// deinterlacing, scaling and encoding (almost no CPU); otherwise
@@ -193,7 +210,10 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 		// software by itself. Then encode only a little faster than playback
 		// after a first minute in one go, instead of converting the whole film
 		// flat out while nobody watches.
-		if gpu {
+		if hdrGPU {
+			// libplacebo runs on Vulkan; decoded frames go through system memory to it
+			a = append(a, "-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk", "-hwaccel", "auto")
+		} else if gpu || cudaScale {
 			a = append(a, "-hwaccel", "cuda", "-hwaccel_output_format", "cuda")
 		} else {
 			a = append(a, "-hwaccel", "auto")
@@ -212,6 +232,15 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 
 	if r.CopyVid {
 		a = append(a, "-c:v", "copy")
+	} else if hdrGPU {
+		// one shader pass on the GPU: tone map to SDR (BT.2390, with peak
+		// detection) and scale to the profile's height with EWA Lanczos
+		vf := []string{t.placeboFilter(r.Media.Video.Width, r.Media.Video.Height, r.Profile.MaxHeight, t.encoderFor(r))}
+		if r.Sub >= 0 {
+			vf = append(vf, fmt.Sprintf("subtitles=%s:si=%d", ffEscape(r.Path), subOrdinal(r.Media, r.Sub)))
+		}
+		a = append(a, "-vf", strings.Join(vf, ","))
+		a = append(a, t.videoCodecArgs(r)...)
 	} else if gpu {
 		scale := fmt.Sprintf("scale_cuda=-2:'min(%d,ih)':format=yuv420p", r.Profile.MaxHeight)
 		if r.Upscale {
@@ -223,7 +252,13 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 		// deinterlace frames flagged interlaced (old TV and DVD rips); progressive
 		// frames pass through untouched
 		vf := []string{"bwdif=mode=send_frame:deint=interlaced"}
-		if r.Upscale {
+		if cudaScale {
+			// HDR without libplacebo but with an NVIDIA card: decode and shrink to
+			// the profile's height on the GPU, so the CPU tone maps a quarter of a
+			// 4K picture
+			w, h := fitHeight(r.Media.Video.Width, r.Media.Video.Height, r.Profile.MaxHeight)
+			vf = []string{fmt.Sprintf("scale_cuda=%d:%d:format=p010le", w, h), "hwdownload", "format=p010le"}
+		} else if r.Upscale {
 			vf = append(vf, fmt.Sprintf("scale=-2:%d:flags=lanczos", r.Profile.MaxHeight), "unsharp=5:5:0.5:5:5:0")
 		} else {
 			vf = append(vf, fmt.Sprintf("scale=-2:'min(%d,ih)'", r.Profile.MaxHeight))
@@ -259,6 +294,65 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 // (HDR tone mapping, burned-in subtitles).
 func (t *Transcoder) useGPU(r transcodeRequest) bool {
 	return t.encoderFor(r) == "h264_nvenc" && !r.CopyVid && !r.NoGPU && r.Media.Video.HDR == "" && r.Sub < 0
+}
+
+// hdrOnGPU: HDR tone mapped and scaled by libplacebo (Vulkan), when HDRTest
+// passed at startup. Any GPU encoder or libx264 can take its output.
+func (t *Transcoder) hdrOnGPU(r transcodeRequest) bool {
+	return t.hdrGPU && r.Media.Video.HDR != "" && !r.CopyVid && !r.NoGPU
+}
+
+// hdrCUDAScale: HDR without libplacebo on an NVIDIA card: CUDA decodes and
+// scales, the CPU only tone maps the smaller picture.
+func (t *Transcoder) hdrCUDAScale(r transcodeRequest) bool {
+	return !t.hdrGPU && r.Media.Video.HDR != "" && t.encoderFor(r) == "h264_nvenc" && !r.CopyVid && !r.NoGPU
+}
+
+// fitHeight scales w×h down to at most maxH lines, keeping the shape (even sizes).
+func fitHeight(w, h, maxH int) (int, int) {
+	if h <= maxH || h <= 0 {
+		return w &^ 1, h &^ 1
+	}
+	return (w*maxH/h + 1) &^ 1, maxH &^ 1
+}
+
+// placeboFilter tone maps HDR to SDR BT.709 and scales to at most maxH lines
+// in one libplacebo pass; the output is a plain (system memory) picture in
+// the layout enc takes.
+func (t *Transcoder) placeboFilter(w, h, maxH int, enc string) string {
+	w, h = fitHeight(w, h, maxH)
+	format := "yuv420p"
+	if enc == "h264_mf" {
+		format = "nv12"
+	}
+	return fmt.Sprintf("libplacebo=w=%d:h=%d:downscaler=ewa_lanczos:upscaler=ewa_lanczos:"+
+		"tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=%s", w, h, format)
+}
+
+// HDRTest tone maps half a second of synthetic HDR10 with libplacebo and
+// encodes it with enc. "ok" when this ffmpeg and GPU can do HDR on the GPU
+// (the build needs libplacebo and Vulkan: gyan.dev's full build has them,
+// the essentials build doesn't), else what went wrong.
+func HDRTest(ctx context.Context, ffmpeg, enc string) string {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	t := &Transcoder{}
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin",
+		"-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk",
+		"-f", "lavfi", "-i", "testsrc2=s=1280x720:d=0.5,format=yuv420p10le," +
+			"setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+		"-vf", t.placeboFilter(1280, 720, 360, enc), "-c:v", enc}
+	if enc == "h264_mf" {
+		args = append(args, "-hw_encoding", "1")
+	}
+	out, err := exec.CommandContext(ctx, ffmpeg, append(args, "-f", "null", "-")...).CombinedOutput()
+	if err == nil {
+		return "ok"
+	}
+	if msg := ffmpegError(string(out)); msg != "" {
+		return msg
+	}
+	return err.Error()
 }
 
 func (t *Transcoder) encoderFor(r transcodeRequest) string {

@@ -18,17 +18,17 @@ import (
 
 // FFmpeg is looked for next to the executable (portable installs), then in
 // the data dir, then on PATH. On Windows, when none has it, FLEX downloads
-// gyan.dev's "essentials" build (pinned version, SHA-256 checked) into
+// gyan.dev's "full" build (pinned version, SHA-256 checked) into
 // <data>/ffmpeg/<version>, so a new PC needs nothing but FLEX.exe. That build
 // has every encoder and filter FLEX uses: NVENC, QuickSync (libvpl), AMF,
-// Media Foundation, x264, scale_cuda, zscale and libass.
+// Media Foundation, x264, scale_cuda, zscale, libass, and libplacebo with
+// Vulkan for HDR on the GPU (the smaller "essentials" build lacks those).
 
 const (
-	ffmpegVersion = "9.0.2"
-	ffmpegURL     = "https://github.com/GyanD/codexffmpeg/releases/download/" + ffmpegVersion +
-		"/ffmpeg-" + ffmpegVersion + "-essentials_build.zip"
-	ffmpegSHA256 = "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba"
-	ffmpegMaxZip = 512 << 20
+	ffmpegVersion = "9.0.2-full"
+	ffmpegURL     = "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-full_build.zip"
+	ffmpegSHA256  = "759d0a9831c436a0eb331ad36f236c06cb04aaa0005da46571f0e9d3d9206f6b"
+	ffmpegMaxZip  = 512 << 20
 )
 
 // CanDownloadFFmpeg reports whether EnsureFFmpeg has a build for this OS.

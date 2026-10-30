@@ -125,7 +125,7 @@ function renderList(id, key) {
 async function refresh() {
   const st = await App().GetStatus();
   const pills = [];
-  if (st.ffmpeg_downloading) pills.push(`<span class="pill warn">● first start: downloading FFmpeg… ${Math.round(st.ffmpeg_progress * 100)}% (about 115 MB, once)</span>`);
+  if (st.ffmpeg_downloading) pills.push(`<span class="pill warn">● first start: downloading FFmpeg… ${Math.round(st.ffmpeg_progress * 100)}% (about 260 MB, once)</span>`);
   else if (st.ffmpeg_error) pills.push(`<span class="pill bad">● FFmpeg could not be downloaded: ${esc(st.ffmpeg_error)}. Check the internet connection, then Save &amp; restart server.</span>`);
   else pills.push(st.running ? `<span class="pill ok">● server running</span>` : `<span class="pill bad">● stopped ${esc(st.error || '')}</span>`);
   (st.lan_addrs || []).forEach(a => pills.push(`<span class="pill">LAN <code>${esc(a)}</code></span>`));
