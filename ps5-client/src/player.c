@@ -11,31 +11,41 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Single-threaded demux/decode loop: audio frames are converted to S16
- * stereo and put in a ring the audio device drains; video frames wait until
- * the clock (audio, or wall time for silent files) reaches their pts, then go
- * to a YUV texture drawn letterboxed. Frames that are already late are
- * decoded but not drawn, so a picture too heavy for the CPU drops frames
- * instead of dragging the sound along. Seeking in direct files uses
- * avformat_seek_file; transcoded HLS sessions are not seekable, so the caller
- * restarts them. */
+/* Four threads, so a slow network read or a heavy frame never stalls the
+ * others:
+ *   reader - demuxes ahead into packet queues, up to BUFFER_S of video
+ *            (BUFFER_BYTES at most); seeks happen here
+ *   video  - decodes into a small queue of frames
+ *   audio  - decodes, converts to S16 stereo and fills the ring the audio
+ *            device drains; what has played is the clock
+ *   main   - input, and shows each frame when the clock reaches it (SDL
+ *            rendering stays on this thread)
+ * Frames that are already late are skipped, so a picture too heavy for the
+ * CPU drops frames instead of dragging the sound along. A seek bumps
+ * `serial`: packets and frames from before it are thrown away, and each
+ * decoder flushes when it reaches the marker the reader queues after seeking.
+ * Transcoded HLS sessions are not seekable, so the caller restarts them. */
 
 #define AUDIO_RATE 48000
 #define AUDIO_CH 2
 #define BYTES_PER_SEC (AUDIO_RATE * AUDIO_CH * 2)
-#define MAX_QUEUED_AUDIO (BYTES_PER_SEC) /* keep ~1 s buffered */
+#define MAX_QUEUED_AUDIO (BYTES_PER_SEC) /* keep ~1 s in the ring */
 #define RING_BYTES (2 * BYTES_PER_SEC)
 #define VOLUME_STEP 10   /* percent */
 #define VOLUME_MAX 200   /* quiet rips (5.1 folded to stereo) need more than 100 */
 #define LATE_DROP_S 0.08 /* a frame this far behind the clock is skipped */
 #define MAX_DROPS_IN_ROW 6
+#define BUFFER_S 30.0           /* read this far ahead of the video decoder */
+#define BUFFER_BYTES (64 << 20) /* ...but never hold more than this */
+#define FRAME_QUEUE 8           /* decoded frames waiting for their time */
+#define AUDIO_DRY_S 1.0         /* video waiting this long on silent audio: pace by wall time */
+#define BUFFERING_MS 300        /* no frame for this long: say "Buffering" */
 #define SCREEN_W 1920
 #define SCREEN_H 1080
 #define SEEK_COMMIT_MS 700
 #define OSD_MS 3000
 #define REPEAT_DELAY_MS 400
 #define REPEAT_RATE_MS 150
-#define MAX_STASH 600 /* video packets held back while waiting for audio after a seek */
 
 static const char *aspect_names[ASPECT_COUNT] = {"Original", "16:9", "4:3", "2.35:1", "Zoom", "Stretch"};
 
@@ -46,6 +56,35 @@ typedef struct {
     int w, h;
 } OsdLine;
 enum { OSD_TITLE, OSD_TIME, OSD_STATE, OSD_PERF, OSD_LINES };
+
+/* ---------- queues between the threads ---------- */
+
+enum { MARK_NONE, MARK_FLUSH, MARK_EOF };
+
+typedef struct PktNode {
+    AVPacket *pkt; /* NULL for a marker */
+    int marker;    /* MARK_* */
+    int serial;
+    double ts;     /* stream time of the packet */
+    struct PktNode *next;
+} PktNode;
+
+typedef struct {
+    PktNode *head, *tail;
+    int bytes;
+    double last_ts; /* newest packet in the queue */
+    SDL_mutex *mu;
+    SDL_cond *cond;
+} PktQueue;
+
+typedef struct {
+    AVFrame *f[FRAME_QUEUE];
+    double pts[FRAME_QUEUE];
+    int serial[FRAME_QUEUE];
+    int head, count;
+    SDL_mutex *mu;
+    SDL_cond *cond; /* a slot freed up */
+} FrameQueue;
 
 typedef struct {
     const PlayOpts *o;
@@ -63,46 +102,62 @@ typedef struct {
     SDL_Rect dst; /* where the picture goes on screen */
     SDL_AudioDeviceID dev;
 
+    SDL_Thread *reader, *vthread, *athread;
+    SDL_atomic_t abort;  /* every thread stops */
+    SDL_atomic_t serial; /* bumped by each seek */
+    PktQueue vq, aq;
+    FrameQueue fq;
+
+    /* seek request, main -> reader */
+    SDL_mutex *seek_mu;
+    int seek_req, seek_serial;
+    int64_t seek_ts;
+
+    volatile double video_read_ts; /* stream time of the packet the video decoder took last */
+    SDL_atomic_t video_eof;        /* serial + 1 once the video decoder drained at the end, else 0 */
+    SDL_atomic_t audio_eof;        /* same for audio */
+    volatile int want_fast_decode; /* main asks the video thread to skip deblocking */
+    double dec_last_pts;           /* video thread: for frames without a timestamp */
+
     /* Decoded audio waits in a ring the device callback drains (the callback
      * runs with the device locked), so a volume change applies to what plays
-     * next rather than to audio queued a second earlier. */
+     * next rather than to audio queued a second earlier. The ring,
+     * audio_written and resync_audio are guarded by the device lock. */
     Uint8 *ring;
     int ring_head, ring_fill;
     int volume; /* percent */
 
-    double audio_written; /* stream time at the end of the queued audio */
-    int resync_audio;     /* the next audio frame sets audio_written */
-    int wall_fallback;    /* no audio found after a seek: pace video by wall time */
+    double audio_written;       /* stream time at the end of the queued audio */
+    int resync_audio;           /* the next audio frame sets audio_written */
+    volatile int wall_fallback; /* no usable audio: pace video by wall time */
+    int wall_started;           /* wall-time pacing anchored to a presented frame */
+    Uint32 dry_since;           /* a frame has waited on an empty ring since */
 
-    /* After a seek (and at the start) video packets can come before any
-     * audio from the same moment; the audio clock would then never move and
-     * video would wait forever. Video packets are held back until the first
-     * audio frame is queued. */
-    int priming;
-    AVPacket *stash[MAX_STASH];
-    int nstash;
-    double stash_last; /* stream time of the newest held-back packet */
-    double wall_base;     /* silent files: clock = now - wall_base */
-    double drop_before;   /* after a seek: skip frames earlier than this stream time */
-    double last_pts;      /* stream time of the last presented frame */
+    double wall_base;            /* wall-time pacing: clock = now - wall_base */
+    volatile double drop_before; /* after a seek: skip frames earlier than this stream time */
+    double last_pts;             /* stream time of the last presented frame */
 
-    int paused, quit, ended;
-    double pending; /* media time the user is seeking to, -1 = none */
-    Uint32 seek_at; /* commit the pending seek at this tick */
+    int paused, quit, ended, buffering;
+    int gate;           /* at the start and after a seek: audio waits for the first frame */
+    Uint32 gate_since;
+    Uint32 empty_since; /* the frame queue has been empty since */
+    double pending;     /* media time the user is seeking to, -1 = none */
+    Uint32 seek_at;     /* commit the pending seek at this tick */
     double result_seek;
     int toggle_upscale;
     int held;
     Uint32 next_repeat;
     Uint32 osd_until;
+    Uint32 next_buffer_draw;
     OsdLine osd[OSD_LINES];
 
     /* how playback keeps up, shown on the OSD */
-    double decode_acc;          /* ms spent decoding since the last frame came out */
-    double decode_ms, draw_ms;  /* moving averages per frame */
+    double decode_acc;         /* video thread: ms in the decoder since the last frame came out */
+    double decode_ms, draw_ms; /* moving averages per frame */
     int dropped, drops_in_row;
-    Uint32 drop_window;         /* start of the 2 s window counting recent drops */
+    Uint32 drop_window; /* start of the 2 s window counting recent drops */
     int drop_count, fast_decode;
-    char perf[160];
+    char perf[200];
     Uint32 perf_next;
 } Player;
 
@@ -113,6 +168,159 @@ static double ms_since(Uint64 t0) {
 }
 
 static void average(double *avg, double v) { *avg = *avg > 0 ? *avg * 0.9 + v * 0.1 : v; }
+
+static int aborted(Player *p) { return SDL_AtomicGet(&p->abort); }
+static int cur_serial(Player *p) { return SDL_AtomicGet(&p->serial); }
+
+static void pq_init(PktQueue *q) {
+    memset(q, 0, sizeof *q);
+    q->mu = SDL_CreateMutex();
+    q->cond = SDL_CreateCond();
+}
+
+static void node_free(PktNode *n) {
+    if (n->pkt) av_packet_free(&n->pkt);
+    free(n);
+}
+
+/* pq_put queues pkt (its data moves into the queue) or, with pkt NULL, a marker. */
+static void pq_put(PktQueue *q, AVPacket *pkt, int marker, int serial, double ts) {
+    PktNode *n = calloc(1, sizeof *n);
+    if (!n) return;
+    n->marker = marker;
+    n->serial = serial;
+    n->ts = ts;
+    if (pkt) {
+        n->pkt = av_packet_alloc();
+        av_packet_move_ref(n->pkt, pkt);
+    }
+    SDL_LockMutex(q->mu);
+    if (q->tail) q->tail->next = n;
+    else q->head = n;
+    q->tail = n;
+    if (n->pkt) {
+        q->bytes += n->pkt->size;
+        q->last_ts = ts;
+    }
+    SDL_CondSignal(q->cond);
+    SDL_UnlockMutex(q->mu);
+}
+
+/* pq_get waits for the next node; NULL when the player is stopping. */
+static PktNode *pq_get(Player *p, PktQueue *q) {
+    SDL_LockMutex(q->mu);
+    while (!q->head && !aborted(p)) SDL_CondWaitTimeout(q->cond, q->mu, 20);
+    PktNode *n = aborted(p) ? NULL : q->head;
+    if (n) {
+        q->head = n->next;
+        if (!q->head) q->tail = NULL;
+        if (n->pkt) q->bytes -= n->pkt->size;
+    }
+    SDL_UnlockMutex(q->mu);
+    return n;
+}
+
+static void pq_clear(PktQueue *q) {
+    SDL_LockMutex(q->mu);
+    while (q->head) {
+        PktNode *n = q->head;
+        q->head = n->next;
+        node_free(n);
+    }
+    q->tail = NULL;
+    q->bytes = 0;
+    SDL_UnlockMutex(q->mu);
+}
+
+static int pq_empty(PktQueue *q) {
+    SDL_LockMutex(q->mu);
+    int e = q->head == NULL;
+    SDL_UnlockMutex(q->mu);
+    return e;
+}
+
+static void pq_destroy(PktQueue *q) {
+    if (!q->mu) return;
+    pq_clear(q);
+    SDL_DestroyMutex(q->mu);
+    SDL_DestroyCond(q->cond);
+}
+
+static void fq_init(FrameQueue *q) {
+    memset(q, 0, sizeof *q);
+    for (int i = 0; i < FRAME_QUEUE; i++) q->f[i] = av_frame_alloc();
+    q->mu = SDL_CreateMutex();
+    q->cond = SDL_CreateCond();
+}
+
+/* fq_put moves frame into the queue, waiting for a free slot; frames from
+ * before a seek are dropped instead. */
+static void fq_put(Player *p, AVFrame *frame, double pts, int serial) {
+    FrameQueue *q = &p->fq;
+    SDL_LockMutex(q->mu);
+    while (q->count == FRAME_QUEUE && !aborted(p) && serial == cur_serial(p))
+        SDL_CondWaitTimeout(q->cond, q->mu, 20);
+    if (q->count < FRAME_QUEUE && !aborted(p) && serial == cur_serial(p)) {
+        int i = (q->head + q->count) % FRAME_QUEUE;
+        av_frame_move_ref(q->f[i], frame);
+        q->pts[i] = pts;
+        q->serial[i] = serial;
+        q->count++;
+    }
+    SDL_UnlockMutex(q->mu);
+    av_frame_unref(frame);
+}
+
+/* fq_peek returns the oldest frame (main thread only), or NULL. */
+static AVFrame *fq_peek(FrameQueue *q, double *pts, int *serial) {
+    SDL_LockMutex(q->mu);
+    AVFrame *f = NULL;
+    if (q->count) {
+        f = q->f[q->head];
+        *pts = q->pts[q->head];
+        *serial = q->serial[q->head];
+    }
+    SDL_UnlockMutex(q->mu);
+    return f;
+}
+
+static void fq_pop(FrameQueue *q) {
+    SDL_LockMutex(q->mu);
+    if (q->count) {
+        av_frame_unref(q->f[q->head]);
+        q->head = (q->head + 1) % FRAME_QUEUE;
+        q->count--;
+    }
+    SDL_CondSignal(q->cond);
+    SDL_UnlockMutex(q->mu);
+}
+
+static int fq_count(FrameQueue *q) {
+    SDL_LockMutex(q->mu);
+    int n = q->count;
+    SDL_UnlockMutex(q->mu);
+    return n;
+}
+
+static void fq_clear(FrameQueue *q) {
+    while (fq_count(q)) fq_pop(q);
+}
+
+static void fq_destroy(FrameQueue *q) {
+    if (!q->mu) return;
+    fq_clear(q);
+    for (int i = 0; i < FRAME_QUEUE; i++) av_frame_free(&q->f[i]);
+    SDL_DestroyMutex(q->mu);
+    SDL_DestroyCond(q->cond);
+}
+
+/* seconds of video the reader holds ahead of the video decoder */
+static double buffered_s(Player *p) {
+    SDL_LockMutex(p->vq.mu);
+    double b = p->vq.head ? p->vq.last_ts - p->video_read_ts : 0;
+    SDL_UnlockMutex(p->vq.mu);
+    return b > 0 ? b : 0;
+}
 
 /* ---------- audio ring ---------- */
 
@@ -141,11 +349,22 @@ static void audio_cb(void *userdata, Uint8 *out, int len) {
     if (n < len) memset(out + n, 0, (size_t)(len - n)); /* ran dry: silence */
 }
 
-/* audio_write adds S16 stereo to the ring; returns the bytes taken. */
-static int audio_write(Player *p, const Uint8 *buf, int len) {
+/* audio_write adds S16 stereo to the ring, keeping at most MAX_QUEUED_AUDIO
+ * there; apts is the stream time of buf. Returns the bytes taken, or -1 when
+ * a seek made this audio stale. */
+static int audio_write(Player *p, const Uint8 *buf, int len, int serial, double apts) {
     SDL_LockAudioDevice(p->dev);
-    int space = RING_BYTES - p->ring_fill;
-    if (len > space) len = space & ~3;
+    if (serial != cur_serial(p)) {
+        SDL_UnlockAudioDevice(p->dev);
+        return -1;
+    }
+    if (p->resync_audio) {
+        p->audio_written = apts;
+        p->resync_audio = 0;
+        p->wall_fallback = 0;
+    }
+    int space = MAX_QUEUED_AUDIO - p->ring_fill;
+    if (len > space) len = space > 0 ? space & ~3 : 0;
     int tail = (p->ring_head + p->ring_fill) % RING_BYTES;
     for (int done = 0; done < len;) {
         int chunk = RING_BYTES - tail;
@@ -155,6 +374,7 @@ static int audio_write(Player *p, const Uint8 *buf, int len) {
         done += chunk;
     }
     p->ring_fill += len;
+    p->audio_written += (double)len / BYTES_PER_SEC;
     SDL_UnlockAudioDevice(p->dev);
     return len;
 }
@@ -167,16 +387,13 @@ static int audio_queued(Player *p) {
     return n;
 }
 
-static void audio_clear(Player *p) {
-    if (!p->dev) return;
-    SDL_LockAudioDevice(p->dev);
-    p->ring_fill = 0;
-    SDL_UnlockAudioDevice(p->dev);
-}
-
 static double clock_s(Player *p) {
-    if (p->adec && p->dev && !p->wall_fallback)
-        return p->audio_written - (double)audio_queued(p) / BYTES_PER_SEC;
+    if (p->adec && p->dev && !p->wall_fallback) {
+        SDL_LockAudioDevice(p->dev);
+        double c = p->audio_written - (double)p->ring_fill / BYTES_PER_SEC;
+        SDL_UnlockAudioDevice(p->dev);
+        return c;
+    }
     return now_s() - p->wall_base;
 }
 
@@ -194,11 +411,16 @@ static void trace(Player *p, const char *what) {
     if (on < 0) on = getenv("FLEX_PLAYER_TRACE") != NULL;
     if (!on || SDL_GetTicks() < next) return;
     next = SDL_GetTicks() + 1000;
-    fprintf(stderr, "trace: %s pts=%.2f clock=%.2f audio_written=%.2f queued=%d decode=%.1fms draw=%.1fms dropped=%d\n",
-            what, p->last_pts, clock_s(p), p->audio_written, audio_queued(p), p->decode_ms, p->draw_ms, p->dropped);
+    fprintf(stderr,
+            "trace: %s pts=%.2f clock=%.2f queued=%d frames=%d buffer=%.1fs/%dKB decode=%.1fms draw=%.1fms "
+            "dropped=%d\n",
+            what, p->last_pts, clock_s(p), audio_queued(p), fq_count(&p->fq), buffered_s(p),
+            (p->vq.bytes + p->aq.bytes) / 1024, p->decode_ms, p->draw_ms, p->dropped);
 }
 
-static int osd_visible(Player *p) { return p->paused || p->pending >= 0 || SDL_GetTicks() < p->osd_until; }
+static int osd_visible(Player *p) {
+    return p->paused || p->buffering || p->pending >= 0 || SDL_GetTicks() < p->osd_until;
+}
 static void show_osd(Player *p) { p->osd_until = SDL_GetTicks() + OSD_MS; }
 static int seek_ready(Player *p) { return p->pending >= 0 && SDL_GetTicks() >= p->seek_at; }
 
@@ -229,13 +451,16 @@ static void osd_text(Player *p, int slot, const char *text, int x, int y, int ri
 }
 
 /* perf_text sums up how playback keeps up; refreshed once a second so the
- * OSD isn't re-rendered every frame. */
+ * OSD isn't re-rendered every frame. With frame threading the decoder's own
+ * call time says little, so how full the frame queue stays is shown instead:
+ * near FRAME_QUEUE the decoder is ahead, near 0 it can't keep up. */
 static const char *perf_text(Player *p) {
     if (!p->perf[0] || SDL_GetTicks() >= p->perf_next) {
         p->perf_next = SDL_GetTicks() + 1000;
-        snprintf(p->perf, sizeof p->perf, "%dx%d  ·  decode %.0f ms  ·  draw %.0f ms  ·  %d dropped  ·  %d threads%s",
-                 p->tex_w, p->tex_h, p->decode_ms, p->draw_ms, p->dropped, p->vdec ? p->vdec->thread_count : 0,
-                 p->fast_decode ? "  ·  fast decode" : "");
+        snprintf(p->perf, sizeof p->perf,
+                 "%dx%d  ·  frames %d/%d  ·  draw %.0f ms  ·  buffer %.0f s  ·  %d dropped  ·  %d threads%s",
+                 p->tex_w, p->tex_h, fq_count(&p->fq), FRAME_QUEUE, p->draw_ms, buffered_s(p), p->dropped,
+                 p->vdec ? p->vdec->thread_count : 0, p->fast_decode ? "  ·  fast decode" : "");
     }
     return p->perf;
 }
@@ -255,8 +480,9 @@ static void draw_osd(Player *p) {
     osd_text(p, OSD_TITLE, p->o->title ? p->o->title : "", 80, SCREEN_H - 140, 0);
     osd_text(p, OSD_TIME, line, SCREEN_W - 80, SCREEN_H - 140, 1);
     char state[128];
-    snprintf(state, sizeof state, "%s%s  ·  Upscale %s  ·  Volume %d%%", p->paused ? "Paused  ·  " : "",
-             aspect_names[p->aspect], p->o->upscaled ? "on" : "off", p->volume);
+    snprintf(state, sizeof state, "%s%s  ·  Upscale %s  ·  Volume %d%%",
+             p->paused ? "Paused  ·  " : p->buffering ? "Buffering…  ·  " : "", aspect_names[p->aspect],
+             p->o->upscaled ? "on" : "off", p->volume);
     osd_text(p, OSD_STATE, state, SCREEN_W / 2 - 300, SCREEN_H - 140, 0);
     osd_text(p, OSD_PERF, perf_text(p), SCREEN_W - 80, SCREEN_H - 50, 1);
 
@@ -341,11 +567,26 @@ static void layout(Player *p) {
     p->dst = (SDL_Rect){(SCREEN_W - w) / 2, (SCREEN_H - h) / 2, w, h}; /* ZOOM overflows; the renderer clips */
 }
 
+/* audio_run plays the device unless the user paused or the gate is shut. */
+static void audio_run(Player *p) {
+    if (p->dev) SDL_PauseAudioDevice(p->dev, p->paused || p->gate);
+}
+
 static void set_paused(Player *p, int paused) {
     if (p->paused == paused) return;
     p->paused = paused;
-    if (p->dev) SDL_PauseAudioDevice(p->dev, paused);
+    audio_run(p);
     if (!paused) p->wall_base = now_s() - p->last_pts;
+}
+
+/* shut_gate holds the audio (and so the clock) until a video frame is
+ * ready. After a seek the video decoder starts at the keyframe before the
+ * target and has to decode up to it, while the audio is there at once;
+ * letting the clock run meanwhile would make the first frames late. */
+static void shut_gate(Player *p) {
+    p->gate = 1;
+    p->gate_since = SDL_GetTicks();
+    audio_run(p);
 }
 
 static void step_seek(Player *p, double delta) {
@@ -411,30 +652,11 @@ static void handle_events(Player *p) {
     }
 }
 
-/* wait_step is the body of every wait loop: input, pause screen, a short
- * sleep. Returns 0 when the wait must end (stop or seek). */
-static int wait_step(Player *p) {
-    handle_events(p);
-    if (p->quit || seek_ready(p)) return 0;
-    if (p->paused) {
-        redraw(p);
-        SDL_Delay(30);
-    } else {
-        SDL_Delay(2);
-    }
-    return 1;
-}
-
 /* ---------- seeking ---------- */
 
-static void drop_stash(Player *p) {
-    for (int i = 0; i < p->nstash; i++) av_packet_free(&p->stash[i]);
-    p->nstash = 0;
-    p->stash_last = -1e9;
-}
-
-/* commit_seek performs the pending seek. Non-seekable streams end here and
- * report the target to the caller. */
+/* commit_seek performs the pending seek: everything queued becomes stale and
+ * the reader seeks. Non-seekable streams end here and report the target to
+ * the caller. */
 static void commit_seek(Player *p) {
     double target = p->pending;
     p->pending = -1;
@@ -445,27 +667,181 @@ static void commit_seek(Player *p) {
         return;
     }
     double st = target - p->o->offset;
-    int64_t ts = (int64_t)((st + p->start) * AV_TIME_BASE);
-    if (avformat_seek_file(p->fmt, -1, INT64_MIN, ts, ts, 0) < 0) {
-        fprintf(stderr, "player: seek to %.1fs failed\n", target);
-        return;
-    }
-    avcodec_flush_buffers(p->vdec);
-    if (p->adec) avcodec_flush_buffers(p->adec);
-    audio_clear(p);
-    drop_stash(p);
-    p->priming = p->adec != NULL;
-    p->wall_fallback = 0;
+    p->drop_before = st;
+    if (p->dev) SDL_LockAudioDevice(p->dev);
+    SDL_AtomicIncRef(&p->serial);
+    p->ring_fill = 0;
     p->audio_written = st;
     p->resync_audio = 1;
-    p->drop_before = st;
+    if (p->dev) SDL_UnlockAudioDevice(p->dev);
+
+    SDL_LockMutex(p->seek_mu);
+    p->seek_ts = (int64_t)((st + p->start) * AV_TIME_BASE);
+    p->seek_serial = cur_serial(p);
+    p->seek_req = 1;
+    SDL_UnlockMutex(p->seek_mu);
+    fq_clear(&p->fq);
+
+    p->wall_fallback = 0;
+    p->wall_started = 0;
+    p->dry_since = 0;
     p->last_pts = st;
     p->wall_base = now_s() - st;
+    shut_gate(p);
     set_paused(p, 0);
     show_osd(p);
 }
 
-/* ---------- decode ---------- */
+/* ---------- threads ---------- */
+
+static int interrupt_cb(void *opaque) { return aborted(opaque); }
+
+static double packet_ts(AVPacket *pkt, double tb, double start) {
+    int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+    return ts == AV_NOPTS_VALUE ? 0 : ts * tb - start;
+}
+
+static int buffer_full(Player *p) {
+    if (p->vq.bytes + p->aq.bytes > BUFFER_BYTES) return 1;
+    return buffered_s(p) > BUFFER_S;
+}
+
+static int reader_thread(void *arg) {
+    Player *p = arg;
+    AVPacket *pkt = av_packet_alloc();
+    int serial = 0, eof = 0;
+    while (!aborted(p)) {
+        SDL_LockMutex(p->seek_mu);
+        int seek = p->seek_req;
+        int64_t ts = p->seek_ts;
+        if (seek) {
+            serial = p->seek_serial;
+            p->seek_req = 0;
+        }
+        SDL_UnlockMutex(p->seek_mu);
+        if (seek) {
+            if (avformat_seek_file(p->fmt, -1, INT64_MIN, ts, ts, 0) < 0)
+                fprintf(stderr, "player: seek to %.1fs failed\n", ts / (double)AV_TIME_BASE - p->start);
+            pq_clear(&p->vq);
+            pq_clear(&p->aq);
+            pq_put(&p->vq, NULL, MARK_FLUSH, serial, 0);
+            if (p->adec) pq_put(&p->aq, NULL, MARK_FLUSH, serial, 0);
+            eof = 0;
+            continue;
+        }
+        if (eof || buffer_full(p)) {
+            SDL_Delay(10);
+            continue;
+        }
+        int ret = av_read_frame(p->fmt, pkt);
+        if (ret < 0) {
+            if (aborted(p)) break;
+            if (ret != AVERROR_EOF)
+                fprintf(stderr, "player: read failed (%s), treating it as the end\n", av_err2str(ret));
+            pq_put(&p->vq, NULL, MARK_EOF, serial, 0);
+            if (p->adec) pq_put(&p->aq, NULL, MARK_EOF, serial, 0);
+            eof = 1;
+            continue;
+        }
+        if (pkt->stream_index == p->vidx) pq_put(&p->vq, pkt, MARK_NONE, serial, packet_ts(pkt, p->vtb, p->start));
+        else if (pkt->stream_index == p->aidx && p->adec)
+            pq_put(&p->aq, pkt, MARK_NONE, serial, packet_ts(pkt, p->atb, p->start));
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+    return 0;
+}
+
+static void decode_video(Player *p, AVPacket *pkt, AVFrame *frame, int serial) {
+    if (p->want_fast_decode && !p->fast_decode) {
+        p->fast_decode = 1;
+        p->vdec->skip_loop_filter = AVDISCARD_ALL;
+    }
+    Uint64 t0 = SDL_GetPerformanceCounter();
+    if (avcodec_send_packet(p->vdec, pkt) != 0 && pkt) return;
+    for (;;) {
+        int got = avcodec_receive_frame(p->vdec, frame) == 0;
+        p->decode_acc += ms_since(t0);
+        if (!got) break;
+        average(&p->decode_ms, p->decode_acc);
+        p->decode_acc = 0;
+        double pts = frame->best_effort_timestamp == AV_NOPTS_VALUE ? p->dec_last_pts
+                                                                    : frame->best_effort_timestamp * p->vtb - p->start;
+        p->dec_last_pts = pts;
+        if (pts >= p->drop_before - 0.05) fq_put(p, frame, pts, serial);
+        else av_frame_unref(frame); /* decoding up to a seek target */
+        t0 = SDL_GetPerformanceCounter(); /* waiting for a free slot isn't decoding */
+    }
+}
+
+static int video_thread(void *arg) {
+    Player *p = arg;
+    AVFrame *frame = av_frame_alloc();
+    PktNode *n;
+    while ((n = pq_get(p, &p->vq))) {
+        if (n->marker == MARK_FLUSH) {
+            avcodec_flush_buffers(p->vdec);
+        } else if (n->marker == MARK_EOF) {
+            decode_video(p, NULL, frame, n->serial); /* drain */
+            SDL_AtomicSet(&p->video_eof, n->serial + 1);
+        } else if (n->serial == cur_serial(p)) {
+            p->video_read_ts = n->ts;
+            decode_video(p, n->pkt, frame, n->serial);
+        }
+        node_free(n);
+    }
+    av_frame_free(&frame);
+    return 0;
+}
+
+static void queue_audio(Player *p, AVFrame *f, double apts, int serial) {
+    if (!p->swr) {
+        AVChannelLayout out = AV_CHANNEL_LAYOUT_STEREO;
+        swr_alloc_set_opts2(&p->swr, &out, AV_SAMPLE_FMT_S16, AUDIO_RATE, &f->ch_layout, f->format, f->sample_rate, 0,
+                            NULL);
+        swr_init(p->swr);
+    }
+    int out_samples = swr_get_out_samples(p->swr, f->nb_samples);
+    uint8_t *buf = av_malloc(out_samples * AUDIO_CH * 2);
+    int n = swr_convert(p->swr, &buf, out_samples, (const uint8_t **)f->extended_data, f->nb_samples);
+    /* the ring holds ~1 s; wait for the speaker rather than run ahead */
+    for (int len = n > 0 ? n * AUDIO_CH * 2 : 0, done = 0; done < len && !aborted(p);) {
+        int w = audio_write(p, buf + done, len - done, serial, apts + (double)done / BYTES_PER_SEC);
+        if (w < 0) break;
+        done += w;
+        if (done < len) SDL_Delay(5);
+    }
+    av_free(buf);
+}
+
+static int audio_thread(void *arg) {
+    Player *p = arg;
+    AVFrame *frame = av_frame_alloc();
+    PktNode *n;
+    double next = 0; /* for frames without a timestamp */
+    while ((n = pq_get(p, &p->aq))) {
+        if (n->marker == MARK_FLUSH) {
+            avcodec_flush_buffers(p->adec);
+            swr_free(&p->swr);
+        } else if (n->marker == MARK_EOF) {
+            SDL_AtomicSet(&p->audio_eof, n->serial + 1);
+        } else if (n->serial == cur_serial(p) && avcodec_send_packet(p->adec, n->pkt) == 0) {
+            while (avcodec_receive_frame(p->adec, frame) == 0) {
+                double apts = frame->best_effort_timestamp == AV_NOPTS_VALUE
+                                  ? next
+                                  : frame->best_effort_timestamp * p->atb - p->start;
+                next = apts + (double)frame->nb_samples / (frame->sample_rate ? frame->sample_rate : AUDIO_RATE);
+                if (apts >= p->drop_before - 0.02) queue_audio(p, frame, apts, n->serial);
+                av_frame_unref(frame); /* earlier ones are before the seek target */
+            }
+        }
+        node_free(n);
+    }
+    av_frame_free(&frame);
+    return 0;
+}
+
+/* ---------- decode setup ---------- */
 
 static int open_decoder(AVFormatContext *fmt, enum AVMediaType type, AVCodecContext **out) {
     const AVCodec *codec = NULL;
@@ -509,40 +885,9 @@ static void upload_frame(Player *p, AVFrame *f) {
     }
 }
 
-static void queue_audio(Player *p, AVFrame *f, double apts) {
-    if (!p->swr) {
-        AVChannelLayout out = AV_CHANNEL_LAYOUT_STEREO;
-        swr_alloc_set_opts2(&p->swr, &out, AV_SAMPLE_FMT_S16, AUDIO_RATE, &f->ch_layout, f->format, f->sample_rate, 0,
-                            NULL);
-        swr_init(p->swr);
-    }
-    if (p->resync_audio) {
-        p->audio_written = apts;
-        p->resync_audio = 0;
-        p->wall_fallback = 0;
-    }
-    int out_samples = swr_get_out_samples(p->swr, f->nb_samples);
-    uint8_t *buf = av_malloc(out_samples * AUDIO_CH * 2);
-    int n = swr_convert(p->swr, &buf, out_samples, (const uint8_t **)f->extended_data, f->nb_samples);
-    if (n > 0) p->audio_written += (double)audio_write(p, buf, n * AUDIO_CH * 2) / BYTES_PER_SEC;
-    av_free(buf);
-}
-
-static void audio_packet(Player *p, AVPacket *pkt, AVFrame *frame) {
-    /* don't run too far ahead of the speaker */
-    while (audio_queued(p) > MAX_QUEUED_AUDIO)
-        if (!wait_step(p)) return;
-    if (avcodec_send_packet(p->adec, pkt) != 0) return;
-    while (avcodec_receive_frame(p->adec, frame) == 0) {
-        double apts = frame->best_effort_timestamp == AV_NOPTS_VALUE ? p->audio_written
-                                                                     : frame->best_effort_timestamp * p->atb - p->start;
-        if (apts < p->drop_before - 0.02) continue; /* still before the seek target */
-        queue_audio(p, frame, apts);
-    }
-}
-
-/* note_drop: when frames keep coming late, stop deblocking (about a quarter
- * of H.264 decoding time) for the rest of this stream. */
+/* note_drop: when frames keep coming late, have the video thread stop
+ * deblocking (about a quarter of H.264 decoding time) for the rest of this
+ * stream. */
 static void note_drop(Player *p) {
     p->dropped++;
     p->drops_in_row++;
@@ -551,77 +896,114 @@ static void note_drop(Player *p) {
         p->drop_window = now;
         p->drop_count = 0;
     }
-    if (++p->drop_count >= 5 && !p->fast_decode) {
-        p->fast_decode = 1;
-        p->vdec->skip_loop_filter = AVDISCARD_ALL;
-        fprintf(stderr, "player: falling behind (decode %.1f ms, draw %.1f ms), skipping the deblocking filter\n",
-                p->decode_ms, p->draw_ms);
+    if (++p->drop_count >= 5 && !p->want_fast_decode) {
+        p->want_fast_decode = 1;
+        fprintf(stderr, "player: falling behind (%d frames queued, draw %.1f ms), skipping the deblocking filter\n",
+                fq_count(&p->fq), p->draw_ms);
     }
 }
 
-static void video_packet(Player *p, AVPacket *pkt, AVFrame *frame) {
-    Uint64 t0 = SDL_GetPerformanceCounter();
-    if (avcodec_send_packet(p->vdec, pkt) != 0) return;
-    for (;;) {
-        int got = avcodec_receive_frame(p->vdec, frame) == 0;
-        p->decode_acc += ms_since(t0);
-        if (!got) break;
-        average(&p->decode_ms, p->decode_acc);
-        p->decode_acc = 0;
+/* audio_dry: the clock can't move because no audio is coming (the stream
+ * ran out of it, or has none near here); after AUDIO_DRY_S, video is paced
+ * by wall time until the next seek. */
+static int audio_dry(Player *p, double pts) {
+    if (!p->dev || p->wall_fallback || audio_queued(p) > 0 || !pq_empty(&p->aq)) {
+        p->dry_since = 0;
+        return 0;
+    }
+    if (!p->dry_since) p->dry_since = SDL_GetTicks();
+    if (SDL_GetTicks() - p->dry_since < AUDIO_DRY_S * 1000) return 0;
+    fprintf(stderr, "player: no audio for %.1fs at %.1fs, pacing by wall clock\n", AUDIO_DRY_S, pts);
+    p->wall_fallback = 1;
+    p->wall_started = 0;
+    return 1;
+}
 
-        double pts = frame->best_effort_timestamp == AV_NOPTS_VALUE ? p->last_pts
-                                                                    : frame->best_effort_timestamp * p->vtb - p->start;
-        if (pts < p->drop_before - 0.05) goto next; /* decoding up to the seek target */
-        int stop = 0;
-        while (clock_s(p) < pts - 0.005) {
-            if (!wait_step(p)) {
-                stop = 1;
-                break;
-            }
-            /* audio ran dry: its clock can't move until more packets are
-             * read, so show the frame now instead of waiting forever */
-            if (!p->paused && p->dev && !p->wall_fallback && audio_queued(p) == 0) break;
+/* show_next presents the oldest decoded frame once the clock reaches it.
+ * Returns 0 when there is nothing to show yet. */
+static int show_next(Player *p) {
+    double pts;
+    int serial;
+    AVFrame *f = fq_peek(&p->fq, &pts, &serial);
+    if (!f) {
+        /* nothing will come (end of stream) or the decoder is stuck: don't hold the sound forever */
+        if (p->gate && (SDL_AtomicGet(&p->video_eof) == cur_serial(p) + 1 || SDL_GetTicks() - p->gate_since > 5000)) {
+            p->gate = 0;
+            audio_run(p);
         }
-        if (stop) {
-            av_frame_unref(frame); /* keep draining the decoder; the frames are dropped */
-            goto next;
+        return 0;
+    }
+    if (serial != cur_serial(p)) { /* from before a seek */
+        fq_pop(&p->fq);
+        return 1;
+    }
+    if (p->gate) { /* the first frame is here: start the clock at it */
+        if (p->dev) {
+            SDL_LockAudioDevice(p->dev);
+            if (p->resync_audio) p->audio_written = pts; /* no audio decoded yet */
+            SDL_UnlockAudioDevice(p->dev);
         }
-        p->last_pts = pts;
-        if (p->tex && clock_s(p) - pts > LATE_DROP_S && p->drops_in_row < MAX_DROPS_IN_ROW) {
-            note_drop(p); /* behind the clock: skip drawing this one to catch up */
-            av_frame_unref(frame);
-            goto next;
-        }
-        p->drops_in_row = 0;
-        Uint64 d0 = SDL_GetPerformanceCounter();
-        upload_frame(p, frame);
+        p->gate = 0;
+        audio_run(p);
+    }
+    int wall = !(p->adec && p->dev) || p->wall_fallback;
+    if (wall && !p->wall_started) { /* anchor wall-time pacing to this frame */
+        p->wall_base = now_s() - pts;
+        p->wall_started = 1;
+    }
+    if (clock_s(p) < pts - 0.005 && !audio_dry(p, pts)) return 0;
+    p->dry_since = 0;
+    p->last_pts = pts;
+    if (p->tex && clock_s(p) - pts > LATE_DROP_S && p->drops_in_row < MAX_DROPS_IN_ROW) {
+        note_drop(p); /* behind the clock: skip drawing this one to catch up */
+        fq_pop(&p->fq);
+        return 1;
+    }
+    p->drops_in_row = 0;
+    Uint64 d0 = SDL_GetPerformanceCounter();
+    upload_frame(p, f);
+    fq_pop(&p->fq);
+    redraw(p);
+    average(&p->draw_ms, ms_since(d0));
+    trace(p, "frame");
+    return 1;
+}
+
+/* finished: the decoders reached the end and every frame and sample played. */
+static int finished(Player *p) {
+    int serial = cur_serial(p) + 1;
+    if (SDL_AtomicGet(&p->video_eof) != serial || fq_count(&p->fq)) return 0;
+    if (!p->adec || !p->dev) return 1;
+    return SDL_AtomicGet(&p->audio_eof) == serial && audio_queued(p) == 0;
+}
+
+/* note_waiting: nothing was due. With frames queued that is the clock; with
+ * none for a while it is the network (or the decoder), so say so. */
+static void note_waiting(Player *p) {
+    if (fq_count(&p->fq) || SDL_AtomicGet(&p->video_eof) == cur_serial(p) + 1) {
+        p->empty_since = 0;
+        p->buffering = 0;
+        return;
+    }
+    Uint32 now = SDL_GetTicks();
+    if (!p->empty_since) p->empty_since = now;
+    p->buffering = now - p->empty_since >= BUFFERING_MS;
+    if (p->buffering && now >= p->next_buffer_draw) {
+        p->next_buffer_draw = now + 250;
         redraw(p);
-        average(&p->draw_ms, ms_since(d0));
-        trace(p, "frame");
-    next:
-        t0 = SDL_GetPerformanceCounter();
-    }
-}
-
-/* end_priming replays the video packets held back while waiting for audio. */
-static void end_priming(Player *p, AVFrame *frame) {
-    p->priming = 0;
-    int n = p->nstash;
-    p->nstash = 0;
-    p->stash_last = -1e9;
-    for (int i = 0; i < n; i++) {
-        video_packet(p, p->stash[i], frame);
-        av_packet_free(&p->stash[i]);
     }
 }
 
 PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     Player p = {.o = o, .ren = ren, .vidx = -1, .aidx = -1, .pending = -1, .result_seek = -1, .held = -1,
-                .resync_audio = 1, .drop_before = -1e9, .stash_last = -1e9, .sar = 1, .aspect = o->aspect,
-                .volume = o->volume};
+                .resync_audio = 1, .drop_before = -1e9, .sar = 1, .aspect = o->aspect, .volume = o->volume};
     if (p.aspect < 0 || p.aspect >= ASPECT_COUNT) p.aspect = ASPECT_AUTO;
     if (p.volume < 0 || p.volume > VOLUME_MAX) p.volume = 100;
     PlayResult res = {.position = -1, .seek_to = -1};
+    pq_init(&p.vq);
+    pq_init(&p.aq);
+    fq_init(&p.fq);
+    p.seek_mu = SDL_CreateMutex();
     avformat_network_init();
 
     AVDictionary *opts = NULL;
@@ -629,10 +1011,12 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     av_dict_set(&opts, "reconnect", "1", 0);
     av_dict_set(&opts, "reconnect_streamed", "1", 0);
     av_dict_set(&opts, "rw_timeout", "30000000", 0); /* us */
+    p.fmt = avformat_alloc_context();
+    p.fmt->interrupt_callback = (AVIOInterruptCB){interrupt_cb, &p};
     if (avformat_open_input(&p.fmt, o->url, NULL, &opts) < 0) {
         av_dict_free(&opts);
         fprintf(stderr, "player: cannot open %s\n", o->url);
-        return res;
+        goto done;
     }
     av_dict_free(&opts);
     if (avformat_find_stream_info(p.fmt, NULL) < 0) goto done;
@@ -649,13 +1033,12 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     SDL_AudioSpec want = {.freq = AUDIO_RATE, .format = AUDIO_S16SYS, .channels = AUDIO_CH, .samples = 1024,
                           .callback = audio_cb, .userdata = &p};
     if (p.adec && (p.ring = malloc(RING_BYTES))) {
-        p.dev = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
+        p.dev = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0); /* opens paused; the gate starts it */
         if (!p.dev) fprintf(stderr, "player: no audio device (%s); using wall clock\n", SDL_GetError());
-        else SDL_PauseAudioDevice(p.dev, 0);
     }
     if (!p.dev && p.adec) avcodec_free_context(&p.adec);
     p.wall_base = now_s();
-    p.priming = p.adec != NULL;
+    shut_gate(&p);
 
     if (o->seekable && o->initial > 1) { /* resume: seek before the first frame */
         p.pending = o->initial;
@@ -663,8 +1046,10 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     }
     show_osd(&p);
 
-    AVPacket *pkt = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
+    p.reader = SDL_CreateThread(reader_thread, "flex-reader", &p);
+    p.vthread = SDL_CreateThread(video_thread, "flex-video", &p);
+    if (p.adec) p.athread = SDL_CreateThread(audio_thread, "flex-audio", &p);
+
     while (!p.quit) {
         handle_events(&p);
         if (seek_ready(&p)) {
@@ -676,48 +1061,32 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
             SDL_Delay(30);
             continue;
         }
-        if (av_read_frame(p.fmt, pkt) < 0) {
+        if (show_next(&p)) continue;
+        if (finished(&p)) {
             p.ended = 1;
             break;
         }
-        if (pkt->stream_index == p.aidx && p.adec) {
-            audio_packet(&p, pkt, frame);
-            /* release the held-back video once audio covers it, so replaying
-             * it doesn't drain the audio queue */
-            if (p.priming && !p.resync_audio && p.audio_written >= p.stash_last) end_priming(&p, frame);
-        } else if (pkt->stream_index == p.vidx) {
-            if (p.priming && p.nstash < MAX_STASH) {
-                int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
-                if (ts != AV_NOPTS_VALUE) p.stash_last = ts * p.vtb - p.start;
-                p.stash[p.nstash++] = av_packet_clone(pkt);
-            } else {
-                if (p.priming) { /* no audio anywhere near: pace by wall time until some shows up */
-                    fprintf(stderr, "player: no audio after %d video packets, pacing by wall clock\n", p.nstash);
-                    p.wall_fallback = 1;
-                    p.wall_base = now_s() - (p.drop_before > 0 ? p.drop_before : 0);
-                    end_priming(&p, frame);
-                }
-                video_packet(&p, pkt, frame);
-            }
-        }
-        av_packet_unref(pkt);
+        note_waiting(&p);
+        SDL_Delay(2);
     }
-    if (p.ended) /* let the last second of audio play out */
-        while (audio_queued(&p) > 0)
-            if (!wait_step(&p)) break;
 
-    drop_stash(&p);
-    av_frame_free(&frame);
-    av_packet_free(&pkt);
     res.position = position(&p);
     res.seek_to = p.result_seek;
     res.ended = p.ended;
     res.toggle_upscale = p.toggle_upscale;
 done:
+    SDL_AtomicSet(&p.abort, 1);
+    SDL_WaitThread(p.reader, NULL);
+    SDL_WaitThread(p.vthread, NULL);
+    SDL_WaitThread(p.athread, NULL);
     res.aspect = p.aspect;
     res.volume = p.volume;
     if (p.dev) SDL_CloseAudioDevice(p.dev);
     free(p.ring);
+    pq_destroy(&p.vq);
+    pq_destroy(&p.aq);
+    fq_destroy(&p.fq);
+    SDL_DestroyMutex(p.seek_mu);
     for (int i = 0; i < OSD_LINES; i++)
         if (p.osd[i].tex) SDL_DestroyTexture(p.osd[i].tex);
     if (p.tex) SDL_DestroyTexture(p.tex);

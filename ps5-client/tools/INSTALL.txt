@@ -1,0 +1,18 @@
+FLEX for PS5, version @VERSION@
+
+First install: copy the FLEX folder to the jailbroken PS5 so it becomes
+  /data/homebrew/FLEX/eboot.elf
+  /data/homebrew/FLEX/sce_sys/icon0.png
+  /data/homebrew/FLEX/assets/DejaVuSans.ttf
+(FTP to the PS5, or a USB stick plus a file manager.) If FLEX is already
+installed there, replacing eboot.elf is enough; server.txt, aspect.txt,
+upscale.txt and volume.txt in that folder are kept.
+
+After that FLEX updates itself: when the FLEX server on your PC has a newer
+version, the grid shows "Update ... ready" and Options installs it.
+
+Start it from the Homebrew Launcher (websrv must be running). Press Circle
+once if the launcher's log covers the screen.
+
+Away from home it can only reach the library through a router signed in to
+your Tailscale, and only if this PS5 has opened FLEX at home once.

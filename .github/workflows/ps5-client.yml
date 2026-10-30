@@ -1,6 +1,6 @@
-# Compile-checks the PS5 client against host SDL2/FFmpeg headers. This catches
-# C errors without the PS5 toolchain; the real ELF is built locally with the
-# ps5-payload-sdk (see ps5-client/README.md).
+# Builds the PS5 client with the ps5-payload-sdk toolchain (the same setup
+# script as for WSL) and keeps the ELF as a workflow artifact. Releases are
+# built by release.yml.
 name: ps5-client
 
 on:
@@ -10,13 +10,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  syntax:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev
-      - name: Compile (host headers)
+        with:
+          fetch-depth: 0 # git describe gives the version
+      - name: Toolchain
+        run: bash ps5-client/tools/setup-wsl.sh
+      - name: Build
         working-directory: ps5-client
-        run: gcc -std=gnu11 -Wall -Wextra -fsyntax-only -Isrc -Ithird_party/cJSON $(sdl2-config --cflags) src/*.c
+        env:
+          PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
+        run: make release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FLEX-ps5
+          path: |
+            ps5-client/build/FLEX-ps5.elf
+            ps5-client/build/FLEX-ps5.zip

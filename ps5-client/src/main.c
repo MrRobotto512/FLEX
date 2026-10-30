@@ -2,13 +2,15 @@
  * open a show's episodes, play.
  *
  * Controls (grid): D-pad moves, L1/R1 switch Movies/TV, Cross plays a movie
- * or opens a show, Triangle re-discovers the server and refreshes, Circle
- * quits. Episodes: D-pad up/down, Cross plays, Circle back. Player: Cross
- * pauses, Circle stops. */
+ * or opens a show, Triangle re-discovers the server and refreshes, Options
+ * installs an update the server offers, Circle quits. Episodes: D-pad
+ * up/down, Cross plays, Circle back. Player: Cross pauses, Circle stops. */
 
 #include <SDL.h>
 #include <SDL_image.h>
 #include <SDL_ttf.h>
+#include <libavutil/mem.h>
+#include <libavutil/sha.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +20,12 @@
 #include "net.h"
 #include "player.h"
 
+#ifndef FLEX_VERSION
+#define FLEX_VERSION "dev" /* the Makefile passes the git tag */
+#endif
+
 #define APP_DIR "/data/homebrew/FLEX"
+#define EBOOT APP_DIR "/eboot.elf"
 #define SAVED_SERVER APP_DIR "/server.txt"
 #define FONT_PATH APP_DIR "/assets/DejaVuSans.ttf"
 #define ASPECT_FILE APP_DIR "/aspect.txt"
@@ -214,6 +221,12 @@ static void save_int(const char *path, int v) {
     fprintf(f, "%d\n", v);
     fclose(f);
 }
+
+/* An update the server offers (GET /api/v1/client/ps5); empty version = none. */
+static struct {
+    char version[32], sha256[65], url[128];
+    long size;
+} g_update;
 
 /* ---------- API ---------- */
 
@@ -556,7 +569,13 @@ static void draw_grid(SDL_Renderer *ren, Kind mode, Item *list, int n, int sel, 
     x += draw_text(ren, g_font, "Movies", x, 50, mode == KIND_MOVIE ? C_FG : C_MUTED) + 30;
     draw_text(ren, g_font, "TV", x, 50, mode == KIND_SHOW ? C_FG : C_MUTED);
     draw_text(ren, g_tiny, "L1 / R1 switch", SCREEN_W - MARGIN_X - 150, 62, C_MUTED);
-    draw_text(ren, g_small, status, MARGIN_X, 108, C_MUTED);
+    draw_text(ren, g_tiny, "v" FLEX_VERSION, SCREEN_W - MARGIN_X - 150, 36, C_MUTED);
+    int sw =draw_text(ren, g_small, status, MARGIN_X, 108, C_MUTED);
+    if (g_update.version[0]) {
+        char up[96];
+        snprintf(up, sizeof up, "Update %s ready  ·  press Options to install", g_update.version);
+        draw_text(ren, g_small, up, MARGIN_X + sw + 40, 108, C_ACCENT);
+    }
 
     int lo = first_row * COLS, hi = (first_row + ROWS_VISIBLE) * COLS;
     for (int i = lo; i < n && i < hi; i++) {
@@ -619,6 +638,157 @@ static void draw_episodes(SDL_Renderer *ren, ShowView *sv, Item *show, int sel, 
     SDL_RenderPresent(ren);
 }
 
+/* ---------- updates ----------
+ *
+ * The server keeps the newest PS5 build of the latest FLEX release (it
+ * fetches it from GitHub; this HTTP client has no TLS) and describes it at
+ * /api/v1/client/ps5. Options downloads it next to eboot.elf, checks its
+ * SHA-256, swaps it in (the old one stays as eboot.elf.bak) and asks websrv
+ * to start it, which also ends this copy. */
+
+/* version_parse reads "1.2.3" (or "1.2"); 0 for anything else, e.g. a dev build. */
+static int version_parse(const char *v, int out[3]) {
+    out[0] = out[1] = out[2] = 0;
+    if (*v == 'v') v++;
+    for (int i = 0; i < 3; i++) {
+        char *end;
+        long n = strtol(v, &end, 10);
+        if (end == v || n < 0) return 0;
+        out[i] = (int)n;
+        if (*end == 0) return 1;
+        if (*end != '.' || i == 2) return 0;
+        v = end + 1;
+    }
+    return 0;
+}
+
+/* version_newer: a is a release newer than b (any release beats a dev build). */
+static int version_newer(const char *a, const char *b) {
+    int va[3], vb[3];
+    if (!version_parse(a, va)) return 0;
+    if (!version_parse(b, vb)) return 1;
+    for (int i = 0; i < 3; i++)
+        if (va[i] != vb[i]) return va[i] > vb[i];
+    return 0;
+}
+
+static void check_update(void) {
+    memset(&g_update, 0, sizeof g_update);
+    char *body = flex_get(g_host, g_port, "/api/v1/client/ps5"); /* 404: no build, or an older server */
+    if (!body) return;
+    cJSON *j = cJSON_Parse(body);
+    free(body);
+    char version[32];
+    jstr(j, "version", version, sizeof version);
+    if (version_newer(version, FLEX_VERSION)) {
+        snprintf(g_update.version, sizeof g_update.version, "%s", version);
+        jstr(j, "sha256", g_update.sha256, sizeof g_update.sha256);
+        jstr(j, "url", g_update.url, sizeof g_update.url);
+        cJSON *size = cJSON_GetObjectItem(j, "size");
+        g_update.size = cJSON_IsNumber(size) ? (long)size->valuedouble : 0;
+        fprintf(stderr, "FLEX: update %s available (running %s)\n", g_update.version, FLEX_VERSION);
+    }
+    cJSON_Delete(j);
+}
+
+/* draw_message fills the screen with one or two centred lines and a bar
+ * (frac < 0: no bar). */
+static void draw_message(SDL_Renderer *ren, const char *line1, const char *line2, double frac) {
+    SDL_SetRenderDrawColor(ren, C_BG.r, C_BG.g, C_BG.b, 255);
+    SDL_RenderClear(ren);
+    int w = 0, h = 0;
+    TTF_SizeUTF8(g_font, line1, &w, &h);
+    draw_text(ren, g_font, line1, (SCREEN_W - w) / 2, SCREEN_H / 2 - 80, C_FG);
+    if (line2 && line2[0]) {
+        TTF_SizeUTF8(g_small, line2, &w, &h);
+        draw_text(ren, g_small, line2, (SCREEN_W - w) / 2, SCREEN_H / 2 - 20, C_MUTED);
+    }
+    if (frac >= 0) {
+        int bw = 800, x = (SCREEN_W - bw) / 2, y = SCREEN_H / 2 + 40;
+        fill(ren, (SDL_Rect){x, y, bw, 10}, C_PANEL);
+        fill(ren, (SDL_Rect){x, y, (int)(bw * (frac > 1 ? 1 : frac)), 10}, C_ACCENT);
+    }
+    SDL_RenderPresent(ren);
+}
+
+static void download_progress(long done, long total, void *arg) {
+    static Uint32 next;
+    if (SDL_GetTicks() < next) return; /* redraw ~10x a second */
+    next = SDL_GetTicks() + 100;
+    char line[96];
+    snprintf(line, sizeof line, "%.1f of %.1f MB", done / 1048576.0, total / 1048576.0);
+    draw_message(arg, "Downloading the update…", line, total > 0 ? (double)done / total : 0);
+    SDL_PumpEvents(); /* keep the system from thinking the app hung */
+}
+
+static int file_sha256(const char *path, char hex[65]) {
+    FILE *f = fopen(path, "rb");
+    struct AVSHA *sha = av_sha_alloc();
+    if (!f || !sha || av_sha_init(sha, 256) < 0) {
+        if (f) fclose(f);
+        av_free(sha);
+        return -1;
+    }
+    unsigned char buf[1 << 16], digest[32];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) av_sha_update(sha, buf, n);
+    fclose(f);
+    av_sha_final(sha, digest);
+    av_free(sha);
+    for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+    return 0;
+}
+
+/* show_notice explains how the update ended and waits for a button. */
+static void show_notice(SDL_Renderer *ren, const char *title, const char *why) {
+    fprintf(stderr, "FLEX: update: %s: %s\n", title, why);
+    draw_message(ren, title, why, -1);
+    SDL_Delay(500);
+    for (SDL_Event e;;) {
+        if (SDL_WaitEventTimeout(&e, 100) && (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_KEYDOWN ||
+                                              e.type == SDL_QUIT))
+            break;
+    }
+}
+
+/* install_update returns only if the update failed or websrv could not
+ * restart FLEX; *quit is set when the new version is installed. */
+static void install_update(SDL_Renderer *ren, int *quit) {
+    const char *tmp = EBOOT ".new", *bak = EBOOT ".bak";
+    char hex[65];
+    fprintf(stderr, "FLEX: installing %s from %s\n", g_update.version, g_update.url);
+    draw_message(ren, "Downloading the update…", "", 0);
+    long n = flex_download(g_host, g_port, g_update.url, tmp, download_progress, ren);
+    const char *failed = "The update did not install";
+    if (n < 0) {
+        show_notice(ren, failed, "The download from the server was cut off. Try again with Options.");
+        return;
+    }
+    if ((g_update.size && n != g_update.size) || file_sha256(tmp, hex) != 0 || strcmp(hex, g_update.sha256) != 0) {
+        remove(tmp);
+        show_notice(ren, failed, "The downloaded file is damaged (checksum mismatch). Try again with Options.");
+        return;
+    }
+    remove(bak);
+    if (rename(EBOOT, bak) != 0 || rename(tmp, EBOOT) != 0) {
+        rename(bak, EBOOT); /* put the running version back */
+        remove(tmp);
+        show_notice(ren, failed, "Could not replace " EBOOT ".");
+        return;
+    }
+    char line[96];
+    snprintf(line, sizeof line, "Version %s is installed. Restarting FLEX…", g_update.version);
+    draw_message(ren, "Update installed", line, -1);
+    fprintf(stderr, "FLEX: updated to %s, asking websrv to restart it\n", g_update.version);
+    fflush(stderr);
+    /* websrv ends this app, then starts the new one; if it answers instead,
+     * it isn't running or refused */
+    free(flex_get("127.0.0.1", 8080, "/hbldr?path=" EBOOT "&pipe=0&daemon=0"));
+    SDL_Delay(4000);
+    show_notice(ren, "Update installed", "FLEX could not restart itself. Start it again from the Homebrew Launcher.");
+    *quit = 1;
+}
+
 /* ---------- navigation ---------- */
 
 static void move_sel(int *sel, int *first_row, int n, int button) {
@@ -664,6 +834,7 @@ static int key_to_button(SDL_Keycode k) {
     case SDLK_RETURN: return SDL_CONTROLLER_BUTTON_A;
     case SDLK_ESCAPE: return SDL_CONTROLLER_BUTTON_B;
     case SDLK_r: return SDL_CONTROLLER_BUTTON_Y;
+    case SDLK_o: return SDL_CONTROLLER_BUTTON_START;
     case SDLK_q: return SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
     case SDLK_e: return SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
     }
@@ -741,6 +912,7 @@ int main(int argc, char **argv) {
         lists[1] = fetch_items(KIND_SHOW, &counts[1]);
         fprintf(stderr, "FLEX: %d movies, %d shows\n", counts[0], counts[1]);
         set_status(status, sizeof status, counts[0], counts[1]);
+        check_update();
     } else {
         fprintf(stderr, "FLEX: no server found (discovery timed out, saved addresses unreachable)\n");
         snprintf(status, sizeof status, "No server found. Start FLEX on your PC (same network); Triangle retries.");
@@ -805,11 +977,16 @@ int main(int argc, char **argv) {
                 mode = mode == KIND_MOVIE ? KIND_SHOW : KIND_MOVIE;
                 break;
             case SDL_CONTROLLER_BUTTON_B: quit = 1; break;
+            case SDL_CONTROLLER_BUTTON_START: /* options: install the offered update */
+                if (g_update.version[0]) install_update(ren, &quit);
+                held = -1;
+                break;
             case SDL_CONTROLLER_BUTTON_Y: /* triangle: re-discover and refresh */
                 if (find_server() == 0) {
                     refresh_items(KIND_MOVIE, &lists[0], &counts[0]);
                     refresh_items(KIND_SHOW, &lists[1], &counts[1]);
                     set_status(status, sizeof status, counts[0], counts[1]);
+                    check_update();
                 }
                 for (int k = 0; k < 2; k++) {
                     if (sels[k] >= counts[k]) sels[k] = counts[k] ? counts[k] - 1 : 0;

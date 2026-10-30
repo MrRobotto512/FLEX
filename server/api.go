@@ -46,6 +46,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/library/unmatched", s.handleUnmatched)
 	mux.HandleFunc("GET /api/v1/shows/{id}/files", s.handleShowFiles)
 	mux.HandleFunc("PUT /api/v1/library/folders", s.handleFoldersPut)
+	mux.HandleFunc("GET /api/v1/client/ps5", s.handlePS5Client)
+	mux.HandleFunc("GET /api/v1/client/ps5/eboot.elf", s.handlePS5ClientFile)
 	if s.web != nil {
 		mux.Handle("/", http.FileServerFS(s.web))
 	}

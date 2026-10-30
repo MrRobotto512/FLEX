@@ -4,6 +4,7 @@
 #   make            # build/FLEX.elf
 #   make run        # send to elfldr on the console (port 9021) for a quick test
 #   make deploy     # install to /data/homebrew/FLEX via the console's FTP server
+#   make release    # build/FLEX-ps5.elf (no debug info) + FLEX-ps5.zip, what CI attaches to a release
 
 ifdef PS5_PAYLOAD_SDK
     include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
@@ -18,6 +19,11 @@ PS5_FTP_PORT ?= 2121
 ELF  := build/FLEX.elf
 SRCS := src/main.c src/net.c src/player.c third_party/cJSON/cJSON.c
 OBJS := $(patsubst %.c,build/%.o,$(SRCS))
+
+# Shown on the grid and compared with the update the server offers. CI sets
+# it from the release tag; local builds get the commit ("5f165c9-dirty"),
+# which counts as older than any release.
+VERSION ?= $(or $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//'),dev)
 
 # prospero.mk gives us CC, PKG_CONFIG and PS5_DEPLOY; the ports live under
 # $(PS5_SYSROOT)/user/homebrew. The SDL2 port ships sdl2-config but no
@@ -45,6 +51,24 @@ build/%.o: %.c
 # cJSON's isinf() trips a generic-selection warning in the SDK's math.h
 build/third_party/%.o: CFLAGS += -Wno-unreachable-code-generic-assoc
 
+# the version lives only in main.o; rebuild it when it changes
+build/src/main.o: CFLAGS += -DFLEX_VERSION='"$(VERSION)"'
+build/src/main.o: build/version-$(VERSION)
+build/version-$(VERSION):
+	@mkdir -p build
+	@rm -f build/version-*
+	@touch $@
+
+release: $(ELF)
+	$(STRIP) --strip-debug -o build/FLEX-ps5.elf $(ELF)
+	rm -rf build/zip build/FLEX-ps5.zip
+	mkdir -p build/zip/FLEX/sce_sys build/zip/FLEX/assets
+	cp build/FLEX-ps5.elf build/zip/FLEX/eboot.elf
+	cp sce_sys/icon0.png build/zip/FLEX/sce_sys/
+	cp assets/DejaVuSans.ttf build/zip/FLEX/assets/
+	sed 's/@VERSION@/$(VERSION)/' tools/INSTALL.txt > build/zip/INSTALL.txt
+	cd build/zip && zip -qr ../FLEX-ps5.zip INSTALL.txt FLEX
+
 # `run` deploys, then asks websrv's homebrew loader (/hbldr, port 8080) to
 # start the installed copy as a real app with the screen, relaying its stdout
 # here (Ctrl-C only stops the relay). websrv's /elfldr and plain elfldr
@@ -68,4 +92,4 @@ deploy: $(ELF)
 clean:
 	rm -rf build
 
-.PHONY: all run run-headless websrv deploy clean
+.PHONY: all run run-headless websrv deploy release clean

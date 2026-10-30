@@ -76,6 +76,10 @@
 <div class="row"><label class="check"><input type="checkbox" id="ps5_keep_launcher"> Restart the Homebrew Launcher after the PS5 reboots</label></div>
 <p class="note">Payloads don't survive a console restart. When a PS5 that has used FLEX is jailbroken again (elfldr on port 9021) but its Homebrew Launcher (websrv) isn't running, FLEX sends websrv to it so the launcher tile works again.</p>
 
+<h2>Updates</h2>
+<div class="row"><span id="up_status" class="muted">Not checked yet</span><button id="up_check">Check now</button><button class="primary" id="up_install" hidden>Install update</button></div>
+<p class="note">New versions come from the FLEX releases on GitHub. Installing restarts FLEX. The PS5 app updates from this server: when it has a newer build, the console shows "Update ready" and Options installs it.</p>
+
 <div class="row" style="margin-top:20px">
   <button class="primary" id="save">Save &amp; restart server</button>
   <span id="msg" class="muted"></span>
@@ -142,6 +146,17 @@ async function refresh() {
   $('ts_status').textContent = ts;
   $('ts_status').className = cls;
   $('ts_signin').hidden = !st.ts_needs_login;
+  renderUpdate(await App().UpdateStatus());
+}
+
+function renderUpdate(up) {
+  if (!up || !up.checked) return;
+  let text = `Up to date (v${up.current}) · checked ${up.checked}`, cls = 'ok';
+  if (up.available) { text = `Version ${up.latest} is available (you have ${up.current})`; cls = 'warn'; }
+  else if (up.error) { text = 'Could not check: ' + up.error; cls = 'bad'; }
+  $('up_status').textContent = text;
+  $('up_status').className = cls;
+  $('up_install').hidden = !up.available;
 }
 
 $('add').onclick = async () => { const p = await App().PickFolder('Add a movie folder'); if (p) { (settings.library ||= []).push(p); renderFolders(); } };
@@ -149,6 +164,14 @@ $('addtv').onclick = async () => { const p = await App().PickFolder('Add a TV sh
 $('scan').onclick = () => App().StartScan();
 $('open').onclick = () => App().OpenLibrary();
 $('ts_signin').onclick = () => App().TailscaleSignIn();
+$('up_check').onclick = async () => { $('up_status').textContent = 'Checking…'; renderUpdate(await App().CheckUpdate()); };
+$('up_install').onclick = async () => {
+  $('up_install').disabled = true;
+  $('up_status').textContent = 'Downloading the update… FLEX restarts when it is done.';
+  try { await App().InstallUpdate(); }
+  catch (e) { $('up_status').textContent = 'Update failed: ' + e; $('up_status').className = 'bad'; }
+  $('up_install').disabled = false;
+};
 $('autostart').onchange = async e => {
   try { await App().SetAutostart(e.target.checked); } catch (err) { $('msg').textContent = 'Error: ' + err; }
   refresh();

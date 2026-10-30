@@ -1,0 +1,92 @@
+# Publishes a release when a version tag is pushed:
+#
+#   git tag v0.3.0 && git push origin v0.3.0
+#
+# Builds the PS5 client, the Windows app and flexd with that version, and
+# attaches them with SHA256SUMS. FLEX servers pick the PS5 build up from here
+# and offer it to consoles; the Windows app updates itself from it.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. v0.3.0)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  ps5:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Toolchain
+        run: bash ps5-client/tools/setup-wsl.sh
+      - name: Build
+        working-directory: ps5-client
+        env:
+          PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
+        run: make release VERSION="${TAG#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ps5
+          path: |
+            ps5-client/build/FLEX-ps5.elf
+            ps5-client/build/FLEX-ps5.zip
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.9.2
+      - name: FLEX.exe
+        working-directory: desktop
+        run: wails build -clean -ldflags "-X flex/server.Version=${TAG#v}"
+      - name: flexd.exe
+        run: go build -ldflags "-X flex/server.Version=${TAG#v}" -o flexd.exe ./cmd/flexd
+      - name: Collect
+        run: mkdir dist && cp desktop/build/bin/FLEX.exe flexd.exe dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  publish:
+    needs: [ps5, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum FLEX.exe flexd.exe FLEX-ps5.elf FLEX-ps5.zip > SHA256SUMS && cat SHA256SUMS
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "FLEX $TAG" --generate-notes
+          fi

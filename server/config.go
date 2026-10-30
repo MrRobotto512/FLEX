@@ -36,6 +36,10 @@ type Config struct {
 	// consoles by address in addition to the ones learned from requests.
 	PS5KeepLauncher bool
 	PS5Hosts        []string
+
+	// NoUpdates stops the server from checking GitHub for new releases (and
+	// so from fetching new PS5 client builds for consoles).
+	NoUpdates bool
 }
 
 // FromEnv reads FLEX_* variables. Call godotenv.Load first if you want .env.
@@ -53,6 +57,7 @@ func FromEnv() (Config, error) {
 		TSHostname:    envOr("FLEX_TS_HOSTNAME", "flex"),
 
 		PS5KeepLauncher: envBool("FLEX_PS5_KEEP_LAUNCHER", true),
+		NoUpdates:       envBool("FLEX_NO_UPDATES", false),
 	}
 	c.TSEnabled = envBool("FLEX_TS_ENABLE", false) || c.TSAuthKey != ""
 	sep := ":"

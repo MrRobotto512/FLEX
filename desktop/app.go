@@ -63,6 +63,8 @@ type App struct {
 	srv    *server.Server
 	cancel context.CancelFunc
 	runErr string
+
+	up updater
 }
 
 func NewApp() *App {
@@ -74,6 +76,7 @@ func (a *App) startup(ctx context.Context) {
 	a.settings = loadSettings()
 	a.startServer()
 	a.startTray()
+	go a.watchUpdates()
 }
 
 func (a *App) shutdown(ctx context.Context) { a.stopServer() }

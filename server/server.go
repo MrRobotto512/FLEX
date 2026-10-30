@@ -26,7 +26,8 @@ type Server struct {
 	log     *slog.Logger
 	web     fs.FS // static UI, may be nil
 
-	ps5 *ps5Keeper
+	ps5   *ps5Keeper
+	ps5up *ps5Updates // newest PS5 client build, offered to consoles
 
 	gpus         []string          // graphics adapters Windows reports
 	encoderTests map[string]string // hardware encoder -> "ok" or why not
@@ -64,6 +65,8 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 
 	s := &Server{cfg: cfg, db: db, id: id, log: log, web: web, ts: TSInfo{State: "Off"}}
 	s.ps5 = newPS5Keeper(s)
+	s.ps5up = &ps5Updates{s: s}
+	s.ps5up.load()
 
 	s.folders = cfg.Library
 	if len(s.folders) == 0 {
@@ -108,6 +111,9 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.tc.Reap(ctx, 5*time.Minute)
 	if s.cfg.PS5KeepLauncher {
 		go s.ps5.run(ctx)
+	}
+	if !s.cfg.NoUpdates {
+		go s.ps5up.run(ctx)
 	}
 	s.log.Info("FLEX listening", "http", s.cfg.HTTPPort, "name", s.cfg.Name, "id", s.id)
 
