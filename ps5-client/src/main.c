@@ -232,19 +232,21 @@ static int g_upscale, g_volume = 100;
  * server, so it can only raise the estimate. */
 static int g_link_kbps;
 
+static void set_link(int kbps) {
+    if (kbps <= 0 || kbps == g_link_kbps) return;
+    g_link_kbps = kbps;
+    FILE *f = fopen(LINK_FILE, "w");
+    if (f) {
+        fprintf(f, "%d\n", g_link_kbps);
+        fclose(f);
+    }
+    fprintf(stderr, "FLEX: link estimate %d kbit/s\n", g_link_kbps);
+}
+
 static void note_link(int kbps, int direct) {
     if (kbps <= 0) return;
-    int was = g_link_kbps;
-    if (direct) g_link_kbps = g_link_kbps ? (g_link_kbps + kbps) / 2 : kbps;
-    else if (kbps > g_link_kbps) g_link_kbps = kbps;
-    if (g_link_kbps != was) {
-        FILE *f = fopen(LINK_FILE, "w");
-        if (f) {
-            fprintf(f, "%d\n", g_link_kbps);
-            fclose(f);
-        }
-        fprintf(stderr, "FLEX: link estimate %d kbit/s\n", g_link_kbps);
-    }
+    if (direct) set_link(g_link_kbps ? (g_link_kbps + kbps) / 2 : kbps);
+    else if (kbps > g_link_kbps) set_link(kbps);
 }
 
 static void load_int(const char *path, int *v) {
@@ -556,7 +558,8 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
     char path[256];
     /* FLEX_PLAY_PROFILE=direct (via websrv's env=) plays files as they are, for measuring the decoder */
     const char *profile = getenv("FLEX_PLAY_PROFILE") ? getenv("FLEX_PLAY_PROFILE") : "ps5";
-    int no_direct = 0; /* the file ran dry on this link: ask for a stream sized to it instead */
+    int no_direct = 0;  /* the file ran dry on this link: ask for a stream sized to it instead */
+    int step_downs = 0; /* a conversion ran dry: ask for a smaller one (twice at most) */
     for (;;) {
         int n = snprintf(path, sizeof path, "/api/v1/%s/%ld/play?profile=%s&caps=" PLAYER_CAPS "%s&start=%d&upscale=%d",
                          kind, id, profile, no_direct ? ",nodirect" : "", (int)start, g_upscale);
@@ -579,9 +582,9 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
 
         PlayOpts o = {.url = url, .title = title, .offset = hls ? start : 0, .initial = hls ? 0 : start,
                       .duration = duration, .seekable = !hls, .aspect = aspect, .upscaled = upscaled,
-                      .volume = g_volume, .may_give_up = !hls && !no_direct, .font = g_small};
+                      .volume = g_volume, .may_give_up = hls ? step_downs < 2 : !no_direct, .font = g_small};
         PlayResult r = player_play(ren, &o);
-        note_link(r.link_kbps, !hls);
+        if (!r.starved) note_link(r.link_kbps, !hls);
         aspect = r.aspect; /* carried across session restarts */
         if (r.volume != g_volume) {
             g_volume = r.volume;
@@ -598,8 +601,16 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         }
         cJSON_Delete(info);
         if (r.position >= 0) position = r.position;
-        if (r.starved) { /* carry on from here with a conversion the link can carry */
-            no_direct = 1;
+        if (r.starved) { /* carry on from here with a stream the link can carry */
+            if (hls) {
+                /* the conversion came out fatter than the link (an encoder that
+                 * overshoots, or a slower link than measured): ask for less */
+                int measured = r.link_kbps > 0 && r.link_kbps < g_link_kbps ? r.link_kbps : g_link_kbps;
+                set_link((measured ? measured : 8000) * 3 / 4);
+                step_downs++;
+            } else {
+                no_direct = 1;
+            }
             start = r.position > 0 ? r.position : start;
             continue;
         }

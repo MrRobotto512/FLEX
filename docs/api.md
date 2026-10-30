@@ -109,7 +109,7 @@ Without these parameters the profile rules above apply unchanged.
 
 HDR is tone mapped to SDR when it is converted. At startup the server tries libplacebo (Vulkan) on a second of synthetic HDR10; when that works, decoding, tone mapping (BT.2390 with peak detection) and scaling run on the GPU (`"hdr_tonemap":"gpu"` in `/server`, `"mode":"transcode, HDR on the GPU"` in `/transcodes`). Otherwise an NVIDIA card still decodes and shrinks the picture and the CPU tone maps it with zscale (`"cpu"`); without one, all of it is on the CPU, which is far slower than real time for 4K.
 
-An average says nothing about a variable-bitrate peak (an action scene in a 4.7 Mbit/s 4K file ran at ~16–20 Mbit/s). When a file the client plays directly runs dry twice within 90 s, the client asks again from where it is with `nodirect` added to `caps`, and the server converts it at the link's bitrate.
+An average says nothing about a variable-bitrate peak (an action scene in a 4.7 Mbit/s 4K file ran at ~16–20 Mbit/s). When a file the client plays directly runs dry twice within 90 s, the client asks again from where it is with `nodirect` added to `caps`, and the server converts it at the link's bitrate. When a conversion runs dry the same way, the client lowers its link estimate to ¾ of what it measured and asks again (twice at most), so the next conversion is smaller.
 
 ## Continue Watching
 `GET /continue?limit=20` → the movies stopped part way and, per show being watched, the episode to watch next (the one stopped part way, else the first unwatched one after the last played), most recently played first:
