@@ -128,7 +128,11 @@ static int worker(void *arg) {
         from_cache += how == 1;
         fetched += how == 2;
         failed += how == 3;
-        int report = busy && !nwanted && prefetch_head == nprefetch;
+        /* one line per batch that touched the network, not one per screenful read from the cache */
+        static int reported_fetched = -1, reported_failed = -1;
+        int report = busy && !nwanted && prefetch_head == nprefetch &&
+                     (fetched != reported_fetched || failed != reported_failed);
+        if (report) reported_fetched = fetched, reported_failed = failed;
         if (report) busy = 0;
         int f = fetched, c = from_cache, x = failed;
         SDL_UnlockMutex(mu);

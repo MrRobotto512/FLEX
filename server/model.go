@@ -139,6 +139,7 @@ type PlayInfo struct {
 	Width      int     `json:"width"`
 	Height     int     `json:"height"`
 	Upscaled   bool    `json:"upscaled,omitempty"`
+	BitRate    int64   `json:"bit_rate,omitempty"` // transcodes: the video bitrate chosen for the link
 }
 
 type ScanStatus struct {

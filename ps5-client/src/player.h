@@ -12,6 +12,7 @@ typedef struct {
     int aspect;      /* ASPECT_* to start with */
     int upscaled;    /* the server is upscaling this stream (shown in the OSD) */
     int volume;      /* percent, 0..200 */
+    int may_give_up; /* the file itself: stop if the link can't keep up, so the caller asks for a conversion */
     TTF_Font *font;  /* OSD text */
 } PlayOpts;
 
@@ -27,6 +28,8 @@ typedef struct {
     int aspect;      /* ASPECT_* in use when playback stopped */
     int toggle_upscale; /* Triangle: restart at `position` with upscaling switched */
     int volume;      /* percent in use when playback stopped */
+    int link_kbps;   /* how fast the stream came in while the reader was busy; 0 = not measured */
+    int starved;     /* may_give_up: ran dry repeatedly; restart at `position` with a stream sized to the link */
 } PlayResult;
 
 /* Plays one stream until it ends, the user backs out, or (non-seekable

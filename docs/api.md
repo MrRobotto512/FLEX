@@ -99,6 +99,25 @@ or, when the file already fits the profile:
 
 If the source is already within a profile's limits the server remuxes (`-c:v copy`) instead of re-encoding; if the container is also fine it answers `direct`. A `direct` answer ignores `start`: the client seeks in the file itself. An `hls` session begins at `start` and cannot seek; clients restart it with a new `start`.
 
+### Client capabilities and link speed
+`/play` also takes `caps=` (comma separated) and `max_kbps=`:
+
+- `caps` lists what the client decodes itself: `hevc`, `mpeg4` (MPEG-4/DivX), `10bit`, `2160p`, `anycontainer` (MKV, AVI, TS as well as MP4/MOV), `anyaudio` (it converts any track itself). The PS5 client sends all of them. A file within them plays `direct` as it is; HDR is still converted (tone mapped to SDR), since clients can't do that.
+- `max_kbps` is the client's measured link speed. A file plays directly only if its average bitrate is at most 60 % of it (the client buffers 30 s for peaks); otherwise it is transcoded at 70 % of it, between 1.5 and 20 Mbit/s, instead of the profile's fixed 12 (`ps5`) or 6 Mbit/s (`remote`). The answer's `bit_rate` says what was chosen.
+
+Without these parameters the profile rules above apply unchanged.
+
+An average says nothing about a variable-bitrate peak (an action scene in a 4.7 Mbit/s 4K file ran at ~16–20 Mbit/s). When a file the client plays directly runs dry twice within 90 s, the client asks again from where it is with `nodirect` added to `caps`, and the server converts it at the link's bitrate.
+
+## Continue Watching
+`GET /continue?limit=20` → the movies stopped part way and, per show being watched, the episode to watch next (the one stopped part way, else the first unwatched one after the last played), most recently played first:
+```json
+[{"kind":"episode","id":512,"title":"Futurama","subtitle":"S01E02 · The Series Has Landed",
+  "poster":"/api/v1/shows/7/poster","poster_of":"show","poster_id":7,"tmdb_id":615,
+  "resume_s":0,"runtime_s":1320,"show_id":7,"played":"…"}]
+```
+`id` is what `/movies/{id}/play` or `/episodes/{id}/play` takes (by `kind`); `poster_of`/`poster_id` say whose poster it is.
+
 ## Progress
 
 `PUT /movies/{id}/progress` body `{"position_s":1830,"duration_s":10210}` → `204`. Positions within the last 5 % mark the movie watched; positions under 30 s are stored as 0 (no resume point). Clients send this every ~10 s during playback and on stop.
