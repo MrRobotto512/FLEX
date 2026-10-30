@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestParseName(t *testing.T) {
 	cases := []struct {
@@ -61,18 +64,20 @@ func TestParseEpisode(t *testing.T) {
 }
 
 func TestSeriesFromDirs(t *testing.T) {
-	root := `D:\TV`
+	// written with "/" and converted, so the paths split on this OS's
+	// separator (a backslash is just a character in a Linux file name)
+	root := filepath.FromSlash("/TV")
 	cases := []struct {
 		path   string
 		series string
 		year   int
 	}{
-		{`D:\TV\Bob's Burgers\Season 09\S09E01.mkv`, "Bob's Burgers", 0},
-		{`D:\TV\The Expanse (2015)\S01E01.mkv`, "The Expanse", 2015},
-		{`D:\TV\S01E01.mkv`, "", 0},
+		{"/TV/Bob's Burgers/Season 09/S09E01.mkv", "Bob's Burgers", 0},
+		{"/TV/The Expanse (2015)/S01E01.mkv", "The Expanse", 2015},
+		{"/TV/S01E01.mkv", "", 0},
 	}
 	for _, c := range cases {
-		series, year := seriesFromDirs(c.path, root)
+		series, year := seriesFromDirs(filepath.FromSlash(c.path), root)
 		if series != c.series || year != c.year {
 			t.Errorf("seriesFromDirs(%q) = %q, %d; want %q, %d", c.path, series, year, c.series, c.year)
 		}
