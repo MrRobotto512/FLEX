@@ -4,6 +4,7 @@ on:
   push:
     paths: ['server/**', 'cmd/**', 'web/**', 'go.mod', 'go.sum', '.github/workflows/server.yml']
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:

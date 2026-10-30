@@ -7,6 +7,7 @@ on:
   push:
     paths: ['ps5-client/**', '.github/workflows/ps5-client.yml']
   pull_request:
+  workflow_dispatch:
 
 jobs:
   syntax:
