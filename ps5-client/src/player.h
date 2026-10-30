@@ -12,7 +12,7 @@ typedef struct {
     int aspect;      /* ASPECT_* to start with */
     int upscaled;    /* the server is upscaling this stream (shown in the OSD) */
     int volume;      /* percent, 0..200 */
-    int may_give_up; /* the file itself: stop if the link can't keep up, so the caller asks for a conversion */
+    int may_give_up; /* stop if the link can't keep up, so the caller asks for a stream it can carry */
     TTF_Font *font;  /* OSD text */
 } PlayOpts;
 

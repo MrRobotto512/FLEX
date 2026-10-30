@@ -385,8 +385,10 @@ func (t *Transcoder) videoCodecArgs(r transcodeRequest) []string {
 		// Windows' Media Foundation encoder: the graphics driver does the
 		// work, so it still runs on the GPU where ffmpeg's NVENC wants a newer
 		// driver than the card can get (GTX 10-series and older). It takes the
-		// profile as a number (100 = High) and has no level option.
-		return append([]string{"-c:v", "h264_mf", "-hw_encoding", "1", "-rate_control", "pc_vbr", "-profile:v", "100"}, rate...)
+		// profile as a number (100 = High) and has no level option. Constant
+		// bitrate: with pc_vbr NVIDIA's encoder averaged twice -b:v (20.6
+		// Mbit/s asked 10.3), more than the link the bitrate was sized for.
+		return append([]string{"-c:v", "h264_mf", "-hw_encoding", "1", "-rate_control", "cbr", "-profile:v", "100"}, rate...)
 	default:
 		return append([]string{"-c:v", "libx264", "-preset", "veryfast", "-tune", "film", "-sc_threshold", "0"}, common...)
 	}

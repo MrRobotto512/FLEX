@@ -44,7 +44,8 @@ func TestMediaFoundationArgs(t *testing.T) {
 		}
 		return false
 	}
-	if !has(args, "-c:v", "h264_mf") || !has(args, "-hw_encoding", "1") || !has(args, "-profile:v", "100") {
+	if !has(args, "-c:v", "h264_mf") || !has(args, "-hw_encoding", "1") || !has(args, "-profile:v", "100") ||
+		!has(args, "-rate_control", "cbr") {
 		t.Errorf("h264_mf args missing: %q", args)
 	}
 	if has(args, "-level", "4.1") || has(args, "-profile:v", "high") {
