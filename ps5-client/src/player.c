@@ -40,6 +40,8 @@
 #define FRAME_QUEUE 8           /* decoded frames waiting for their time */
 #define AUDIO_DRY_S 1.0         /* video waiting this long on silent audio: pace by wall time */
 #define BUFFERING_MS 300        /* no frame for this long: say "Buffering" */
+#define REBUFFER_S 3.0          /* after running dry, wait for this much before playing on */
+#define GIVE_UP_MS 90000        /* running dry twice within this: the link can't carry the file */
 #define SCREEN_W 1920
 #define SCREEN_H 1080
 #define SEEK_COMMIT_MS 700
@@ -98,6 +100,15 @@ typedef struct {
     SDL_Texture *tex;
     int tex_w, tex_h;
     double sar;   /* pixel aspect of the stream */
+
+    /* The video thread scales every frame to the size it takes on screen
+     * (Lanczos, on several threads), so a 4K picture becomes a sharp 1080p
+     * one, small ones are upscaled well, and the main thread only copies. */
+    volatile int src_w, src_h, src_bt709; /* decoded picture, from the video thread */
+    int laid_w, laid_h;                   /* what layout() last placed */
+    SDL_atomic_t want_w, want_h;          /* size of the scaled frames (0: as decoded) */
+    struct SwsContext *vsws;              /* video thread */
+    int vsws_key[5];
     int aspect;   /* ASPECT_* */
     SDL_Rect dst; /* where the picture goes on screen */
     SDL_AudioDeviceID dev;
@@ -138,8 +149,13 @@ typedef struct {
     double last_pts;             /* stream time of the last presented frame */
 
     int paused, quit, ended, buffering;
+    int rebuffering;    /* ran dry: the clock is held until REBUFFER_S is read ahead */
+    Uint32 rebuffer_since, last_dry;
+    int starved;
+    SDL_atomic_t read_eof; /* serial + 1 once the reader hit the end, else 0 */
+    double read_bytes, read_secs; /* reader: what came in while it was reading, for the link speed */
     int gate;           /* at the start and after a seek: audio waits for the first frame */
-    Uint32 gate_since;
+    Uint32 gate_since, gate_opened;
     Uint32 empty_since; /* the frame queue has been empty since */
     double pending;     /* media time the user is seeking to, -1 = none */
     Uint32 seek_at;     /* commit the pending seek at this tick */
@@ -457,9 +473,12 @@ static void osd_text(Player *p, int slot, const char *text, int x, int y, int ri
 static const char *perf_text(Player *p) {
     if (!p->perf[0] || SDL_GetTicks() >= p->perf_next) {
         p->perf_next = SDL_GetTicks() + 1000;
+        char size[48];
+        if (p->src_w == p->tex_w && p->src_h == p->tex_h) snprintf(size, sizeof size, "%dx%d", p->tex_w, p->tex_h);
+        else snprintf(size, sizeof size, "%dx%d → %dx%d", p->src_w, p->src_h, p->tex_w, p->tex_h);
         snprintf(p->perf, sizeof p->perf,
-                 "%dx%d  ·  frames %d/%d  ·  draw %.0f ms  ·  buffer %.0f s  ·  %d dropped  ·  %d threads%s",
-                 p->tex_w, p->tex_h, fq_count(&p->fq), FRAME_QUEUE, p->draw_ms, buffered_s(p), p->dropped,
+                 "%s  ·  frames %d/%d  ·  draw %.0f ms  ·  buffer %.0f s  ·  %d dropped  ·  %d threads%s",
+                 size, fq_count(&p->fq), FRAME_QUEUE, p->draw_ms, buffered_s(p), p->dropped,
                  p->vdec ? p->vdec->thread_count : 0, p->fast_decode ? "  ·  fast decode" : "");
     }
     return p->perf;
@@ -549,22 +568,31 @@ static int key_button(SDL_Keycode k) {
     return -1;
 }
 
-/* layout places the picture for the current shape. */
+/* layout places the picture for the current shape and tells the video
+ * thread the size to scale frames to. */
 static void layout(Player *p) {
-    if (!p->tex_w || !p->tex_h) return;
-    double ar = p->tex_w * p->sar / p->tex_h;
+    p->laid_w = p->src_w;
+    p->laid_h = p->src_h;
+    if (!p->src_w || !p->src_h) return;
+    double ar = p->src_w * p->sar / p->src_h;
+    int w = SCREEN_W, h;
     switch (p->aspect) {
     case ASPECT_16_9: ar = 16.0 / 9; break;
     case ASPECT_4_3: ar = 4.0 / 3; break;
     case ASPECT_235: ar = 2.35; break;
-    case ASPECT_STRETCH: p->dst = (SDL_Rect){0, 0, SCREEN_W, SCREEN_H}; return;
     }
-    int w = SCREEN_W, h = (int)(SCREEN_W / ar + 0.5);
-    if (p->aspect == ASPECT_ZOOM ? h < SCREEN_H : h > SCREEN_H) {
+    if (p->aspect == ASPECT_STRETCH) {
         h = SCREEN_H;
-        w = (int)(SCREEN_H * ar + 0.5);
+    } else {
+        h = (int)(SCREEN_W / ar + 0.5);
+        if (p->aspect == ASPECT_ZOOM ? h < SCREEN_H : h > SCREEN_H) {
+            h = SCREEN_H;
+            w = (int)(SCREEN_H * ar + 0.5);
+        }
     }
     p->dst = (SDL_Rect){(SCREEN_W - w) / 2, (SCREEN_H - h) / 2, w, h}; /* ZOOM overflows; the renderer clips */
+    SDL_AtomicSet(&p->want_w, (w < 2 * SCREEN_W ? w : 2 * SCREEN_W) & ~1);
+    SDL_AtomicSet(&p->want_h, (h < 2 * SCREEN_H ? h : 2 * SCREEN_H) & ~1);
 }
 
 /* audio_run plays the device unless the user paused or the gate is shut. */
@@ -685,6 +713,7 @@ static void commit_seek(Player *p) {
     p->wall_fallback = 0;
     p->wall_started = 0;
     p->dry_since = 0;
+    p->rebuffering = 0;
     p->last_pts = st;
     p->wall_base = now_s() - st;
     shut_gate(p);
@@ -727,12 +756,14 @@ static int reader_thread(void *arg) {
             pq_put(&p->vq, NULL, MARK_FLUSH, serial, 0);
             if (p->adec) pq_put(&p->aq, NULL, MARK_FLUSH, serial, 0);
             eof = 0;
+            SDL_AtomicSet(&p->read_eof, 0);
             continue;
         }
         if (eof || buffer_full(p)) {
             SDL_Delay(10);
             continue;
         }
+        Uint64 t0 = SDL_GetPerformanceCounter();
         int ret = av_read_frame(p->fmt, pkt);
         if (ret < 0) {
             if (aborted(p)) break;
@@ -741,8 +772,12 @@ static int reader_thread(void *arg) {
             pq_put(&p->vq, NULL, MARK_EOF, serial, 0);
             if (p->adec) pq_put(&p->aq, NULL, MARK_EOF, serial, 0);
             eof = 1;
+            SDL_AtomicSet(&p->read_eof, serial + 1);
             continue;
         }
+        /* time spent waiting in here is the link; with the buffer full the reader idles and isn't counted */
+        p->read_secs += ms_since(t0) / 1000.0;
+        p->read_bytes += pkt->size;
         if (pkt->stream_index == p->vidx) pq_put(&p->vq, pkt, MARK_NONE, serial, packet_ts(pkt, p->vtb, p->start));
         else if (pkt->stream_index == p->aidx && p->adec)
             pq_put(&p->aq, pkt, MARK_NONE, serial, packet_ts(pkt, p->atb, p->start));
@@ -752,7 +787,58 @@ static int reader_thread(void *arg) {
     return 0;
 }
 
-static void decode_video(Player *p, AVPacket *pkt, AVFrame *frame, int serial) {
+/* to_display returns the frame at the size it takes on screen, as 8-bit
+ * 4:2:0 (what the texture takes): Lanczos on several threads, so 4K comes
+ * out as a sharp 1080p picture and SD/720p are upscaled better than the
+ * renderer's bilinear stretch would. A frame that already fits is passed
+ * through untouched; out is scratch space for the scaled copy. */
+static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
+    if (in->width != p->src_w || in->height != p->src_h) {
+        p->sar = in->sample_aspect_ratio.num && in->sample_aspect_ratio.den ? av_q2d(in->sample_aspect_ratio) : 1.0;
+        p->src_bt709 = in->colorspace == AVCOL_SPC_BT709 ||
+                       (in->colorspace != AVCOL_SPC_BT470BG && in->colorspace != AVCOL_SPC_SMPTE170M && in->height >= 720);
+        p->src_h = in->height;
+        p->src_w = in->width; /* last: the main thread lays out when it changes */
+    }
+    int w = SDL_AtomicGet(&p->want_w), h = SDL_AtomicGet(&p->want_h);
+    if (w <= 0 || h <= 0) w = in->width, h = in->height; /* not laid out yet */
+    int yuv420 = in->format == AV_PIX_FMT_YUV420P || in->format == AV_PIX_FMT_YUVJ420P;
+    if (yuv420 && in->width == w && in->height == h) return in;
+
+    int key[5] = {in->width, in->height, in->format, w, h};
+    if (!p->vsws || memcmp(key, p->vsws_key, sizeof key) != 0) {
+        sws_freeContext(p->vsws);
+        p->vsws = sws_alloc_context();
+        av_opt_set_int(p->vsws, "srcw", in->width, 0);
+        av_opt_set_int(p->vsws, "srch", in->height, 0);
+        av_opt_set_int(p->vsws, "src_format", in->format, 0);
+        av_opt_set_int(p->vsws, "dstw", w, 0);
+        av_opt_set_int(p->vsws, "dsth", h, 0);
+        av_opt_set_int(p->vsws, "dst_format", AV_PIX_FMT_YUV420P, 0);
+        av_opt_set_int(p->vsws, "sws_flags", SWS_LANCZOS | SWS_ACCURATE_RND, 0);
+        av_opt_set_int(p->vsws, "threads", av_cpu_count() > 1 ? av_cpu_count() / 2 : 4, 0);
+        if (sws_init_context(p->vsws, NULL, NULL) < 0) {
+            fprintf(stderr, "player: cannot scale %dx%d to %dx%d\n", in->width, in->height, w, h);
+            sws_freeContext(p->vsws);
+            p->vsws = NULL;
+            return in;
+        }
+        memcpy(p->vsws_key, key, sizeof key);
+        fprintf(stderr, "player: scaling %dx%d %s to %dx%d (Lanczos)\n", in->width, in->height,
+                av_get_pix_fmt_name(in->format), w, h);
+    }
+    out->format = AV_PIX_FMT_YUV420P;
+    out->width = w;
+    out->height = h;
+    if (sws_scale_frame(p->vsws, out, in) < 0) {
+        av_frame_unref(out);
+        return in;
+    }
+    av_frame_copy_props(out, in);
+    return out;
+}
+
+static void decode_video(Player *p, AVPacket *pkt, AVFrame *frame, AVFrame *scaled, int serial) {
     if (p->want_fast_decode && !p->fast_decode) {
         p->fast_decode = 1;
         p->vdec->skip_loop_filter = AVDISCARD_ALL;
@@ -768,29 +854,36 @@ static void decode_video(Player *p, AVPacket *pkt, AVFrame *frame, int serial) {
         double pts = frame->best_effort_timestamp == AV_NOPTS_VALUE ? p->dec_last_pts
                                                                     : frame->best_effort_timestamp * p->vtb - p->start;
         p->dec_last_pts = pts;
-        if (pts >= p->drop_before - 0.05) fq_put(p, frame, pts, serial);
-        else av_frame_unref(frame); /* decoding up to a seek target */
+        if (pts >= p->drop_before - 0.05) {
+            AVFrame *d = to_display(p, frame, scaled);
+            fq_put(p, d, pts, serial);
+            if (d != frame) av_frame_unref(frame);
+        } else {
+            av_frame_unref(frame); /* decoding up to a seek target */
+        }
         t0 = SDL_GetPerformanceCounter(); /* waiting for a free slot isn't decoding */
     }
 }
 
 static int video_thread(void *arg) {
     Player *p = arg;
-    AVFrame *frame = av_frame_alloc();
+    AVFrame *frame = av_frame_alloc(), *scaled = av_frame_alloc();
     PktNode *n;
     while ((n = pq_get(p, &p->vq))) {
         if (n->marker == MARK_FLUSH) {
             avcodec_flush_buffers(p->vdec);
         } else if (n->marker == MARK_EOF) {
-            decode_video(p, NULL, frame, n->serial); /* drain */
+            decode_video(p, NULL, frame, scaled, n->serial); /* drain */
             SDL_AtomicSet(&p->video_eof, n->serial + 1);
         } else if (n->serial == cur_serial(p)) {
             p->video_read_ts = n->ts;
-            decode_video(p, n->pkt, frame, n->serial);
+            decode_video(p, n->pkt, frame, scaled, n->serial);
         }
         node_free(n);
     }
     av_frame_free(&frame);
+    av_frame_free(&scaled);
+    sws_freeContext(p->vsws);
     return 0;
 }
 
@@ -861,13 +954,14 @@ static int open_decoder(AVFormatContext *fmt, enum AVMediaType type, AVCodecCont
 }
 
 static void upload_frame(Player *p, AVFrame *f) {
+    if (p->src_w != p->laid_w || p->src_h != p->laid_h) layout(p); /* a new picture size */
     if (!p->tex || p->tex_w != f->width || p->tex_h != f->height) {
         if (p->tex) SDL_DestroyTexture(p->tex);
+        /* the matrix of the source, not of the (scaled) texture size SDL would guess from */
+        SDL_SetYUVConversionMode(p->src_bt709 ? SDL_YUV_CONVERSION_BT709 : SDL_YUV_CONVERSION_BT601);
         p->tex = SDL_CreateTexture(p->ren, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, f->width, f->height);
         p->tex_w = f->width;
         p->tex_h = f->height;
-        p->sar = f->sample_aspect_ratio.num && f->sample_aspect_ratio.den ? av_q2d(f->sample_aspect_ratio) : 1.0;
-        layout(p);
     }
     if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
         SDL_UpdateYUVTexture(p->tex, NULL, f->data[0], f->linesize[0], f->data[1], f->linesize[1], f->data[2],
@@ -896,7 +990,8 @@ static void note_drop(Player *p) {
         p->drop_window = now;
         p->drop_count = 0;
     }
-    if (++p->drop_count >= 5 && !p->want_fast_decode) {
+    /* drops right after the start or a seek are the pipeline filling, not a slow decoder */
+    if (++p->drop_count >= 5 && !p->want_fast_decode && now - p->gate_opened > 3000) {
         p->want_fast_decode = 1;
         fprintf(stderr, "player: falling behind (%d frames queued, draw %.1f ms), skipping the deblocking filter\n",
                 fq_count(&p->fq), p->draw_ms);
@@ -927,7 +1022,8 @@ static int show_next(Player *p) {
     AVFrame *f = fq_peek(&p->fq, &pts, &serial);
     if (!f) {
         /* nothing will come (end of stream) or the decoder is stuck: don't hold the sound forever */
-        if (p->gate && (SDL_AtomicGet(&p->video_eof) == cur_serial(p) + 1 || SDL_GetTicks() - p->gate_since > 5000)) {
+        if (p->gate && (SDL_AtomicGet(&p->video_eof) == cur_serial(p) + 1 ||
+                        (!p->rebuffering && SDL_GetTicks() - p->gate_since > 5000))) {
             p->gate = 0;
             audio_run(p);
         }
@@ -937,14 +1033,32 @@ static int show_next(Player *p) {
         fq_pop(&p->fq);
         return 1;
     }
-    if (p->gate) { /* the first frame is here: start the clock at it */
+    if (p->gate && p->rebuffering) { /* ran dry: play on once there is a cushion again */
+        if (buffered_s(p) < REBUFFER_S && !buffer_full(p) && SDL_AtomicGet(&p->read_eof) != cur_serial(p) + 1)
+            return 0;
+        fprintf(stderr, "player: buffered again after %.1f s\n", (SDL_GetTicks() - p->rebuffer_since) / 1000.0);
+        p->rebuffering = 0;
+        p->buffering = 0;
+        p->gate = 0; /* the frame on screen is the one before the gap; carry on from it */
+        p->gate_opened = SDL_GetTicks();
+        p->wall_started = 0;
+        audio_run(p);
+    }
+    if (p->gate) { /* the first frame is here: put it up, then start the clock at it */
         if (p->dev) {
             SDL_LockAudioDevice(p->dev);
             if (p->resync_audio) p->audio_written = pts; /* no audio decoded yet */
             SDL_UnlockAudioDevice(p->dev);
         }
+        p->last_pts = pts;
+        upload_frame(p, f);
+        fq_pop(&p->fq);
+        redraw(p);
         p->gate = 0;
+        p->gate_opened = SDL_GetTicks();
+        p->wall_started = 0;
         audio_run(p);
+        return 1;
     }
     int wall = !(p->adec && p->dev) || p->wall_fallback;
     if (wall && !p->wall_started) { /* anchor wall-time pacing to this frame */
@@ -980,14 +1094,32 @@ static int finished(Player *p) {
 /* note_waiting: nothing was due. With frames queued that is the clock; with
  * none for a while it is the network (or the decoder), so say so. */
 static void note_waiting(Player *p) {
-    if (fq_count(&p->fq) || SDL_AtomicGet(&p->video_eof) == cur_serial(p) + 1) {
-        p->empty_since = 0;
-        p->buffering = 0;
-        return;
-    }
     Uint32 now = SDL_GetTicks();
-    if (!p->empty_since) p->empty_since = now;
-    p->buffering = now - p->empty_since >= BUFFERING_MS;
+    if (!p->rebuffering) {
+        if (fq_count(&p->fq) || SDL_AtomicGet(&p->video_eof) == cur_serial(p) + 1) {
+            p->empty_since = 0;
+            p->buffering = 0;
+            return;
+        }
+        if (!p->empty_since) p->empty_since = now;
+        p->buffering = now - p->empty_since >= BUFFERING_MS;
+        /* the network can't keep up: hold the sound and the clock instead of
+         * playing on and dropping every late frame */
+        if (p->buffering && !p->gate && SDL_AtomicGet(&p->read_eof) != cur_serial(p) + 1) {
+            fprintf(stderr, "player: ran dry at %.1fs, buffering %.0f s\n", p->last_pts, REBUFFER_S);
+            /* a file whose peaks the link can't carry (its average says nothing about
+             * an action scene): hand back so the caller asks for a converted stream */
+            if (p->o->may_give_up && p->last_dry && now - p->last_dry < GIVE_UP_MS) {
+                fprintf(stderr, "player: the link can't keep up with this file, asking for a converted stream\n");
+                p->starved = 1;
+                p->quit = 1;
+            }
+            p->last_dry = now;
+            p->rebuffering = 1;
+            p->rebuffer_since = now;
+            shut_gate(p);
+        }
+    }
     if (p->buffering && now >= p->next_buffer_draw) {
         p->next_buffer_draw = now + 250;
         redraw(p);
@@ -1029,6 +1161,13 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     p.start = p.fmt->start_time == AV_NOPTS_VALUE ? 0 : p.fmt->start_time / (double)AV_TIME_BASE;
     fprintf(stderr, "player: video %s %dx%d, audio %s, %s\n", p.vdec->codec->name, p.vdec->width, p.vdec->height,
             p.adec ? p.adec->codec->name : "none", o->seekable ? "seekable" : "restart to seek");
+    { /* lay out from the stream's own size, so even the first frames come scaled */
+        AVRational sar = p.fmt->streams[p.vidx]->codecpar->sample_aspect_ratio;
+        p.sar = sar.num && sar.den ? av_q2d(sar) : 1.0;
+        p.src_w = p.vdec->width;
+        p.src_h = p.vdec->height;
+        layout(&p);
+    }
 
     SDL_AudioSpec want = {.freq = AUDIO_RATE, .format = AUDIO_S16SYS, .channels = AUDIO_CH, .samples = 1024,
                           .callback = audio_cb, .userdata = &p};
@@ -1074,9 +1213,15 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     res.seek_to = p.result_seek;
     res.ended = p.ended;
     res.toggle_upscale = p.toggle_upscale;
+    res.starved = p.starved;
 done:
     SDL_AtomicSet(&p.abort, 1);
     SDL_WaitThread(p.reader, NULL);
+    if (p.read_secs >= 3) { /* enough reading to say how fast the link is */
+        res.link_kbps = (int)(p.read_bytes * 8 / p.read_secs / 1000);
+        fprintf(stderr, "player: link %d kbit/s (%.0f MB in %.1f s of reading)\n", res.link_kbps,
+                p.read_bytes / 1048576, p.read_secs);
+    }
     SDL_WaitThread(p.vthread, NULL);
     SDL_WaitThread(p.athread, NULL);
     res.aspect = p.aspect;

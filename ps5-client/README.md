@@ -47,11 +47,16 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 | Where | Button | Action |
 | --- | --- | --- |
 | Grid | D-pad | move (hold to repeat) |
-| Grid | L1 / R1 | switch between Movies and TV |
-| Grid | Cross | play a movie / open a show |
+| Grid | L1 / R1 | previous / next tab: Continue → Movies → TV → Search (Continue only when there is something to continue; FLEX opens on it) |
+| Grid | Cross | play a movie / open a show; on Continue, resume the movie or play the next episode |
+| Grid | Square | search |
 | Grid | Triangle | re-discover the server and refresh |
 | Grid | Options | install the update the server offers ("Update … ready" in the top line) |
 | Grid | Circle | quit |
+| Search | D-pad / Cross | move on the keyboard / type (Space, Delete, Clear on the bottom row); results update as you type |
+| Search | Square | delete the last letter |
+| Search | Down from the keyboard / Up from the results | move between the keyboard and the results |
+| Search | Circle | results → keyboard → Movies |
 | Episodes | D-pad up/down | move; the list opens on the next unwatched episode |
 | Episodes | Cross | play (resumes if partially watched) |
 | Episodes | Circle | back to the shows |
@@ -65,7 +70,13 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 
 Seeks add up: the jump happens 0.7 s after the last press, with a progress bar showing the target. Direct-play files seek in place; a transcoded movie restarts its server session at the new time (a second or two).
 
-The OSD's bottom line shows how playback keeps up: picture size, how full the decoded-frame queue is (8/8: the decoder is ahead; near 0: it can't keep up), draw time per frame, seconds read ahead, frames dropped, decoder threads. A frame that is already late is decoded but not drawn, so a picture too heavy for the console drops frames instead of stuttering the sound; after repeated drops the player also skips H.264 deblocking ("fast decode").
+The OSD's bottom line shows how playback keeps up: picture size (`3840x2160 → 1920x1080` when it is scaled), how full the decoded-frame queue is (8/8: the decoder is ahead; near 0: it can't keep up), draw time per frame, seconds read ahead, frames dropped, decoder threads. A frame that is already late is decoded but not drawn, so a picture too heavy for the console drops frames instead of stuttering the sound; after repeated drops the player also skips H.264 deblocking ("fast decode"). When the network can't keep up and the read-ahead runs dry, playback pauses ("Buffering…") until 3 s are buffered again, instead of dropping frames.
+
+### Picture quality and 4K
+
+The console's video output through this SDL port is 1920×1080 only, and decoding is on the CPU (16 threads; the SDK has no hardware decoder). So 4K files are decoded in full and scaled down to 1080p with Lanczos on the decode threads, which looks sharper than a 1080p file; SD and 720p are scaled up the same way, and the main thread only copies finished pictures. 4K HEVC 10-bit decodes in real time. The client tells the server what it decodes (`caps=`) and how fast its link measured (`max_kbps=`, kept in `link.txt`): files within that play as they are, everything else, including all HDR (the server tone maps it), is converted at the highest bitrate the link carries (see docs/api.md).
+
+`FLEX_PLAY_PROFILE=direct` (through websrv's `env=`) plays every file as it is, for measuring the decoder.
 
 Away from home the client falls back to the server's Tailscale address, which it learns while on the home network (second line of `/data/homebrew/FLEX/server.txt`).
 

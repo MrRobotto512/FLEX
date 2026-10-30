@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/library/unmatched", s.handleUnmatched)
 	mux.HandleFunc("GET /api/v1/shows/{id}/files", s.handleShowFiles)
 	mux.HandleFunc("PUT /api/v1/library/folders", s.handleFoldersPut)
+	mux.HandleFunc("GET /api/v1/continue", s.handleContinue)
 	mux.HandleFunc("GET /api/v1/client/ps5", s.handlePS5Client)
 	mux.HandleFunc("GET /api/v1/client/ps5/eboot.elf", s.handlePS5ClientFile)
 	if s.web != nil {
@@ -217,8 +218,11 @@ func (s *Server) handlePlay(kind string) http.HandlerFunc {
 		sub := intOr(q.Get("sub"), -1)
 		start, _ := strconv.ParseFloat(q.Get("start"), 64)
 		upscale := q.Get("upscale") == "1"
+		caps := parseCaps(q.Get("caps"))
+		linkBps := int64(intOr(q.Get("max_kbps"), 0)) * 1000
 
-		info, err := s.decidePlay(r.Context(), it.kind, it.id, it.path, it.media, profile, audio, sub, start, upscale)
+		info, err := s.decidePlay(r.Context(), it.kind, it.id, it.path, it.media, profile, audio, sub, start, upscale,
+			caps, linkBps)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "ffmpeg_failed", err.Error())
 			return
