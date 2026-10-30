@@ -59,8 +59,8 @@
     <option value="qsv">Intel QuickSync</option><option value="amf">AMD AMF</option>
     <option value="mf">GPU through Windows (older NVIDIA cards)</option><option value="software">Software (libx264)</option>
   </select></div>
-<div class="row"><label>FFmpeg path</label><input id="ffmpeg" placeholder="leave empty to use the bundled one or PATH"></div>
-<div class="row"><label>FFprobe path</label><input id="ffprobe" placeholder="leave empty to use the bundled one or PATH"></div>
+<div class="row"><label>FFmpeg path</label><input id="ffmpeg" placeholder="leave empty: next to FLEX.exe, else downloaded automatically"></div>
+<div class="row"><label>FFprobe path</label><input id="ffprobe" placeholder="leave empty: next to FLEX.exe, else downloaded automatically"></div>
 <div class="row"><label class="check"><input type="checkbox" id="autostart"> Start FLEX with Windows (in the tray)</label></div>
 
 <h2>Remote access (Tailscale)</h2>
@@ -125,7 +125,9 @@ function renderList(id, key) {
 async function refresh() {
   const st = await App().GetStatus();
   const pills = [];
-  pills.push(st.running ? `<span class="pill ok">● server running</span>` : `<span class="pill bad">● stopped ${esc(st.error || '')}</span>`);
+  if (st.ffmpeg_downloading) pills.push(`<span class="pill warn">● first start: downloading FFmpeg… ${Math.round(st.ffmpeg_progress * 100)}% (about 115 MB, once)</span>`);
+  else if (st.ffmpeg_error) pills.push(`<span class="pill bad">● FFmpeg could not be downloaded: ${esc(st.ffmpeg_error)}. Check the internet connection, then Save &amp; restart server.</span>`);
+  else pills.push(st.running ? `<span class="pill ok">● server running</span>` : `<span class="pill bad">● stopped ${esc(st.error || '')}</span>`);
   (st.lan_addrs || []).forEach(a => pills.push(`<span class="pill">LAN <code>${esc(a)}</code></span>`));
   if (st.ts_state === 'Running') pills.push(`<span class="pill ok">Remote <code>http://${esc(st.ts_dns)}:${settings.http_port}</code></span>`);
   if (st.scan) pills.push(`<span class="pill">${st.scan.scanning ? `scanning… ${st.scan.files_seen} files` : `${st.scan.movies} movies · ${st.scan.shows || 0} shows`}</span>`);

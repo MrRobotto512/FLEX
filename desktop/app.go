@@ -46,6 +46,11 @@ type Status struct {
 	Encoder    string               `json:"encoder"`
 	Transcodes []server.SessionInfo `json:"transcodes"`
 
+	// first run on a PC without FFmpeg: the server starts once it is downloaded
+	FFmpegDownloading bool    `json:"ffmpeg_downloading"`
+	FFmpegProgress    float64 `json:"ffmpeg_progress"` // 0..1
+	FFmpegError       string  `json:"ffmpeg_error,omitempty"`
+
 	TSEnabled    bool   `json:"ts_enabled"`
 	TSState      string `json:"ts_state"`
 	TSDNS        string `json:"ts_dns"`
@@ -63,8 +68,15 @@ type App struct {
 	srv    *server.Server
 	cancel context.CancelFunc
 	runErr string
+	ff     ffmpegFetch
 
 	up updater
+}
+
+type ffmpegFetch struct {
+	running     bool
+	done, total int64
+	err         string
 }
 
 func NewApp() *App {
@@ -111,6 +123,12 @@ func (a *App) GetStatus() Status {
 		Version:   server.Version,
 		TSEnabled: a.settings.TSEnabled || a.settings.TSAuthKey != "",
 		TSState:   "Off",
+
+		FFmpegDownloading: a.ff.running,
+		FFmpegError:       a.ff.err,
+	}
+	if a.ff.total > 0 {
+		st.FFmpegProgress = float64(a.ff.done) / float64(a.ff.total)
 	}
 	if a.srv != nil {
 		st.Scan = a.srv.ScanStatus()
@@ -158,6 +176,17 @@ func (a *App) startServer() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.runErr = ""
+	// A PC set up from FLEX.exe alone has no FFmpeg yet: fetch it first (unless
+	// the user pointed the settings at their own copy).
+	cfg := a.settings.config()
+	if cfg.Validate() == nil && !cfg.FFmpegAvailable() && server.CanDownloadFFmpeg() &&
+		a.settings.FFmpeg == "" && a.settings.FFprobe == "" {
+		if !a.ff.running {
+			a.ff = ffmpegFetch{running: true}
+			go a.fetchFFmpeg(cfg.DataDir)
+		}
+		return
+	}
 	srv, err := server.New(a.settings.config(), a.log, web.Files)
 	if err != nil {
 		a.runErr = err.Error()
@@ -173,6 +202,29 @@ func (a *App) startServer() {
 			a.mu.Unlock()
 		}
 	}()
+}
+
+// fetchFFmpeg downloads FFmpeg into the data dir, then starts the server.
+func (a *App) fetchFFmpeg(dataDir string) {
+	a.log.Info("ffmpeg: not found, downloading it", "to", dataDir)
+	err := server.EnsureFFmpeg(context.Background(), dataDir, func(done, total int64) {
+		a.mu.Lock()
+		a.ff.done, a.ff.total = done, total
+		a.mu.Unlock()
+	})
+	a.mu.Lock()
+	a.ff.running = false
+	if err != nil {
+		a.ff.err = err.Error()
+		a.runErr = "FFmpeg could not be downloaded: " + err.Error()
+		a.mu.Unlock()
+		a.log.Error("ffmpeg", "err", err)
+		return
+	}
+	a.ff.err = ""
+	a.mu.Unlock()
+	a.log.Info("ffmpeg: ready")
+	a.startServer()
 }
 
 func (a *App) stopServer() {
