@@ -16,8 +16,8 @@ func detectGPUs() []string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
-		"(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + ' (driver ' + $_.DriverVersion + ')' }) -join \"`n\"").Output()
+	out, err := noWindow(exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+		"(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + ' (driver ' + $_.DriverVersion + ')' }) -join \"`n\"")).Output()
 	if err != nil {
 		return nil
 	}

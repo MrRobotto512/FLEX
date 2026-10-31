@@ -132,7 +132,7 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		return "", err
 	}
 	cctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(cctx, t.ffmpeg, t.args(r, dir)...)
+	cmd := noWindow(exec.CommandContext(cctx, t.ffmpeg, t.args(r, dir)...))
 	s := &session{key: key, dir: dir, cmd: cmd, cancel: cancel, lastUsed: time.Now(), done: make(chan struct{})}
 	s.info = SessionInfo{Key: key, File: filepath.Base(r.Path), Start: r.Start, Mode: "transcode", Started: time.Now()}
 	if r.CopyVid {
@@ -357,7 +357,7 @@ func HDRTest(ctx context.Context, ffmpeg, enc string) string {
 		"-f", "lavfi", "-i", "testsrc2=s=1280x720:d=0.5,format=yuv420p10le," +
 			"setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
 		"-vf", t.placeboFilter(1280, 720, 360, enc)}
-	out, err := exec.CommandContext(ctx, ffmpeg, append(args, "-f", "null", "-")...).CombinedOutput()
+	out, err := noWindow(exec.CommandContext(ctx, ffmpeg, append(args, "-f", "null", "-")...)).CombinedOutput()
 	if err == nil {
 		return "ok"
 	}
@@ -530,7 +530,7 @@ func encoderTest(ctx context.Context, ffmpeg, enc string) string {
 	if enc == "h264_mf" {
 		args = append(args, "-vf", "format=nv12", "-hw_encoding", "1") // no software fallback
 	}
-	out, err := exec.CommandContext(ctx, ffmpeg, append(args, "-f", "null", "-")...).CombinedOutput()
+	out, err := noWindow(exec.CommandContext(ctx, ffmpeg, append(args, "-f", "null", "-")...)).CombinedOutput()
 	if err == nil {
 		return "ok"
 	}
