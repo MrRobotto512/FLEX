@@ -34,6 +34,7 @@ type Settings struct {
 	TSAuthKey       string   `json:"ts_authkey"`
 	TSHostname      string   `json:"ts_hostname"`
 	PS5KeepLauncher bool     `json:"ps5_keep_launcher"`
+	LinkServers     bool     `json:"link_servers"` // list the other FLEX PCs' libraries too
 }
 
 type Status struct {
@@ -45,6 +46,7 @@ type Status struct {
 	Version    string               `json:"version"`
 	Encoder    string               `json:"encoder"`
 	Transcodes []server.SessionInfo `json:"transcodes"`
+	Peers      []server.PeerInfo    `json:"peers"` // linked FLEX PCs
 
 	// first run on a PC without FFmpeg: the server starts once it is downloaded
 	FFmpegDownloading bool    `json:"ffmpeg_downloading"`
@@ -134,6 +136,7 @@ func (a *App) GetStatus() Status {
 		st.Scan = a.srv.ScanStatus()
 		st.Encoder = a.srv.Encoder()
 		st.Transcodes = a.srv.Transcodes()
+		st.Peers = a.srv.Peers()
 		ts := a.srv.TailscaleInfo()
 		st.TSState, st.TSDNS, st.TSIP, st.TSError = ts.State, ts.DNSName, ts.IP, ts.Error
 		st.TSNeedsLogin = ts.State == "NeedsLogin" && ts.AuthURL != ""
@@ -244,7 +247,7 @@ func (s Settings) config() server.Config {
 		HTTPPort: s.HTTPPort, DiscoveryPort: s.DiscoveryPort, TMDBKey: s.TMDBKey,
 		FFmpeg: s.FFmpeg, FFprobe: s.FFprobe, Encoder: s.Encoder,
 		TSEnabled: s.TSEnabled, TSAuthKey: s.TSAuthKey, TSHostname: s.TSHostname,
-		PS5KeepLauncher: s.PS5KeepLauncher,
+		PS5KeepLauncher: s.PS5KeepLauncher, NoPeers: !s.LinkServers,
 	}
 }
 
@@ -262,7 +265,7 @@ func defaultSettings() Settings {
 	return Settings{
 		Name: host, DataDir: filepath.Join(data, "FLEX", "data"),
 		HTTPPort: 8484, DiscoveryPort: 7555, Encoder: "auto", TSHostname: "flex",
-		PS5KeepLauncher: true,
+		PS5KeepLauncher: true, LinkServers: true,
 	}
 }
 

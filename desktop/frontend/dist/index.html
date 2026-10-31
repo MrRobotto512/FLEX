@@ -63,6 +63,11 @@
 <div class="row"><label>FFprobe path</label><input id="ffprobe" placeholder="leave empty: next to FLEX.exe, else downloaded automatically"></div>
 <div class="row"><label class="check"><input type="checkbox" id="autostart"> Start FLEX with Windows (in the tray)</label></div>
 
+<h2>Other FLEX PCs</h2>
+<div class="row"><label class="check"><input type="checkbox" id="link_servers"> Show the movies and shows of the other FLEX PCs on this network</label></div>
+<p class="note">Each FLEX PC lists the others' libraries next to its own, so the PS5, browsers and phones see everything whichever PC they reach. A movie plays from the PC that has the file, converted by that PC's GPU. That PC has to be on.</p>
+<div class="row"><span id="peers" class="muted">None found yet</span></div>
+
 <h2>Remote access (Tailscale)</h2>
 <div class="row"><label class="check"><input type="checkbox" id="ts_enabled"> Enable remote access through Tailscale</label></div>
 <p class="note">FLEX joins your tailnet as its own device. Phones and laptops with Tailscale can then open it from anywhere; a PS5 needs a travel router on your tailnet (see docs/remote.md).</p>
@@ -93,7 +98,7 @@ const encoderNames = {
   h264_nvenc: 'NVIDIA GPU (NVENC)', h264_qsv: 'Intel GPU (QuickSync)', h264_amf: 'AMD GPU (AMF)',
   h264_mf: 'GPU through Windows', libx264: 'CPU (no usable GPU)',
 };
-const fields = ['name','http_port','tmdb_key','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher'];
+const fields = ['name','http_port','tmdb_key','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher','link_servers'];
 
 async function load() {
   settings = await App().GetSettings();
@@ -134,6 +139,10 @@ async function refresh() {
   if (st.scan && st.scan.scanning && st.scan.current) pills.push(`<span class="pill muted">${esc(st.scan.current)}</span>`);
   if (st.encoder) pills.push(`<span class="pill ${st.encoder === 'libx264' ? 'warn' : 'muted'}">converts with ${esc(encoderNames[st.encoder] || st.encoder)}</span>`);
   (st.transcodes || []).forEach(t => pills.push(`<span class="pill warn">${esc(t.mode)}: ${esc(t.file)}</span>`));
+  const peers = st.peers || [];
+  peers.filter(p => p.online).forEach(p => pills.push(`<span class="pill ok">+ ${esc(p.name)}: ${p.movies} movies · ${p.shows} shows</span>`));
+  $('peers').textContent = !settings.link_servers ? 'Off' : peers.length === 0 ? 'None found yet'
+    : peers.map(p => `${p.name} (${p.addr}, v${p.version}): ${p.online ? `${p.movies} movies · ${p.shows} shows` : 'not answering'}`).join(' · ');
   pills.push(`<span class="pill muted">v${esc(st.version)}</span>`);
   $('status').innerHTML = pills.join('');
 

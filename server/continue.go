@@ -134,10 +134,14 @@ func nextEpisode(s *Show, lastID int64) *Episode {
 }
 
 func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request) {
-	items, err := s.db.ContinueWatching(intOr(r.URL.Query().Get("limit"), 20))
+	limit := intOr(r.URL.Query().Get("limit"), 20)
+	items, err := s.db.ContinueWatching(limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db", err.Error())
 		return
+	}
+	if s.linking(r) {
+		items = s.linkedContinue(r, items, limit)
 	}
 	writeJSON(w, http.StatusOK, items)
 }

@@ -8,7 +8,8 @@ PS5 homebrew client ── Tailscale via travel router ─┤
 Phone / laptop (browser) ── Tailscale ──────────────┼──▶  FLEX desktop app (Windows) = server + config UI
                                                      │     • library scan, TMDB metadata, SQLite
                                                      │     • FFmpeg: direct play / remux / transcode → HLS
-                                                     └     • JSON API, LAN discovery, embedded Tailscale (tsnet)
+                                                     │     • JSON API, LAN discovery, embedded Tailscale (tsnet)
+                                                     └     • lists other FLEX PCs' libraries too (linked servers)
 ```
 
 ## Layout

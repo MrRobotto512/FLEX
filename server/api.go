@@ -52,7 +52,7 @@ func (s *Server) Handler() http.Handler {
 	if s.web != nil {
 		mux.Handle("/", http.FileServerFS(s.web))
 	}
-	return logging(s.log, cors(s.notePS5(mux)))
+	return logging(s.log, cors(s.notePS5(s.linkedItems(mux))))
 }
 
 // notePS5 lets the launcher keeper learn the consoles that use FLEX.
@@ -74,6 +74,9 @@ func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
 		features = append(features, "tsnet")
 		info.Tailscale = &ts
 	}
+	if s.peers != nil {
+		info.Peers = s.peers.info()
+	}
 	info.Features = features
 	writeJSON(w, http.StatusOK, info)
 }
@@ -86,6 +89,9 @@ func (s *Server) handleMovies(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db", err.Error())
 		return
+	}
+	if s.linking(r) {
+		movies = s.linkedMovies(r, movies)
 	}
 	writeJSON(w, http.StatusOK, movies)
 }
@@ -134,6 +140,9 @@ func (s *Server) handleShows(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db", err.Error())
 		return
+	}
+	if s.linking(r) {
+		shows = s.linkedShows(r, shows)
 	}
 	writeJSON(w, http.StatusOK, shows)
 }
@@ -200,18 +209,7 @@ func (s *Server) handlePlay(kind string) http.HandlerFunc {
 			return
 		}
 		q := r.URL.Query()
-		profile := q.Get("profile")
-		remote := isTailnetAddr(r.RemoteAddr)
-		switch {
-		case profile == "" && r.Header.Get("X-Flex-Client") == "ps5":
-			profile = "ps5"
-		case profile == "" && !remote:
-			profile = "direct"
-		}
-		// away from home the upload is the limit: same codecs, lower bitrate
-		if remote && (profile == "" || profile == "ps5") {
-			profile = "remote"
-		}
+		profile := playProfile(r)
 		audio := intOr(q.Get("audio"), -1)
 		sub := intOr(q.Get("sub"), -1)
 		start, _ := strconv.ParseFloat(q.Get("start"), 64)
@@ -227,6 +225,24 @@ func (s *Server) handlePlay(kind string) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, info)
 	}
+}
+
+// playProfile is the profile a /play request gets: the one it asks for, else
+// ps5 for the console and direct for the rest. Away from home the upload is
+// the limit: same codecs, lower bitrate.
+func playProfile(r *http.Request) string {
+	profile := r.URL.Query().Get("profile")
+	remote := isTailnetAddr(r.RemoteAddr)
+	switch {
+	case profile == "" && r.Header.Get("X-Flex-Client") == "ps5":
+		profile = "ps5"
+	case profile == "" && !remote:
+		profile = "direct"
+	}
+	if remote && (profile == "" || profile == "ps5") {
+		profile = "remote"
+	}
+	return profile
 }
 
 func (s *Server) handleFile(kind string) http.HandlerFunc {
@@ -455,7 +471,7 @@ func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Flex-Client, X-Flex-Pin")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Flex-Client, X-Flex-Pin, X-Flex-Peer")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

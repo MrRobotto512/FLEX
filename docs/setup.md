@@ -15,6 +15,8 @@ Closing the window keeps FLEX running in the tray (on Windows 11 maybe under the
 
 **Updates:** FLEX checks GitHub every few hours. The tray menu and the window's Updates section show "Update to …"; installing restarts FLEX. FLEX.exe must sit in a folder it can write to (not Program Files) for that.
 
+**More than one PC with movies:** run FLEX on each. They find each other on the home network and each lists the others' movies and shows next to its own (the window shows them under **Other FLEX PCs**), so the PS5, browsers and phones see the whole library whichever PC they reach. A movie plays from the PC that has it, converted by that PC's GPU, so that PC has to be on. Untick **Show the movies and shows of the other FLEX PCs** to keep a PC to itself.
+
 **Away from home:** tick **Enable remote access through Tailscale**, save, then **Sign in to Tailscale…**. Phones and laptops with Tailscale open `http://flex:8484`. See [remote.md](remote.md) for the PS5.
 
 Headless instead of the window: `flexd.exe` with a `.env` (see `.env.example`); it downloads FFmpeg the same way.
