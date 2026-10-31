@@ -40,8 +40,8 @@ type ffprobeOutput struct {
 func Probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, ffprobe,
-		"-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path)
+	cmd := noWindow(exec.CommandContext(ctx, ffprobe,
+		"-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path))
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe %s: %w", path, err)
