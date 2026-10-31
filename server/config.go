@@ -40,6 +40,13 @@ type Config struct {
 	// NoUpdates stops the server from checking GitHub for new releases (and
 	// so from fetching new PS5 client builds for consoles).
 	NoUpdates bool
+
+	// Linked servers: other FLEX servers on the home network (found by
+	// broadcast) list their libraries through this one and this one through
+	// theirs. Peers adds servers the broadcast can't reach ("host[:port]", e.g.
+	// a PC on the tailnet); NoPeers turns linking off.
+	Peers   []string
+	NoPeers bool
 }
 
 // FromEnv reads FLEX_* variables. Call godotenv.Load first if you want .env.
@@ -58,6 +65,7 @@ func FromEnv() (Config, error) {
 
 		PS5KeepLauncher: envBool("FLEX_PS5_KEEP_LAUNCHER", true),
 		NoUpdates:       envBool("FLEX_NO_UPDATES", false),
+		NoPeers:         envBool("FLEX_NO_PEERS", false),
 	}
 	c.TSEnabled = envBool("FLEX_TS_ENABLE", false) || c.TSAuthKey != ""
 	sep := ":"
@@ -72,6 +80,11 @@ func FromEnv() (Config, error) {
 	for _, p := range strings.Split(os.Getenv("FLEX_TV_LIBRARY"), sep) {
 		if p = strings.TrimSpace(p); p != "" {
 			c.TVLibrary = append(c.TVLibrary, filepath.Clean(p))
+		}
+	}
+	for _, h := range strings.Split(os.Getenv("FLEX_PEERS"), ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			c.Peers = append(c.Peers, h)
 		}
 	}
 	for _, h := range strings.Split(os.Getenv("FLEX_PS5_HOSTS"), ",") {

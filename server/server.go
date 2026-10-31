@@ -28,6 +28,7 @@ type Server struct {
 
 	ps5   *ps5Keeper
 	ps5up *ps5Updates // newest PS5 client build, offered to consoles
+	peers *peers      // other FLEX servers whose libraries this one lists; nil when off
 
 	gpus         []string          // graphics adapters Windows reports
 	encoderTests map[string]string // hardware encoder -> "ok" or why not
@@ -67,6 +68,9 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 	s.ps5 = newPS5Keeper(s)
 	s.ps5up = &ps5Updates{s: s}
 	s.ps5up.load()
+	if !cfg.NoPeers {
+		s.peers = newPeers(s)
+	}
 
 	s.folders = cfg.Library
 	if len(s.folders) == 0 {
@@ -122,6 +126,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	if !s.cfg.NoUpdates {
 		go s.ps5up.run(ctx)
+	}
+	if s.peers != nil {
+		go s.peers.run(ctx)
 	}
 	s.log.Info("FLEX listening", "http", s.cfg.HTTPPort, "name", s.cfg.Name, "id", s.id)
 
@@ -192,6 +199,15 @@ func (s *Server) ScanStatus() ScanStatus { return s.scanner.Status() }
 // Transcodes lists running ffmpeg sessions; Encoder is the one they use.
 func (s *Server) Transcodes() []SessionInfo { return s.tc.Sessions() }
 func (s *Server) Encoder() string           { return s.tc.Encoder() }
+
+// Peers lists the linked servers (other FLEX servers whose libraries this one
+// shows), online or not.
+func (s *Server) Peers() []PeerInfo {
+	if s.peers == nil {
+		return nil
+	}
+	return s.peers.info()
+}
 
 // Config returns the configuration the server was started with.
 func (s *Server) Config() Config { return s.cfg }

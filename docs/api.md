@@ -132,6 +132,16 @@ An average says nothing about a variable-bitrate peak (an action scene in a 4.7 
 - `POST /movies/{id}/match` body `{"tmdb_id":949}` — fix a wrong metadata match.
 - `GET /library/unmatched` → `{"movies":[{"id","title","year","path"}],"shows":[{"id","title","year","path","episodes"}]}` — what TMDB could not identify, with file paths. Home network only.
 
+## Linked servers
+Every server looks for the others once a minute with the discovery broadcast above (plus `FLEX_PEERS`, `host[:port]` list, for servers a broadcast can't reach; `FLEX_NO_PEERS=1` turns linking off) and lists their movies, shows and Continue Watching next to its own. Clients need nothing new:
+
+- A linked item's id is the owner's id plus `slot × 100000000`; the slot (1–20) is this server's number for that server, saved, so ids stay put across restarts and stay below 2³¹. Its `poster`/`backdrop`/`still` URLs use that id.
+- Every `/movies|shows|episodes/{id}…` request for a linked id (details, images, `play`, `file` with `Range`, `progress`, `match`) is passed on to the owner. `/play` decides the profile where the client is (`remote` over the tailnet) and the owner converts on its own GPU; the answer's `url` becomes `/api/v1/hls/p<slot>-<session>/index.m3u8`, which this server passes through, `DELETE` included.
+- Server-to-server requests carry `X-Flex-Peer: <server id>` (and `X-Flex-Client: peer`); a server answers them with its own items only.
+- `GET /server` adds `peers`: `[{"name","id","addr","version","movies","shows","online"}]`.
+
+A linked server that doesn't answer is left out for 30 s; one not seen for 3 minutes drops out of the lists.
+
 ## Client updates
 The server checks the latest GitHub release every 6 h (unless `FLEX_NO_UPDATES=1`) and keeps its PS5 build, verified against the release's `SHA256SUMS`, in `<data>/ps5/client/`.
 

@@ -165,6 +165,7 @@ type ServerInfo struct {
 	// why a hardware encoder was or wasn't used, and the HDR (libplacebo) test
 	GPUs         []string          `json:"gpus,omitempty"`
 	EncoderTests map[string]string `json:"encoder_tests,omitempty"`
+	Peers        []PeerInfo        `json:"peers,omitempty"` // linked servers whose libraries this one lists
 }
 
 // Version is the release this build belongs to; CI sets it from the tag
