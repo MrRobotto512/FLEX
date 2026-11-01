@@ -76,9 +76,11 @@ function renderHome() {
         : it.kind === 'show' ? `${it.seasons || 1} season${it.seasons === 1 ? '' : 's'}`
         : it.kind === 'episode' ? it.subtitle
         : `${it.year || ''}${it.watched ? ' · watched' : ''}`;
-      card.innerHTML = (it.poster ? `<img src="${it.poster}" alt="" loading="lazy">` : `<div class="noart">${esc(it.title)}</div>`) +
+      // the progress bar sits on the artwork, so a two-line subtitle can't push it over the title
+      card.innerHTML = `<div class="art">` +
+        (it.poster ? `<img src="${it.poster}" alt="" loading="lazy">` : `<div class="noart">${esc(it.title)}</div>`) +
         (pct > 0 ? `<div class="progress"><i style="width:${pct}%"></i></div>` : '') +
-        `<div class="title">${esc(it.title)}</div><div class="year">${esc(sub)}</div>`;
+        `</div><div class="title">${esc(it.title)}</div><div class="year">${esc(sub)}</div>`;
       card.addEventListener('click', () => { focusShelf(r, c); activateShelf(); });
       strip.appendChild(card);
     });
@@ -146,18 +148,18 @@ function renderGrid() {
     const card = document.createElement('div');
     card.className = 'card' + (i === focus ? ' focused' : '');
     card.dataset.index = i;
-    card.innerHTML = it.poster
+    const art = it.poster
       ? `<img src="${it.poster}" alt="" loading="lazy">`
       : `<div class="noart">${esc(it.title)}</div>`;
     if (mode === 'movies') {
       const pct = it.runtime_s ? Math.min(100, Math.round(100 * it.resume_s / it.runtime_s)) : 0;
-      card.innerHTML += `
-        ${pct > 0 && !it.watched ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ''}
+      card.innerHTML = `<div class="art">${art}
+        ${pct > 0 && !it.watched ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ''}</div>
         <div class="title">${esc(it.title)}</div>
         <div class="year">${it.year || ''}${it.watched ? ' · watched' : ''}</div>`;
     } else {
-      card.innerHTML += `
-        ${it.unwatched ? `<span class="badge">${it.unwatched}</span>` : ''}
+      card.innerHTML = `<div class="art">${art}
+        ${it.unwatched ? `<span class="badge">${it.unwatched}</span>` : ''}</div>
         <div class="title">${esc(it.title)}</div>
         <div class="year">${it.year ? it.year + ' · ' : ''}${it.seasons} season${it.seasons === 1 ? '' : 's'} · ${it.episodes} ep</div>`;
     }
@@ -306,6 +308,15 @@ async function play(kind, item) {
       video.src = info.url;
     } else if (window.Hls && Hls.isSupported()) {
       current.hls = new Hls();
+      // a playlist that isn't there yet (the converter is starting, or a
+      // restarted session) is fatal to hls.js: load it again, a few times
+      let retries = 0;
+      current.hls.on(Hls.Events.ERROR, (ev, data) => {
+        if (!data.fatal || !current || !current.hls) return;
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) current.hls.recoverMediaError();
+        else if (retries++ < 8) setTimeout(() => current && current.hls && current.hls.loadSource(info.url), 1000);
+        else { document.getElementById('osd-info').textContent = `can't play: ${data.details}`; showOSD(); }
+      });
       current.hls.loadSource(info.url);
       current.hls.attachMedia(video);
     } else {

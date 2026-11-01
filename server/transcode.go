@@ -482,6 +482,23 @@ func (t *Transcoder) Serve(w http.ResponseWriter, req *http.Request, key, file s
 	if strings.HasSuffix(file, ".m3u8") {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Header().Set("Cache-Control", "no-store")
+		// ffmpeg writes the playlist once the first segment is done: a
+		// client asking before that would get nothing (or an empty file
+		// mid-write), which hls.js takes for a broken stream. Wait a little.
+		path := filepath.Join(s.dir, file)
+		for i := 0; i < 50; i++ {
+			if b, err := os.ReadFile(path); err == nil && strings.Contains(string(b), "#EXTINF") {
+				break
+			}
+			select {
+			case <-req.Context().Done():
+				return
+			case <-s.done:
+				http.Error(w, "the conversion stopped", http.StatusServiceUnavailable)
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
 	} else {
 		w.Header().Set("Content-Type", "video/mp2t")
 	}
