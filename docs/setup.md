@@ -28,6 +28,8 @@ Headless instead of the window: `flexd.exe` with a `.env` (see `.env.example`); 
 
 Transcoding uses the GPU when it can: NVIDIA NVENC, Intel QuickSync, AMD AMF, then the GPU through Windows (older NVIDIA cards), and only then the CPU (the window shows which: "converts with …"). Only files the PS5 can't play as they are get converted, and only a little ahead of what is being watched. Ports: TCP 8484 (HTTP), UDP 7555 (discovery).
 
+**Season prep:** under **Season prep** in the window, FLEX upscales the season's movies and episodes ahead of time (the AI's holiday row picks them; you can add any title), so the PS5 plays finished 1080p files instead of converting live, and removes them once the season is over. If Topaz Video AI is installed on that PC, enter its folder (e.g. `C:\Program Files\Topaz Labs LLC\Topaz Video AI`) and model (`prob-3` is Proteus; copy the model name from Topaz's "Show export command") and FLEX uses it; otherwise the built-in AI shaders do the work. Each PC prepares its own files with its own GPU.
+
 **Upscaling:** Triangle on the PS5 turns server upscaling on or off (remembered). At home each FLEX PC upscales old SD and 720p video with AI on its own GPU, when the GPU is fast enough: Anime4K for cartoons, FSRCNNX for everything else. FLEX downloads both (about 1 MB) on the first start and tests them; the window shows "AI upscaling: …" when they passed. Over Tailscale, and on GPUs that are too slow, it upscales the plain way.
 
 ## The PS5 (jailbroken)

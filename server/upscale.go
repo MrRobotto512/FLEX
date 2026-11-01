@@ -50,6 +50,10 @@ func (s *Server) prepareUpscaling(ctx context.Context) {
 		s.mu.Unlock()
 		s.log.Info("AI upscaling", "shaders", results)
 	}()
+	if s.cfg.FFmpeg == "" {
+		results["ai"] = "no ffmpeg"
+		return
+	}
 	if !s.tc.hdrGPU {
 		results["ai"] = "needs libplacebo (Vulkan), which didn't pass its test"
 		return

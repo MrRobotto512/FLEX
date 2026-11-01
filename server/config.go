@@ -48,6 +48,15 @@ type Config struct {
 	// so from fetching new PS5 client builds for consoles).
 	NoUpdates bool
 
+	// Season prep (prep.go): titles for the time of year upscaled ahead of
+	// time. TopazDir is Topaz Video AI's folder on this PC (its ffmpeg does
+	// the upscaling; TopazModel the model, prob-3 = Proteus) and may be
+	// empty; PrepMax caps the AI's picks.
+	PrepEnabled bool
+	TopazDir    string
+	TopazModel  string
+	PrepMax     int
+
 	// Linked servers: other FLEX servers on the home network (found by
 	// broadcast) list their libraries through this one and this one through
 	// theirs. Peers adds servers the broadcast can't reach ("host[:port]", e.g.
@@ -76,6 +85,10 @@ func FromEnv() (Config, error) {
 		PS5KeepLauncher: envBool("FLEX_PS5_KEEP_LAUNCHER", true),
 		NoUpdates:       envBool("FLEX_NO_UPDATES", false),
 		NoPeers:         envBool("FLEX_NO_PEERS", false),
+		PrepEnabled:     envBool("FLEX_PREP", true),
+		TopazDir:        os.Getenv("FLEX_TOPAZ_DIR"),
+		TopazModel:      envOr("FLEX_TOPAZ_MODEL", "prob-3"),
+		PrepMax:         envInt("FLEX_PREP_MAX", prepDefaultMax),
 	}
 	c.TSEnabled = envBool("FLEX_TS_ENABLE", false) || c.TSAuthKey != ""
 	sep := ":"

@@ -43,6 +43,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/library/scan", s.handleScan)
 	mux.HandleFunc("GET /api/v1/library/status", s.handleScanStatus)
 	mux.HandleFunc("GET /api/v1/library/seasonal", s.handleSeasonal)
+	mux.HandleFunc("GET /api/v1/prep", s.handlePrep)
+	mux.HandleFunc("POST /api/v1/prep", s.handlePrepAdd)
+	mux.HandleFunc("DELETE /api/v1/prep/{kind}/{id}", s.handlePrepDelete)
 	mux.HandleFunc("GET /api/v1/library/folders", s.handleFoldersGet)
 	mux.HandleFunc("GET /api/v1/library/unmatched", s.handleUnmatched)
 	mux.HandleFunc("GET /api/v1/shows/{id}/files", s.handleShowFiles)
@@ -255,8 +258,44 @@ func (s *Server) handleFile(kind string) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		serveFile(w, r, it.path)
+		path := it.path
+		if r.URL.Query().Get("hd") == "1" && s.prep != nil {
+			if hd := s.prep.Ready(it.kind, it.id); hd != "" {
+				path = hd
+			}
+		}
+		serveFile(w, r, path)
 	}
+}
+
+// Season prep: the list, adding by hand, removing.
+func (s *Server) handlePrep(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.prep.List())
+}
+
+func (s *Server) handlePrepAdd(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Kind string `json:"kind"`
+		ID   int64  `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Kind != "movie" && body.Kind != "episode") {
+		writeErr(w, http.StatusBadRequest, "bad_request", "kind (movie|episode) and id required")
+		return
+	}
+	if err := s.prep.Add(body.Kind, body.ID); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePrepDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	s.prep.Remove(r.PathValue("kind"), id)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleProgress(kind string) http.HandlerFunc {

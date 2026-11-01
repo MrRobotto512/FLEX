@@ -30,6 +30,7 @@ type Server struct {
 	ps5up  *ps5Updates // newest PS5 client build, offered to consoles
 	peers  *peers      // other FLEX servers whose libraries this one lists; nil when off
 	themes *themer     // the home screen's AI-made rows
+	prep   *prepper    // season prep: titles upscaled ahead of time
 
 	gpus         []string          // graphics adapters Windows reports
 	encoderTests map[string]string // hardware encoder -> "ok" or why not
@@ -74,6 +75,7 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 		s.peers = newPeers(s)
 	}
 	s.themes = newThemer(s)
+	s.prep = newPrepper(s)
 
 	s.folders = cfg.Library
 	if len(s.folders) == 0 {
@@ -136,7 +138,11 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.peers.run(ctx)
 	}
 	go s.themes.run(ctx)
-	go s.prepareUpscaling(ctx)
+	go func() {
+		s.prepareUpscaling(ctx) // the shaders first: season prep may use them
+		s.prep.detect(ctx)
+		s.prep.run(ctx)
+	}()
 	s.log.Info("FLEX listening", "http", s.cfg.HTTPPort, "name", s.cfg.Name, "id", s.id)
 
 	if s.cfg.TSEnabled || s.cfg.TSAuthKey != "" {
@@ -232,6 +238,10 @@ func (s *Server) Peers() []PeerInfo {
 	}
 	return s.peers.info()
 }
+
+// Prep is the season prep list, and PrepEngine what prepares it.
+func (s *Server) Prep() []PrepItem             { return s.prep.List() }
+func (s *Server) PrepEngine() (string, string) { return s.prep.Engine() }
 
 // HomeRows says who makes the home screen's rows, for the desktop window.
 func (s *Server) HomeRows() string { return s.themes.Status() }

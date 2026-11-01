@@ -155,6 +155,15 @@ Movies and shows in `/movies` and `/shows` carry `"genres":["Horror"]` and, from
 - `POST /movies/{id}/match` body `{"tmdb_id":949}` — fix a wrong metadata match.
 - `GET /library/unmatched` → `{"movies":[{"id","title","year","path"}],"shows":[{"id","title","year","path","episodes"}]}` — what TMDB could not identify, with file paths. Home network only.
 
+## Season prep
+
+Titles for the time of year are upscaled ahead of time into `<data>/upscaled` as 1080p H.264/AAC MP4s, one at a time while no transcode is running. The AI's first home row (the holiday or season row) picks this server's own SD titles, up to `FLEX_PREP_MAX` (12); what it stops listing is removed once the season is over. Titles added by hand stay until removed. Topaz Video AI's own ffmpeg (`FLEX_TOPAZ_DIR`, model `FLEX_TOPAZ_MODEL`, default `prob-3`) does the upscaling when it runs on this PC, else the AI shaders above. `FLEX_PREP=false` turns it off.
+
+- `GET /prep` → `[{"kind":"movie","id":42,"title":"Halloween","state":"queued|working|ready|failed","source":"ai|user","engine":"topaz|shaders","percent":37,"error":"…","added":"…"}]`
+- `POST /prep` body `{"kind":"movie","id":42}` → `204`; `400` for HD titles or a linked server's.
+- `DELETE /prep/{kind}/{id}` → `204`, deleting the file too.
+- `/play?upscale=1` on the home network answers `"method":"direct"` with `…/file?hd=1` for a ready title (no transcode at all); `GET …/file?hd=1` serves the prepared file.
+
 ## Linked servers
 Every server looks for the others once a minute with the discovery broadcast above (plus `FLEX_PEERS`, `host[:port]` list, for servers a broadcast can't reach; `FLEX_NO_PEERS=1` turns linking off) and lists their movies, shows and Continue Watching next to its own. Clients need nothing new:
 
