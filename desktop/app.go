@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -41,6 +43,7 @@ type Settings struct {
 	Prep            bool     `json:"prep"`         // season prep: upscale the season's titles ahead of time
 	TopazDir        string   `json:"topaz_dir"`    // Topaz Video AI's folder on this PC, "" for the built-in shaders
 	TopazModel      string   `json:"topaz_model"`  // its model, e.g. prob-3
+	PlayerAtStart   bool     `json:"player_at_start"` // a media PC: open the full-screen player when FLEX starts
 }
 
 type Status struct {
@@ -102,6 +105,25 @@ func (a *App) startup(ctx context.Context) {
 	a.startServer()
 	a.startTray()
 	go a.watchUpdates()
+	if a.settings.PlayerAtStart {
+		go a.openPlayerWhenUp()
+	}
+}
+
+// openPlayerWhenUp waits for the server to answer (FFmpeg may be downloading
+// first), then opens the player once.
+func (a *App) openPlayerWhenUp() {
+	url := fmt.Sprintf("http://127.0.0.1:%d/api/v1/server", a.settings.HTTPPort)
+	for i := 0; i < 600; i++ {
+		if resp, err := http.Get(url); err == nil {
+			resp.Body.Close()
+			if err := a.OpenPlayer(); err != nil {
+				a.log.Warn("player", "err", err)
+			}
+			return
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func (a *App) shutdown(ctx context.Context) { a.stopServer() }

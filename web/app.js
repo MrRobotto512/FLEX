@@ -2,7 +2,9 @@
 // by arrow keys / D-pad, an episode list per show, and a player that asks the
 // server how to play each item (docs/api.md).
 const API = '/api/v1';
-const CLIENT = /FLEX-Android\//.test(navigator.userAgent) ? 'android' : 'web';
+// web: a browser. android: the Android app. player: FLEX.exe --player, the
+// full-screen window on a media PC (it sets window.FLEX_CLIENT before the page runs).
+const CLIENT = window.FLEX_CLIENT || (/FLEX-Android\//.test(navigator.userAgent) ? 'android' : 'web');
 
 const grid = document.getElementById('grid');
 const empty = document.getElementById('empty');
@@ -282,7 +284,11 @@ function closeShow() {
 async function play(kind, item) {
   const detail = await api(`/${kind}s/${item.id}`);
   const start = detail.resume_s && !detail.watched ? detail.resume_s : 0;
-  const info = await api(`/${kind}s/${item.id}/play?start=${start}`);
+  // a browser gets the file as it is; the player and the Android app say what
+  // they decode and get a stream sized for a TV when the file won't do
+  const prof = CLIENT === 'player' ? 'player' : CLIENT === 'android' ? 'ps5' : '';
+  const q = `start=${start}` + (prof ? `&profile=${prof}&caps=${clientCaps()}` : '');
+  const info = await api(`/${kind}s/${item.id}/play?${q}`);
   current = { kind, item: detail, info, hls: null, offset: 0 };
 
   view = 'player';
@@ -375,6 +381,9 @@ document.addEventListener('keydown', e => {
     }
     return;
   }
+  if (castView) { castKey(e); e.preventDefault(); return; }
+  if (e.key === 'c' || e.key === 'C') { openCast(); e.preventDefault(); return; }
+  if (CLIENT === 'player' && e.key === 'q' && view !== 'player') { if (window.flexQuit) flexQuit(); return; }
   if (view === 'player') {
     switch (e.key) {
       case 'Escape': case 'Backspace': stop(); break;
@@ -446,6 +455,182 @@ document.getElementById('scan').addEventListener('click', async () => {
     if (!st.scanning) { clearInterval(poll); reload(); }
   }, 1500);
 });
+
+// --- what this client decodes (the player and the Android app; a browser plays the file as it is) ---
+
+function clientCaps() {
+  const caps = [];
+  const v = document.createElement('video');
+  if (v.canPlayType('video/mp4; codecs="hvc1.1.6.L153.B0"') || v.canPlayType('video/mp4; codecs="hev1.1.6.L153.B0"')) caps.push('hevc');
+  if (Math.max(screen.width, screen.height) * (devicePixelRatio || 1) >= 3000) caps.push('2160p');
+  return caps.join(',');
+}
+
+// --- Cast to… : the server finds the Chromecasts and sends them the stream; this is the remote ---
+
+const castEl = document.getElementById('cast');
+const castList = document.getElementById('cast-list');
+let castView = null;     // null | 'devices' | 'remote'
+let castDevices = [];
+let castFocus = 0;
+let castTarget = null;   // { kind, id, start, title } the device list is for
+let castStatus = null;   // the server's answer to GET /cast
+let castPoll = null;
+
+// focusedItem is what C would cast: the focused card, episode, or what is playing.
+function focusedItem() {
+  if (view === 'player' && current) return { kind: current.kind, id: current.item.id, start: position() };
+  if (view === 'episodes') {
+    const r = rows[epFocus];
+    return r && r.id ? { kind: 'episode', id: r.id, start: r.resume_s && !r.watched ? r.resume_s : 0 } : null;
+  }
+  let it = null;
+  if (mode === 'home') { const row = shelfRows[shelf]; it = row && row.items[shelfCol[shelf]]; }
+  else if (mode === 'movies') it = items[focus];
+  if (!it || it.kind === 'show') return null;
+  return { kind: it.kind || 'movie', id: it.id, start: it.resume_s && !it.watched ? it.resume_s : 0 };
+}
+
+async function openCast() {
+  castStatus = await api('/cast').catch(() => null);
+  if (castStatus && castStatus.casting) return showCastRemote();
+  castTarget = focusedItem();
+  if (!castTarget) return;
+  castView = 'devices';
+  castDevices = [];
+  castFocus = 0;
+  renderCast('Searching the network…');
+  castEl.hidden = false;
+  castDevices = await api('/cast/devices').catch(() => []);
+  if (castView === 'devices') renderCast(castDevices.length ? '' : 'No Chromecast found. Is it on the same network?');
+}
+
+function showCastRemote() {
+  castView = 'remote';
+  castEl.hidden = false;
+  renderCast();
+  clearInterval(castPoll);
+  castPoll = setInterval(async () => {
+    castStatus = await api('/cast').catch(() => null);
+    if (castView === 'remote') renderCast();
+  }, 2000);
+}
+
+function closeCast() {
+  castView = null;
+  castEl.hidden = true;
+  clearInterval(castPoll);
+  castPoll = null;
+}
+
+function renderCast(note = '') {
+  const head = document.getElementById('cast-head'), sub = document.getElementById('cast-sub'), hint = document.getElementById('cast-hint');
+  if (castView === 'devices') {
+    head.textContent = 'Cast to…';
+    sub.textContent = note;
+    castList.innerHTML = castDevices.map((d, i) =>
+      `<li class="${i === castFocus ? 'focused' : ''}">${esc(d.name)}<span class="muted">${esc(d.model || '')}</span></li>`).join('');
+    hint.textContent = castDevices.length ? 'Enter casts · Esc closes' : 'Esc closes';
+    return;
+  }
+  const st = castStatus || {};
+  if (!st.casting) { closeCast(); return; }
+  head.textContent = `Casting to ${st.device}`;
+  sub.textContent = st.title || '';
+  const pct = st.duration_s ? Math.min(100, 100 * st.position_s / st.duration_s) : 0;
+  castList.innerHTML = `<li><strong>${esc(st.state || '')}</strong><span class="muted">${fmtTime(st.position_s)} / ${fmtTime(st.duration_s)}</span></li>` +
+    `<div id="cast-bar"><div style="width:${pct}%"></div></div>`;
+  hint.textContent = 'Enter pauses/plays · ←→ ±10 s · ↑↓ ±60 s · Backspace stops casting · Esc hides this';
+}
+
+async function castKey(e) {
+  if (castView === 'devices') {
+    switch (e.key) {
+      case 'ArrowDown': castFocus = Math.min(castDevices.length - 1, castFocus + 1); renderCast(); break;
+      case 'ArrowUp': castFocus = Math.max(0, castFocus - 1); renderCast(); break;
+      case 'Enter': {
+        const d = castDevices[castFocus];
+        if (!d || !castTarget) break;
+        renderCast(`Starting on ${d.name}…`);
+        if (view === 'player') stop(); // the device takes over from where this was
+        try {
+          castStatus = await api('/cast', { method: 'POST', body: JSON.stringify({ device: d.id, kind: castTarget.kind, id: castTarget.id, start: castTarget.start }) });
+          showCastRemote();
+        } catch (err) {
+          renderCast(`Couldn't cast: ${err.message}`);
+        }
+        break;
+      }
+      case 'Escape': case 'Backspace': closeCast(); break;
+    }
+    return;
+  }
+  const seek = async d => {
+    const pos = Math.max(0, (castStatus.position_s || 0) + d);
+    castStatus = await api('/cast/seek', { method: 'POST', body: JSON.stringify({ position_s: pos }) }).catch(() => castStatus);
+    renderCast();
+  };
+  switch (e.key) {
+    case 'Enter': case ' ':
+      castStatus = await api(`/cast/${castStatus.state === 'paused' ? 'play' : 'pause'}`, { method: 'POST' }).catch(() => castStatus);
+      renderCast();
+      break;
+    case 'ArrowRight': seek(10); break;
+    case 'ArrowLeft': seek(-10); break;
+    case 'ArrowUp': seek(60); break;
+    case 'ArrowDown': seek(-60); break;
+    case 'Backspace': case 's':
+      await api('/cast/stop', { method: 'POST' }).catch(() => {});
+      closeCast();
+      setTimeout(reload, 300);
+      break;
+    case 'Escape': closeCast(); break;
+  }
+}
+
+function fmtTime(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  return (h ? `${h}:${pad(m)}` : String(m)) + ':' + pad(sec);
+}
+
+// --- the media-PC player: a controller works like the keys, and the mouse pointer hides when idle ---
+
+if (CLIENT === 'player') {
+  const padMap = { 12: 'ArrowUp', 13: 'ArrowDown', 14: 'ArrowLeft', 15: 'ArrowRight', 0: 'Enter', 1: 'Escape', 2: 'c', 3: 'Tab', 9: 'Tab', 8: 'Backspace' };
+  const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape', 'c', 'Tab', 'Backspace'];
+  const next = {}; // key -> when it may repeat while held
+  const sendKey = key => document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  (function pollPads() {
+    const now = performance.now();
+    const pressed = {};
+    for (const gp of (navigator.getGamepads ? navigator.getGamepads() : [])) {
+      if (!gp) continue;
+      gp.buttons.forEach((b, i) => { if (b.pressed && padMap[i]) pressed[padMap[i]] = true; });
+      const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
+      if (ax < -0.6) pressed.ArrowLeft = true;
+      if (ax > 0.6) pressed.ArrowRight = true;
+      if (ay < -0.6) pressed.ArrowUp = true;
+      if (ay > 0.6) pressed.ArrowDown = true;
+    }
+    for (const key of keys) {
+      if (!pressed[key]) { delete next[key]; continue; }
+      if (next[key] === undefined || now >= next[key]) {
+        sendKey(key);
+        next[key] = now + (next[key] === undefined ? 400 : 120);
+      }
+    }
+    requestAnimationFrame(pollPads);
+  })();
+
+  let cursorTimer = null;
+  document.body.classList.add('nocursor');
+  document.addEventListener('mousemove', () => {
+    document.body.classList.remove('nocursor');
+    clearTimeout(cursorTimer);
+    cursorTimer = setTimeout(() => document.body.classList.add('nocursor'), 3000);
+  });
+}
 
 function pad(n) { return String(n).padStart(2, '0'); }
 function fmtMin(s) { return s ? Math.round(s / 60) + ' min' : ''; }

@@ -28,7 +28,7 @@ Phone / laptop (browser) ── Tailscale ────────────�
 
 ## Install
 
-Download `FLEX.exe` (Windows), `FLEX-ps5.zip` and `FLEX-android.apk` (Android TV, phones) from the [latest release](https://github.com/MrRobotto512/FLEX/releases/latest); FLEX fetches FFmpeg itself on the first start. Step by step: [docs/setup.md](docs/setup.md).
+Download `FLEX.exe` (Windows: the server, and the full-screen player for a PC under the TV), `FLEX-ps5.zip` and `FLEX-android.apk` (Android TV, phones) from the [latest release](https://github.com/MrRobotto512/FLEX/releases/latest); FLEX fetches FFmpeg itself on the first start. Every client can cast to a Chromecast. Step by step: [docs/setup.md](docs/setup.md).
 
 ## Quick start (server, from source)
 

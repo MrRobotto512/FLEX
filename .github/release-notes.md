@@ -4,7 +4,7 @@
 
 | File | What |
 | --- | --- |
-| `FLEX.exe` | Windows app: server, settings window, tray |
+| `FLEX.exe` | Windows app: server, settings window, tray, and the full-screen player for a PC under the TV |
 | `flexd.exe` | the same server without a window |
 | `FLEX-ps5.zip` | PS5 client for a first install |
 | `FLEX-ps5.elf` | PS5 client, what servers hand to consoles |

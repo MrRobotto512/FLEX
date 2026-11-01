@@ -53,6 +53,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/continue", s.handleContinue)
 	mux.HandleFunc("GET /api/v1/home", s.handleHome)
 	mux.HandleFunc("GET /api/v1/home/themes", s.handleThemes)
+	mux.HandleFunc("GET /api/v1/cast/devices", s.handleCastDevices)
+	mux.HandleFunc("GET /api/v1/cast", s.handleCastStatus)
+	mux.HandleFunc("POST /api/v1/cast", s.handleCast)
+	mux.HandleFunc("POST /api/v1/cast/{action}", s.handleCastControl)
 	mux.HandleFunc("GET /api/v1/client/ps5", s.handlePS5Client)
 	mux.HandleFunc("GET /api/v1/client/ps5/eboot.elf", s.handlePS5ClientFile)
 	if s.web != nil {

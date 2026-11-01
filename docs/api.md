@@ -4,7 +4,7 @@ Every client (PS5, browser, desktop UI) talks to the server through this contrac
 
 Base URL: `http://<host>:8484/api/v1`. Defaults: HTTP on **8484**, UDP discovery on **7555**.
 
-Clients send `X-Flex-Client: ps5 | web | desktop` on every request so the server can pick defaults (e.g. the `ps5` transcode profile).
+Clients send `X-Flex-Client: ps5 | web | android | player | desktop` on every request so the server can pick defaults (e.g. the `ps5` transcode profile); `cast` is the server itself fetching a play decision for a Chromecast.
 
 ## Discovery (LAN only)
 
@@ -70,7 +70,7 @@ Playback and progress work exactly like movies with the `/episodes/{id}` prefix:
 
 ## Playback
 
-`GET /movies/{id}/play?profile=direct|ps5|remote&audio=<index>&sub=<index>&start=<seconds>&upscale=0|1` (or `/episodes/{id}/play`)
+`GET /movies/{id}/play?profile=direct|ps5|remote|player|cast&audio=<index>&sub=<index>&start=<seconds>&upscale=0|1` (or `/episodes/{id}/play`)
 
 `upscale=1` scales video below ~1000 lines up to the profile's height on the server (Lanczos, light unsharp, NVENC/x264); the answer says `"upscaled":true` and is always `hls`. On the home network (any profile but `remote`) the server upscales with a small neural network on the GPU instead, through libplacebo, when its GPU passed the test at start: Anime4K for movies and shows TMDB files under Animation, FSRCNNX for the rest. The shaders come from their projects' GitHub releases ([Anime4K](https://github.com/bloc97/Anime4K), MIT; [FSRCNNX](https://github.com/igv/FSRCNN-TensorFlow), GPL-3.0) into `<data>/shaders` on the first start, checksums pinned; they aren't part of FLEX. `GET /server` reports `upscalers` (`"anime4k":"ok (12.0x real time)"`, or why not: too slow on this GPU, libplacebo missing, download failed). Every transcode deinterlaces frames flagged interlaced.
 
@@ -96,6 +96,8 @@ or, when the file already fits the profile:
 | `direct` | as-is | as-is | as-is | browsers/desktop that can decode anything |
 | `ps5` | H.264 High@4.1, ≤1920×1080, ≤12 Mbps, 8-bit SDR (HDR tonemapped) | AAC 2.0 48 kHz | burned in when selected | PS5 client decodes on the CPU; this is what it handles comfortably |
 | `remote` | H.264, ≤1080p, ≤6 Mbps (720p/3 Mbps when the server is told the link is slow) | AAC 2.0 | burned in | sized to home upload bandwidth |
+| `player` | H.264 High@5.1, ≤3840×2160, ≤25 Mbps | AAC 2.0 256k | burned in | the Windows player (FLEX.exe --player): GPU decoding on a wired media PC; it sends `caps=hevc,2160p` as its screen and codecs allow |
+| `cast` | H.264 High@4.1, ≤1080p, ≤10 Mbps | AAC 2.0 | burned in | what the server sends a Chromecast; an MP4 with H.264/AAC goes as it is |
 
 If the source is already within a profile's limits the server remuxes (`-c:v copy`) instead of re-encoding; if the container is also fine it answers `direct`. A `direct` answer ignores `start`: the client seeks in the file itself. An `hls` session begins at `start` and cannot seek; clients restart it with a new `start`.
 
@@ -163,6 +165,15 @@ Titles for the time of year are upscaled ahead of time into `<data>/upscaled` as
 - `POST /prep` body `{"kind":"movie","id":42}` → `204`; `400` for HD titles or a linked server's.
 - `DELETE /prep/{kind}/{id}` → `204`, deleting the file too.
 - `/play` on the home network answers `"method":"direct"` with `…/file?hd=1` and `"upscaled":true` for a ready title (no transcode at all), whatever `upscale` says and from any `start` (the file seeks in place); an `audio` or `sub` choice, or the `remote` profile, play the live way. `GET …/file?hd=1` serves the prepared file.
+
+## Chromecast
+
+The server discovers Cast devices on its network (mDNS) and plays to them itself, so any client can offer "Cast to…". The device fetches the stream from the server with the `cast` profile (H.264 ≤ 1080p, AAC; an MP4 the device plays as it is, HLS otherwise); the server keeps the resume point while it plays and stops the HLS session when the device stops.
+
+- `GET /cast/devices[?scan=1]` → `[{"id":"…","name":"Living room TV","model":"Chromecast Ultra","addr":"192.168.0.50"}]` (a 3 s scan when `scan=1`, when nothing is known, or when the list is more than 2 min old)
+- `POST /cast` body `{"device":"<id>","kind":"movie|episode","id":42,"start":0}` → the status below; `502` when the device can't be reached
+- `GET /cast` → `{"casting":true,"device":"…","device_id":"…","kind":"movie","id":42,"title":"…","state":"playing|paused|buffering|idle","position_s":123,"duration_s":5400,"method":"direct|hls"}` or `{"casting":false}`
+- `POST /cast/pause`, `POST /cast/play`, `POST /cast/seek` body `{"position_s":600}` (an HLS session restarts from there), `POST /cast/stop` → `204`
 
 ## Linked servers
 Every server looks for the others once a minute with the discovery broadcast above (plus `FLEX_PEERS`, `host[:port]` list, for servers a broadcast can't reach; `FLEX_NO_PEERS=1` turns linking off) and lists their movies, shows and Continue Watching next to its own. Clients need nothing new:

@@ -31,6 +31,7 @@ type Server struct {
 	peers  *peers      // other FLEX servers whose libraries this one lists; nil when off
 	themes *themer     // the home screen's AI-made rows
 	prep   *prepper    // season prep: titles upscaled ahead of time
+	cast   *caster     // Chromecasts on the network and what one is playing
 
 	gpus         []string          // graphics adapters Windows reports
 	encoderTests map[string]string // hardware encoder -> "ok" or why not
@@ -76,6 +77,7 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 	}
 	s.themes = newThemer(s)
 	s.prep = newPrepper(s)
+	s.cast = newCaster(s)
 
 	s.folders = cfg.Library
 	if len(s.folders) == 0 {
@@ -116,6 +118,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.mu.Unlock()
 	// the desktop app restarts the server to apply a changed folder list
 	s.dropRemovedFolders()
+	defer s.cast.Close() // a Chromecast keeps playing a stream this server no longer makes
 
 	handler := s.Handler()
 	httpSrv := &http.Server{

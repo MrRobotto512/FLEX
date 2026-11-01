@@ -99,3 +99,18 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
   #show-head img { width: 100px; }
   #eplist .still { display: none; }
 }
+
+/* --- Cast to… (device list, then the remote control for what is casting) --- */
+#cast { position: fixed; inset: 0; background: rgba(0, 0, 0, .7); display: flex; align-items: center; justify-content: center; z-index: 20; }
+#cast-box { background: #1a1f2b; border-radius: 12px; padding: 24px 32px; min-width: 420px; max-width: 80vw; box-shadow: 0 12px 48px rgba(0, 0, 0, .6); }
+#cast-box h2 { margin: 0 0 4px; }
+#cast-list { list-style: none; margin: 16px 0 8px; padding: 0; }
+#cast-list li { padding: 10px 14px; border-radius: 8px; font-size: 1.1em; }
+#cast-list li.focused { background: #5aa9ff; color: #000; }
+#cast-list li .muted { font-size: .85em; margin-left: 8px; }
+#cast-box .hint { margin: 8px 0 0; font-size: .85em; }
+#cast-bar { height: 6px; background: rgba(255, 255, 255, .15); border-radius: 3px; margin: 14px 0 6px; overflow: hidden; }
+#cast-bar div { height: 100%; background: #5aa9ff; width: 0; }
+
+/* the full-screen player on a media PC: no mouse pointer while idle */
+body.nocursor, body.nocursor * { cursor: none !important; }
