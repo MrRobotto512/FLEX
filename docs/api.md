@@ -162,7 +162,7 @@ Titles for the time of year are upscaled ahead of time into `<data>/upscaled` as
 - `GET /prep` → `[{"kind":"movie","id":42,"title":"Halloween","state":"queued|working|ready|failed","source":"ai|user","engine":"topaz|shaders","percent":37,"error":"…","added":"…"}]`
 - `POST /prep` body `{"kind":"movie","id":42}` → `204`; `400` for HD titles or a linked server's.
 - `DELETE /prep/{kind}/{id}` → `204`, deleting the file too.
-- `/play?upscale=1` on the home network answers `"method":"direct"` with `…/file?hd=1` for a ready title (no transcode at all); `GET …/file?hd=1` serves the prepared file.
+- `/play` on the home network answers `"method":"direct"` with `…/file?hd=1` and `"upscaled":true` for a ready title (no transcode at all), whatever `upscale` says and from any `start` (the file seeks in place); an `audio` or `sub` choice, or the `remote` profile, play the live way. `GET …/file?hd=1` serves the prepared file.
 
 ## Linked servers
 Every server looks for the others once a minute with the discovery broadcast above (plus `FLEX_PEERS`, `host[:port]` list, for servers a broadcast can't reach; `FLEX_NO_PEERS=1` turns linking off) and lists their movies, shows and Continue Watching next to its own. Clients need nothing new:
