@@ -519,7 +519,7 @@ func (d *DB) PrepList() ([]PrepItem, error) {
 		COALESCE((SELECT m.title FROM movies m WHERE p.kind = 'movie' AND m.id = p.item_id),
 		         (SELECT s.title || ' S' || printf('%02d', e.season) || 'E' || printf('%02d', e.episode) || ' ' || e.title
 		          FROM episodes e JOIN shows s ON s.id = e.show_id WHERE p.kind = 'episode' AND e.id = p.item_id), '')
-		FROM prep p ORDER BY p.added`)
+		FROM prep p ORDER BY p.added, p.kind DESC, p.item_id`)
 	if err != nil {
 		return nil, err
 	}

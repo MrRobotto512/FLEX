@@ -162,10 +162,12 @@ func (p *prepper) pick() {
 		return
 	}
 	th := p.s.themes.current()
+	var order []string // the row's order: the AI leads with the best fits
 	wanted := map[string]bool{}
 	if th != nil && len(th.Rows) > 0 {
 		if name, _, _ := season(time.Now()); name != "" { // only in a season; the first row is its row
-			for _, id := range th.Rows[0].Items {
+			order = th.Rows[0].Items
+			for _, id := range order {
 				wanted[id] = true
 			}
 		}
@@ -183,7 +185,7 @@ func (p *prepper) pick() {
 		max = prepDefaultMax
 	}
 	n := len(items)
-	for key := range wanted {
+	for _, key := range order {
 		if n >= max {
 			break
 		}
