@@ -100,6 +100,12 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 	if upscale {
 		videoOK = false
 	}
+	// on the home network (bandwidth to spare for the sharper picture) an AI
+	// upscaler, when this PC's GPU passed its test: Anime4K for animation
+	shader := ""
+	if upscale && profileName != "remote" {
+		shader = s.tc.Shader(s.db.Animated(kind, id))
+	}
 
 	// Direct play ignores start: the client seeks in the file itself.
 	if videoOK && audioOK && containerOK && sub < 0 {
@@ -117,6 +123,7 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 		Start:   start,
 		CopyVid: videoOK && sub < 0,
 		Upscale: upscale,
+		Shader:  shader,
 	})
 	if err != nil {
 		return PlayInfo{}, err

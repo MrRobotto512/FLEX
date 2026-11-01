@@ -71,7 +71,8 @@ func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
 	features := []string{"direct", "hls", "tv", "seek"}
 	// the tailnet is only the owner's own devices, so it sees the diagnostics too
 	info := ServerInfo{Name: s.cfg.Name, ID: s.id, Version: Version, Remote: isTailnetAddr(r.RemoteAddr),
-		Encoder: s.tc.Encoder(), HDR: s.tc.HDRTonemap(), GPUs: s.gpus, EncoderTests: s.encoderTests}
+		Encoder: s.tc.Encoder(), HDR: s.tc.HDRTonemap(), GPUs: s.gpus, EncoderTests: s.encoderTests,
+		Upscalers: s.Upscalers()}
 	if ts := s.TailscaleInfo(); ts.State == "Running" {
 		features = append(features, "tsnet")
 		info.Tailscale = &ts

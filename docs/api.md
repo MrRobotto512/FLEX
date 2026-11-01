@@ -72,7 +72,7 @@ Playback and progress work exactly like movies with the `/episodes/{id}` prefix:
 
 `GET /movies/{id}/play?profile=direct|ps5|remote&audio=<index>&sub=<index>&start=<seconds>&upscale=0|1` (or `/episodes/{id}/play`)
 
-`upscale=1` scales video below ~1000 lines up to the profile's height on the server (Lanczos, light unsharp, NVENC/x264); the answer says `"upscaled":true` and is always `hls`. Every transcode deinterlaces frames flagged interlaced.
+`upscale=1` scales video below ~1000 lines up to the profile's height on the server (Lanczos, light unsharp, NVENC/x264); the answer says `"upscaled":true` and is always `hls`. On the home network (any profile but `remote`) the server upscales with a small neural network on the GPU instead, through libplacebo, when its GPU passed the test at start: Anime4K for movies and shows TMDB files under Animation, FSRCNNX for the rest. The shaders come from their projects' GitHub releases ([Anime4K](https://github.com/bloc97/Anime4K), MIT; [FSRCNNX](https://github.com/igv/FSRCNN-TensorFlow), GPL-3.0) into `<data>/shaders` on the first start, checksums pinned; they aren't part of FLEX. `GET /server` reports `upscalers` (`"anime4k":"ok (12.0x real time)"`, or why not: too slow on this GPU, libplacebo missing, download failed). Every transcode deinterlaces frames flagged interlaced.
 
 The server decides how to deliver the file for that profile and returns:
 ```json

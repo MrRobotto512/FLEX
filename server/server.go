@@ -34,10 +34,11 @@ type Server struct {
 	gpus         []string          // graphics adapters Windows reports
 	encoderTests map[string]string // hardware encoder -> "ok" or why not
 
-	mu      sync.Mutex
-	folders []string
-	ctx     context.Context
-	ts      TSInfo
+	mu        sync.Mutex
+	folders   []string
+	ctx       context.Context
+	ts        TSInfo
+	upscalers map[string]string // AI upscaler -> "ok (…x real time)" or why not
 }
 
 func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
@@ -135,6 +136,7 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.peers.run(ctx)
 	}
 	go s.themes.run(ctx)
+	go s.prepareUpscaling(ctx)
 	s.log.Info("FLEX listening", "http", s.cfg.HTTPPort, "name", s.cfg.Name, "id", s.id)
 
 	if s.cfg.TSEnabled || s.cfg.TSAuthKey != "" {

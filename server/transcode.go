@@ -42,6 +42,27 @@ type Transcoder struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
+	shaders  map[string]string // AI upscalers that passed their test: name -> file
+}
+
+func (t *Transcoder) setShader(name, file string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.shaders == nil {
+		t.shaders = map[string]string{}
+	}
+	t.shaders[name] = file
+}
+
+// Shader is the AI upscaler's file for animation or everything else; "" when
+// this PC has none that passed its test.
+func (t *Transcoder) Shader(animated bool) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if animated {
+		return t.shaders["anime4k"]
+	}
+	return t.shaders["fsrcnnx"]
 }
 
 type session struct {
@@ -101,6 +122,7 @@ type transcodeRequest struct {
 	Start   float64 // seconds
 	CopyVid bool    // remux video instead of re-encoding
 	Upscale bool    // scale up to the profile's height (Lanczos + light sharpening)
+	Shader  string  // with Upscale: an AI upscaler's shader file (libplacebo) in place of Lanczos
 	NoGPU   bool    // CPU filters even with NVENC (retry after the GPU pipeline failed)
 	CPUOnly bool    // libx264 whatever the hardware (retry after the hardware encoder failed)
 }
@@ -111,7 +133,7 @@ func NewTranscoder(ffmpeg, encoder, dir string, log *slog.Logger) *Transcoder {
 
 // Key identifies a session by everything that changes the output.
 func (r transcodeRequest) Key() string {
-	h := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%d|%.0f|%v|%v", r.Path, r.Profile.Name, r.Audio, r.Sub, r.Start, r.CopyVid, r.Upscale)))
+	h := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%d|%.0f|%v|%v|%s", r.Path, r.Profile.Name, r.Audio, r.Sub, r.Start, r.CopyVid, r.Upscale, r.Shader)))
 	return hex.EncodeToString(h[:6])
 }
 
@@ -137,6 +159,8 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 	s.info = SessionInfo{Key: key, File: filepath.Base(r.Path), Start: r.Start, Mode: "transcode", Started: time.Now()}
 	if r.CopyVid {
 		s.info.Mode = "remux"
+	} else if t.aiUpscale(r) {
+		s.info.Mode = "upscale, " + strings.TrimSuffix(filepath.Base(r.Shader), ".glsl")
 	} else if r.Upscale {
 		s.info.Mode = "upscale"
 	} else if t.hdrOnGPU(r) {
@@ -178,7 +202,7 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		select {
 		case <-s.done:
 			t.remove(key)
-			if t.useGPU(r) || t.placebo(r) || t.hdrCUDAScale(r) {
+			if t.useGPU(r) || t.placebo(r) || t.hdrCUDAScale(r) || t.aiUpscale(r) {
 				// e.g. a codec the GPU can't decode: same job with CPU filters
 				t.log.Warn("ffmpeg GPU pipeline failed, retrying on the CPU", "key", key, "err", s.err)
 				r.NoGPU = true
@@ -204,7 +228,7 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 	a := []string{"-hide_banner", "-loglevel", "warning", "-nostdin"}
 	gpu := t.useGPU(r)
-	hdrGPU, cudaScale := t.placebo(r), t.hdrCUDAScale(r)
+	hdrGPU, cudaScale, ai := t.placebo(r), t.hdrCUDAScale(r), t.aiUpscale(r)
 	if !r.CopyVid {
 		// Decode on the GPU: with NVENC the frames stay on the card through
 		// deinterlacing, scaling and encoding (almost no CPU); otherwise
@@ -212,7 +236,7 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 		// software by itself. Then encode only a little faster than playback
 		// after a first minute in one go, instead of converting the whole film
 		// flat out while nobody watches.
-		if hdrGPU {
+		if hdrGPU || ai {
 			// libplacebo runs on Vulkan; decoded frames go through system memory to it
 			a = append(a, "-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk", "-hwaccel", "auto")
 		} else if gpu || cudaScale {
@@ -234,6 +258,16 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 
 	if r.CopyVid {
 		a = append(a, "-c:v", "copy")
+	} else if ai {
+		// deinterlace on the CPU (cheap at SD size), then the network and the
+		// last stretch to the profile's height in one libplacebo pass
+		w := r.Media.Video.Width * r.Profile.MaxHeight / r.Media.Video.Height / 2 * 2
+		vf := []string{"bwdif=mode=send_frame:deint=interlaced", aiFilter(r.Shader, w, r.Profile.MaxHeight, t.pixFormat(r))}
+		if r.Sub >= 0 {
+			vf = append(vf, fmt.Sprintf("subtitles=%s:si=%d", ffEscape(r.Path), subOrdinal(r.Media, r.Sub)))
+		}
+		a = append(a, "-vf", strings.Join(vf, ","))
+		a = append(a, t.videoCodecArgs(r)...)
 	} else if hdrGPU {
 		// one shader pass on the GPU: tone map HDR to SDR (BT.2390, with peak
 		// detection; SDR passes through) and scale to the profile's height
@@ -314,6 +348,21 @@ func (t *Transcoder) placebo(r transcodeRequest) bool {
 		return false
 	}
 	return r.Media.Video.HDR != "" || (r.Media.Video.Height > r.Profile.MaxHeight && !r.Upscale)
+}
+
+// aiUpscale: upscaling through an AI shader in libplacebo (SDR only: HDR
+// goes the tone-mapping way).
+func (t *Transcoder) aiUpscale(r transcodeRequest) bool {
+	return r.Upscale && r.Shader != "" && t.hdrGPU && !r.CopyVid && !r.NoGPU &&
+		r.Media.Video.HDR == "" && r.Media.Video.Height > 0
+}
+
+// pixFormat is the layout the encoder takes from a software filter chain.
+func (t *Transcoder) pixFormat(r transcodeRequest) string {
+	if t.encoderFor(r) == "h264_mf" {
+		return "nv12"
+	}
+	return "yuv420p"
 }
 
 // hdrCUDAScale: HDR without libplacebo on an NVIDIA card: CUDA decodes and

@@ -161,6 +161,8 @@ async function refresh() {
   if (st.ts_state === 'Running') pills.push(`<span class="pill ok">Remote <code>http://${esc(st.ts_dns)}:${settings.http_port}</code></span>`);
   if (st.scan) pills.push(`<span class="pill">${st.scan.scanning ? `scanning… ${st.scan.files_seen} files` : `${st.scan.movies} movies · ${st.scan.shows || 0} shows`}</span>`);
   if (st.scan && st.scan.scanning && st.scan.current) pills.push(`<span class="pill muted">${esc(st.scan.current)}</span>`);
+  const ai = Object.entries(st.upscalers || {}).filter(([, v]) => v.startsWith('ok'));
+  if (ai.length) pills.push(`<span class="pill muted" title="Upscaling on the home network">AI upscaling: ${ai.map(([k]) => ({ anime4k: 'Anime4K', fsrcnnx: 'FSRCNNX' }[k] || k)).join(' · ')}</span>`);
   if (st.encoder) pills.push(`<span class="pill ${st.encoder === 'libx264' ? 'warn' : 'muted'}">converts with ${esc(encoderNames[st.encoder] || st.encoder)}</span>`);
   (st.transcodes || []).forEach(t => pills.push(`<span class="pill warn">${esc(t.mode)}: ${esc(t.file)}</span>`));
   const peers = st.peers || [];

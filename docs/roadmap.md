@@ -44,6 +44,7 @@ Build order, each step produces something you can run.
    - [x] title cleanup + TMDB retry ladder (leading index, year-first, " - Genre", editions, "Part 1")
    - [x] show names from "X Season 3 Complete" / "The Complete Series" folders, season folders right under a TV folder, double episodes, shows merged by TMDB id, episodes re-placed when parsing improves
    - [x] server-side upscaling (Triangle on the PS5), deinterlacing for every transcode
+   - [x] AI upscaling on the home network: Anime4K (animation) and FSRCNNX shaders in libplacebo, downloaded from their releases and speed-tested per GPU at start (RTX 4070: 12x / 15x real time), Lanczos otherwise and over Tailscale
    - [x] `/library/unmatched` with file paths
    - [x] scanner: 4 workers, "current" activity in the status, unreadable drives don't wipe their items, "TV Shows" in the movie list treated as TV, duplicate shows merged after every scan
    - [x] transcoding: all-GPU pipeline with NVENC (CUDA decode, bwdif_cuda, scale_cuda), -hwaccel auto otherwise, CPU fallback; paced to 1.5x playback after a 60 s burst; `/transcodes`, encoder shown in the app

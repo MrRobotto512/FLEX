@@ -51,6 +51,7 @@ type Status struct {
 	Transcodes []server.SessionInfo `json:"transcodes"`
 	Peers      []server.PeerInfo    `json:"peers"`     // linked FLEX PCs
 	HomeRows   string               `json:"home_rows"` // who makes the home screen's rows
+	Upscalers  map[string]string    `json:"upscalers"` // AI upscalers: "ok (…x real time)" or why not
 
 	// first run on a PC without FFmpeg: the server starts once it is downloaded
 	FFmpegDownloading bool    `json:"ffmpeg_downloading"`
@@ -142,6 +143,7 @@ func (a *App) GetStatus() Status {
 		st.Transcodes = a.srv.Transcodes()
 		st.Peers = a.srv.Peers()
 		st.HomeRows = a.srv.HomeRows()
+		st.Upscalers = a.srv.Upscalers()
 		ts := a.srv.TailscaleInfo()
 		st.TSState, st.TSDNS, st.TSIP, st.TSError = ts.State, ts.DNSName, ts.IP, ts.Error
 		st.TSNeedsLogin = ts.State == "NeedsLogin" && ts.AuthURL != ""
