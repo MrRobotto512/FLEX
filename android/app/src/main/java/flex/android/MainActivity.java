@@ -40,6 +40,7 @@ public class MainActivity extends Activity {
     private String base;            // the address being shown, e.g. http://192.168.0.205:8484
     private boolean triedTs;        // the Tailscale address was tried for this server
     private boolean backHeld;       // this Back press was a long one (server picker)
+    private boolean menuHeld;       // this Menu press was a long one (Cast to…)
     private View fullVideo;         // the page's full-screen video, when it asks for one
     private WebChromeClient.CustomViewCallback fullVideoDone;
 
@@ -216,7 +217,19 @@ public class MainActivity extends Activity {
                 }
                 return true;
             case KeyEvent.KEYCODE_MENU:
-                if (down) sendKey("Tab"); // Home → Movies → TV
+                // a press switches Home → Movies → TV (the page's Tab); holding it opens Cast to…
+                if (down) {
+                    if (e.getRepeatCount() == 0) menuHeld = false;
+                    else if ((e.getFlags() & KeyEvent.FLAG_LONG_PRESS) != 0 && !menuHeld) {
+                        menuHeld = true;
+                        sendKey("c");
+                    }
+                } else if (!menuHeld) {
+                    sendKey("Tab");
+                }
+                return true;
+            case KeyEvent.KEYCODE_SEARCH:
+                if (down) web.evaluateJavascript("document.getElementById('search').focus()", null);
                 return true;
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
             case KeyEvent.KEYCODE_MEDIA_PLAY:
