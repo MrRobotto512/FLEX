@@ -64,9 +64,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # -skipbindings: the CLI's package loader can't read the newer Go's
+      # packages, and the window calls window.go.main.App directly anyway
       - name: FLEX.exe
         working-directory: desktop
-        run: wails build -clean -ldflags "-X flex/server.Version=${TAG#v}"
+        run: wails build -clean -skipbindings -ldflags "-X flex/server.Version=${TAG#v}"
       - name: flexd.exe
         run: go build -ldflags "-X flex/server.Version=${TAG#v}" -o flexd.exe ./cmd/flexd
       - name: Collect
