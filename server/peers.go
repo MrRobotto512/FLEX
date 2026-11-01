@@ -407,6 +407,19 @@ func (s *Server) peerShows(ctx context.Context, shows []Show, query string) []Sh
 	return shows
 }
 
+// peerSeasonal adds the linked servers' holiday episodes.
+func (s *Server) peerSeasonal(ctx context.Context, eps []Episode) []Episode {
+	gather(ctx, s.peers, "/api/v1/library/seasonal", func(pe *peer, list []Episode) {
+		for _, e := range list {
+			if pe.episode(&e); e.ID != 0 {
+				e.Poster, e.Backdrop = pe.url(e.Poster), pe.url(e.Backdrop)
+				eps = append(eps, e)
+			}
+		}
+	})
+	return eps
+}
+
 func (s *Server) linkedContinue(r *http.Request, items []ContinueItem, limit int) []ContinueItem {
 	gather(r.Context(), s.peers, fmt.Sprintf("/api/v1/continue?limit=%d", limit), func(pe *peer, list []ContinueItem) {
 		for _, c := range list {

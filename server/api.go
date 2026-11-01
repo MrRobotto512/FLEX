@@ -42,6 +42,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/v1/library/scan", s.handleScan)
 	mux.HandleFunc("GET /api/v1/library/status", s.handleScanStatus)
+	mux.HandleFunc("GET /api/v1/library/seasonal", s.handleSeasonal)
 	mux.HandleFunc("GET /api/v1/library/folders", s.handleFoldersGet)
 	mux.HandleFunc("GET /api/v1/library/unmatched", s.handleUnmatched)
 	mux.HandleFunc("GET /api/v1/shows/{id}/files", s.handleShowFiles)

@@ -780,6 +780,67 @@ const episodeCols = `e.id, e.show_id, s.title, e.season, e.episode, e.title, e.o
 const episodeFrom = `FROM episodes e JOIN shows s ON s.id = e.show_id
 	LEFT JOIN progress p ON p.kind = 'episode' AND p.item_id = e.id`
 
+// holidayWords in an episode's title or description put it in the home
+// screen's seasonal rows ("The Office: Christmas Party").
+var holidayWords = map[string]string{
+	"halloween": "halloween", "christmas": "christmas", "xmas": "christmas", "thanksgiving": "thanksgiving",
+	"valentine": "valentines", "new year": "newyear", "fourth of july": "summer", "4th of july": "summer",
+}
+
+// HolidayEpisodes lists episodes whose title or description names a holiday,
+// with their show's identity and artwork.
+func (d *DB) HolidayEpisodes() ([]Episode, error) {
+	where := []string{}
+	var args []any
+	for w := range holidayWords {
+		where = append(where, "e.title LIKE '%' || ? || '%' OR e.overview LIKE '%' || ? || '%'")
+		args = append(args, w, w)
+	}
+	rows, err := d.Query(`SELECT `+episodeCols+`, s.tmdb_id, s.poster_path, s.backdrop_path, s.genres `+episodeFrom+`
+		WHERE `+strings.Join(where, " OR ")+` ORDER BY s.title COLLATE NOCASE, e.season, e.episode`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Episode{}
+	for rows.Next() {
+		var (
+			ep                      Episode
+			overview, still, mediaJ sql.NullString
+			runtime, tmdb           sql.NullInt64
+			poster, backdrop, g     sql.NullString
+			added                   string
+			watched                 int
+		)
+		if err := rows.Scan(&ep.ID, &ep.ShowID, &ep.ShowTitle, &ep.Season, &ep.Episode, &ep.Title, &overview, &runtime,
+			&still, &added, &ep.Path, &mediaJ, &ep.ResumeS, &watched, &tmdb, &poster, &backdrop, &g); err != nil {
+			return nil, err
+		}
+		ep.Overview, ep.RuntimeS, ep.Watched = overview.String, int(runtime.Int64), watched != 0
+		ep.AddedAt, _ = time.Parse(time.RFC3339, added)
+		if still.String != "" {
+			ep.Still = fmt.Sprintf("/api/v1/episodes/%d/still", ep.ID)
+		}
+		ep.ShowTMDBID = tmdb.Int64
+		if poster.String != "" {
+			ep.Poster = fmt.Sprintf("/api/v1/shows/%d/poster", ep.ShowID)
+		}
+		if backdrop.String != "" {
+			ep.Backdrop = fmt.Sprintf("/api/v1/shows/%d/backdrop", ep.ShowID)
+		}
+		ep.Genres, _ = tags(g, sql.NullString{})
+		text := strings.ToLower(ep.Title + " " + ep.Overview)
+		for w, h := range holidayWords {
+			if strings.Contains(text, w) && !slices.Contains(ep.Holidays, h) {
+				ep.Holidays = append(ep.Holidays, h)
+			}
+		}
+		slices.Sort(ep.Holidays)
+		out = append(out, ep)
+	}
+	return out, rows.Err()
+}
+
 func (d *DB) GetEpisode(id int64) (*Episode, error) {
 	ep, err := scanEpisode(d.QueryRow(`SELECT `+episodeCols+` `+episodeFrom+` WHERE e.id = ?`, id), true)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -107,6 +107,14 @@ type Episode struct {
 	Watched   bool      `json:"watched"`
 	AddedAt   time.Time `json:"added_at"`
 
+	// seasonal episodes (/library/seasonal) carry their show's identity and
+	// artwork too, for the home screen's rows
+	ShowTMDBID int64    `json:"show_tmdb_id,omitempty"`
+	Poster     string   `json:"poster,omitempty"`   // the show's
+	Backdrop   string   `json:"backdrop,omitempty"` // the show's
+	Genres     []string `json:"genres,omitempty"`   // the show's
+	Holidays   []string `json:"holidays,omitempty"` // from the episode's title and description
+
 	Media *MediaInfo `json:"media,omitempty"`
 
 	Path      string `json:"-"`

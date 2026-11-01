@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -103,14 +104,20 @@ func TestBuildHome(t *testing.T) {
 	rnd := rand.New(rand.NewPCG(1, 2))
 
 	movies, shows := homeLibrary()
+	// a Halloween episode of Futurama, named across servers by show and number
+	eps := []Episode{{ID: 70, ShowID: 7, ShowTitle: "Futurama", ShowTMDBID: 615, Season: 2, Episode: 3, Title: "Haunted House",
+		Holidays: []string{"halloween"}, Poster: "/api/v1/shows/7/poster", Genres: []string{"Animation"}}}
 	th := &Themes{By: "Claude", Rows: []ThemeRow{
-		{"Spooky Season", []string{"m948", "m10", "m11", "m12", "m999"}}, // m999 isn't in the library
+		{"Spooky Season", []string{"m948", "e615-S02E03", "m10", "m11", "m12", "m999"}}, // m999 isn't in the library
 		{"Crime Time", []string{"m949", "m10", "m11", "m12"}},
 		{"Too Short", []string{"m949"}},
 	}}
-	h := buildHome(movies, shows, nil, th, halloween, rnd)
-	if got := strings.Join(rowTitles(h), " "); got != "Spooky Season(4) Recently Added(10) Crime Time(4) Horror(9)" {
+	h := buildHome(movies, shows, eps, nil, th, halloween, rnd)
+	if got := strings.Join(rowTitles(h), " "); got != "Spooky Season(5) Recently Added(10) Crime Time(4) Horror(9)" {
 		t.Errorf("rows with AI themes: %s", got)
+	}
+	if c := h.Rows[0].Items[1]; c.Kind != "episode" || c.ID != 70 || c.Subtitle != "S02E03 · Haunted House" || c.ShowID != 7 || c.Title != "Futurama" {
+		t.Errorf("episode card: %+v", c)
 	}
 	if h.Themes != "Claude" || h.Continue == nil {
 		t.Errorf("themes %q, continue %v", h.Themes, h.Continue)
@@ -129,16 +136,19 @@ func TestBuildHome(t *testing.T) {
 
 	// no AI: a Halloween row from keywords, then horror
 	movies, shows = homeLibrary()
-	h = buildHome(movies, shows, nil, nil, halloween, rnd)
-	if got := strings.Join(rowTitles(h), " "); got != "Halloween(9) Recently Added(10) Horror(9)" {
+	h = buildHome(movies, shows, eps, nil, nil, halloween, rnd)
+	if got := strings.Join(rowTitles(h), " "); got != "Halloween(10) Recently Added(10) Horror(9)" {
 		t.Errorf("rows from TMDB: %s", got)
+	}
+	if !slices.ContainsFunc(h.Rows[0].Items, func(c HomeCard) bool { return c.Kind == "episode" && c.ID == 70 }) {
+		t.Error("the Halloween episode belongs in the TMDB Halloween row")
 	}
 	if h.Themes != "TMDB" || h.Rows[0].Items[0].ID != 2 {
 		t.Errorf("the holiday title leads the Halloween row: %s %+v", h.Themes, h.Rows[0].Items[0])
 	}
 	// same shuffle all day
 	movies, shows = homeLibrary()
-	again := buildHome(movies, shows, nil, nil, halloween.Add(time.Hour), rnd)
+	again := buildHome(movies, shows, eps, nil, nil, halloween.Add(time.Hour), rnd)
 	if fmt.Sprint(again.Rows[2].Items) != fmt.Sprint(h.Rows[2].Items) {
 		t.Error("genre rows must keep their order through the day")
 	}
@@ -161,7 +171,11 @@ func TestThemerMake(t *testing.T) {
 		{"title":"Too Few","items":["m603","m604"]},
 		{"title":"  ","items":["m603","m604","m605","m606"]}]}`}
 	tm := &themer{s: &Server{cfg: Config{Name: "Robot"}}, ai: ai}
-	var catalog []themeTitle
+	catalog := themeCatalog(nil, nil, []Episode{{ShowTitle: "The Office", ShowTMDBID: 2316, Season: 2, Episode: 10, Title: "Christmas Party", Genres: []string{"Comedy"}}})
+	if len(catalog) != 1 || catalog[0].id != "e2316-S02E10" || catalog[0].name != `The Office S02E10 "Christmas Party" (episode)` {
+		t.Errorf("episode in the catalog: %+v", catalog)
+	}
+	catalog = nil
 	for i := 603; i <= 606; i++ {
 		catalog = append(catalog, themeTitle{fmt.Sprintf("m%d", i), fmt.Sprintf("Matrix %d (1999)", i), []string{"Action", "Science Fiction"}})
 	}
