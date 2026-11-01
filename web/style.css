@@ -48,12 +48,18 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
 #home { display: flex; flex-direction: column; height: calc(100vh - 72px); }
 #hero { position: relative; flex: none; height: 42vh; min-height: 240px; padding: 0 32px 24px;
   display: flex; flex-direction: column; justify-content: flex-end; background: var(--bg) center 20% / cover no-repeat; }
+/* the text sits in the dark part: a strong fade from the left and up from the
+ * bottom, and a shadow on the letters for what is left of the picture */
 #hero::before { content: ''; position: absolute; inset: 0;
-  background: linear-gradient(90deg, var(--bg) 22%, #0f111500 70%), linear-gradient(0deg, var(--bg), #0f111500 45%); }
-#hero > * { position: relative; max-width: 640px; margin: 0; }
+  background: linear-gradient(90deg, var(--bg) 30%, #0f1115cc 55%, #0f111500 85%), linear-gradient(0deg, var(--bg) 8%, #0f111500 60%); }
+#hero > * { position: relative; max-width: 640px; margin: 0; text-shadow: 0 1px 2px #000c, 0 0 12px #0009; }
 #hero .tag { font-size: 12px; letter-spacing: .15em; text-transform: uppercase; color: var(--accent); }
-#hero h2 { font-size: 40px; line-height: 1.1; margin: 6px 0; }
+#hero h2 { font-size: clamp(26px, 4vw, 44px); line-height: 1.1; margin: 6px 0; }
 #hero-overview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 6px; }
+/* a single episode in a row: its own still, wide, with the episode under it */
+.strip .card.wide { width: calc(var(--row-w) * 1.6); }
+.strip .card.wide img, .strip .card.wide .noart { width: 100%; aspect-ratio: 16 / 9; }
+.strip .card.wide .noart { font-size: 13px; }
 #shelves { flex: 1; overflow-y: auto; padding-bottom: 48px; }
 .shelf h3 { margin: 14px 32px 2px; font-size: 18px; font-weight: 600; }
 .strip { position: relative; display: flex; gap: 14px; overflow-x: auto; padding: 10px 32px 8px; scrollbar-width: none; }
@@ -88,18 +94,33 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
   background: #0009; padding: 10px 14px; border-radius: 8px; transition: opacity .3s; }
 #osd.hidden { opacity: 0; }
 
-@media (max-width: 700px) {
-  :root { --poster-w: 120px; --row-w: 110px; }
+/* phones and small tablets: the header on two lines (tabs, then search and
+ * Cast), posters three to a screen, the page scrolls as a whole */
+@media (max-width: 900px) {
+  :root { --poster-w: calc((100vw - 56px) / 3); --row-w: calc((100vw - 60px) / 3.3); }
   header, #grid, #episodes, #hero, .strip { padding-left: 16px; padding-right: 16px; }
-  .shelf h3 { margin-left: 16px; }
-  #home { height: auto; } /* the header wraps here: let the page scroll instead */
+  header { flex-wrap: wrap; gap: 10px; padding-top: calc(12px + env(safe-area-inset-top)); }
+  header h1 { font-size: 18px; }
+  #server, #scan, .spacer { display: none; }
+  #search { flex: 1 1 160px; min-width: 0; order: 10; }
+  #castbtn { order: 11; }
+  .shelf h3 { margin-left: 16px; font-size: 16px; }
+  #home { height: auto; }
   #shelves { overflow: visible; }
-  #hero { height: 34vh; }
-  #hero h2 { font-size: 28px; }
-  header { flex-wrap: wrap; }
+  #hero { height: auto; min-height: 0; padding-top: 30vw; }
+  #hero-overview { -webkit-line-clamp: 2; font-size: 14px; }
+  #hero-meta { font-size: 14px; }
+  #show-head { gap: 14px; }
   #show-head img { width: 100px; }
   #eplist .still { display: none; }
+  #eplist .state { width: 64px; }
+  #grid { gap: 12px 12px; }
 }
+/* fingers: taller buttons and rows, no hover ring */
+body.touch button, body.touch input { min-height: 42px; }
+body.touch #eplist li { padding: 12px; }
+body.touch .card.focused img, body.touch .card.focused .noart { transform: none; }
+body.touch #controls button { min-width: 56px; min-height: 48px; }
 
 /* --- Cast to… (device list, then the remote control for what is casting) --- */
 #cast { position: fixed; inset: 0; background: rgba(0, 0, 0, .7); display: flex; align-items: center; justify-content: center; z-index: 20; }

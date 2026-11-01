@@ -76,9 +76,14 @@ function renderHome() {
         : it.kind === 'show' ? `${it.seasons || 1} season${it.seasons === 1 ? '' : 's'}`
         : it.kind === 'episode' ? it.subtitle
         : `${it.year || ''}${it.watched ? ' · watched' : ''}`;
-      // the progress bar sits on the artwork, so a two-line subtitle can't push it over the title
+      // a single episode shows its own still (wide), so a row of one show's
+      // episodes isn't the same poster over and over; the progress bar sits
+      // on the artwork, so a two-line subtitle can't push it over the title
+      const wide = it.kind === 'episode' && it.still;
+      if (wide) card.classList.add('wide');
       card.innerHTML = `<div class="art">` +
-        (it.poster ? `<img src="${it.poster}" alt="" loading="lazy">` : `<div class="noart">${esc(it.title)}</div>`) +
+        (wide ? `<img src="${it.still}" alt="" loading="lazy">`
+          : it.poster ? `<img src="${it.poster}" alt="" loading="lazy">` : `<div class="noart">${esc(it.title)}</div>`) +
         (pct > 0 ? `<div class="progress"><i style="width:${pct}%"></i></div>` : '') +
         `</div><div class="title">${esc(it.title)}</div><div class="year">${esc(sub)}</div>`;
       card.addEventListener('click', () => { focusShelf(r, c); activateShelf(); });
@@ -682,6 +687,9 @@ if (CLIENT === 'player') {
 function pad(n) { return String(n).padStart(2, '0'); }
 function fmtMin(s) { return s ? Math.round(s / 60) + ' min' : ''; }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+// fingers rather than keys: taller targets, no hover ring (phones, tablets, the Android app)
+if (CLIENT === 'android' || matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
 
 loadServer();
 setMode('home');

@@ -33,12 +33,26 @@ final class Updater {
         this.act = act;
     }
 
-    /** Asks the server its version off the main thread; offers the update on it. */
+    /** Asks the server about itself off the main thread: its Tailscale address
+     *  is kept for away from home, and a newer version is offered. */
     void check(String base) {
-        if (BuildConfig.VERSION_NAME.equals("0.0.0")) return; // a dev build
         new Thread(() -> {
-            String v = serverVersion(base);
-            if (v != null && newer(v, BuildConfig.VERSION_NAME)) act.runOnUiThread(() -> offer(v));
+            JSONObject s = serverInfo(base);
+            if (s == null) return;
+            JSONObject ts = s.optJSONObject("tailscale");
+            String ip = ts != null ? ts.optString("ip", "") : "";
+            int port = 8484;
+            try {
+                int p = new URL(base).getPort();
+                if (p > 0) port = p;
+            } catch (Exception ignored) {
+            }
+            String tsUrl = ip.isEmpty() ? null : "http://" + ip + ":" + port;
+            String v = s.optString("version", "");
+            act.runOnUiThread(() -> {
+                act.rememberTailscale(tsUrl);
+                if (!BuildConfig.VERSION_NAME.equals("0.0.0") && newer(v, BuildConfig.VERSION_NAME)) offer(v);
+            });
         }).start();
     }
 
@@ -49,7 +63,7 @@ final class Updater {
         }
     }
 
-    private static String serverVersion(String base) {
+    private static JSONObject serverInfo(String base) {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL(base + "/api/v1/server").openConnection();
             c.setConnectTimeout(5000);
@@ -59,7 +73,7 @@ final class Updater {
                 byte[] b = new byte[64 * 1024];
                 int n, len = 0;
                 while (len < b.length && (n = in.read(b, len, b.length - len)) > 0) len += n;
-                return new JSONObject(new String(b, 0, len, "UTF-8")).optString("version", "");
+                return new JSONObject(new String(b, 0, len, "UTF-8"));
             }
         } catch (Exception e) {
             return null;
@@ -81,8 +95,45 @@ final class Updater {
         return false;
     }
 
+    /** Check for updates from the menu: asks GitHub for the latest release
+     *  rather than the server, so it works away from home and before the
+     *  server has updated itself; "Later" is not remembered here. */
+    void checkGitHub() {
+        Toast.makeText(act, "Checking GitHub…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String v = latestRelease();
+            act.runOnUiThread(() -> {
+                if (v == null) Toast.makeText(act, "Couldn't reach GitHub.", Toast.LENGTH_LONG).show();
+                else if (newer(v, BuildConfig.VERSION_NAME)) offer(v, true);
+                else Toast.makeText(act, "FLEX " + BuildConfig.VERSION_NAME + " is the latest.", Toast.LENGTH_LONG).show();
+            });
+        }).start();
+    }
+
+    private static String latestRelease() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("https://api.github.com/repos/" + REPO + "/releases/latest").openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setRequestProperty("Accept", "application/vnd.github+json");
+            try (InputStream in = c.getInputStream()) {
+                byte[] b = new byte[256 * 1024];
+                int n, len = 0;
+                while (len < b.length && (n = in.read(b, len, b.length - len)) > 0) len += n;
+                String tag = new JSONObject(new String(b, 0, len, "UTF-8")).optString("tag_name", "");
+                return tag.startsWith("v") ? tag.substring(1) : tag;
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private void offer(String v) {
-        if (v.equals(act.prefs().getString("skip", ""))) return;
+        offer(v, false);
+    }
+
+    private void offer(String v, boolean force) {
+        if (!force && v.equals(act.prefs().getString("skip", ""))) return;
         new AlertDialog.Builder(act)
                 .setTitle("FLEX " + v + " is out")
                 .setMessage("Download and install the new app? (This app is " + BuildConfig.VERSION_NAME + ".)")

@@ -142,6 +142,15 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             List<Discovery.Found> found = Discovery.run(2000);
             ui.post(() -> {
+                String ts = prefs.getString("ts", null);
+                if (found.isEmpty() && ts != null && !manual) {
+                    // another network: the server's Tailscale address, if the phone runs Tailscale
+                    Toast.makeText(this, "Not at home: trying the server over Tailscale…", Toast.LENGTH_SHORT).show();
+                    triedTs = true;
+                    base = ts;
+                    web.loadUrl(ts + "/");
+                    return;
+                }
                 if (found.isEmpty()) {
                     new AlertDialog.Builder(this)
                             .setTitle("No FLEX server found")
@@ -165,6 +174,28 @@ public class MainActivity extends Activity {
                 }
             });
         }).start();
+    }
+
+    /** Hold Back: the app's own menu (the page has everything else). */
+    private void showMenu() {
+        String[] items = {"Search for FLEX PCs", "Enter an address…", "Check for updates"};
+        new AlertDialog.Builder(this)
+                .setTitle("FLEX " + BuildConfig.VERSION_NAME + "  ·  " + prefs.getString("name", "no server yet"))
+                .setItems(items, (d, i) -> {
+                    if (i == 0) discover(true);
+                    else if (i == 1) askAddress();
+                    else updater.checkGitHub();
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    /** The server's Tailscale address, refreshed on every visit (null when
+     *  its remote access is off), so a phone with Tailscale reaches it from
+     *  anywhere once the home address stops answering. */
+    void rememberTailscale(String tsUrl) {
+        if (tsUrl == null) prefs.edit().remove("ts").apply();
+        else prefs.edit().putString("ts", tsUrl).apply();
     }
 
     private void choose(Discovery.Found f) {
@@ -210,7 +241,7 @@ public class MainActivity extends Activity {
                     if (e.getRepeatCount() == 0) backHeld = false;
                     else if ((e.getFlags() & KeyEvent.FLAG_LONG_PRESS) != 0 && !backHeld) {
                         backHeld = true;
-                        discover(true);
+                        showMenu();
                     }
                 } else if (!backHeld) {
                     back();
