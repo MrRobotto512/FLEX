@@ -47,6 +47,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/shows/{id}/files", s.handleShowFiles)
 	mux.HandleFunc("PUT /api/v1/library/folders", s.handleFoldersPut)
 	mux.HandleFunc("GET /api/v1/continue", s.handleContinue)
+	mux.HandleFunc("GET /api/v1/home", s.handleHome)
+	mux.HandleFunc("GET /api/v1/home/themes", s.handleThemes)
 	mux.HandleFunc("GET /api/v1/client/ps5", s.handlePS5Client)
 	mux.HandleFunc("GET /api/v1/client/ps5/eboot.elf", s.handlePS5ClientFile)
 	if s.web != nil {

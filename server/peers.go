@@ -357,14 +357,20 @@ func (s *Server) linking(r *http.Request) bool {
 }
 
 func (s *Server) linkedMovies(r *http.Request, movies []Movie) []Movie {
-	gather(r.Context(), s.peers, "/api/v1/movies?"+r.URL.RawQuery, func(pe *peer, list []Movie) {
+	movies = s.peerMovies(r.Context(), movies, r.URL.RawQuery)
+	sortMovies(movies, r.URL.Query().Get("sort"))
+	return movies
+}
+
+// peerMovies adds the linked servers' movies (their /movies?query) to movies.
+func (s *Server) peerMovies(ctx context.Context, movies []Movie, query string) []Movie {
+	gather(ctx, s.peers, "/api/v1/movies?"+query, func(pe *peer, list []Movie) {
 		for _, m := range list {
 			if pe.movie(&m); m.ID != 0 {
 				movies = append(movies, m)
 			}
 		}
 	})
-	sortMovies(movies, r.URL.Query().Get("sort"))
 	return movies
 }
 
@@ -385,14 +391,19 @@ func sortMovies(movies []Movie, by string) {
 }
 
 func (s *Server) linkedShows(r *http.Request, shows []Show) []Show {
-	gather(r.Context(), s.peers, "/api/v1/shows?"+r.URL.RawQuery, func(pe *peer, list []Show) {
+	shows = s.peerShows(r.Context(), shows, r.URL.RawQuery)
+	sort.SliceStable(shows, func(i, j int) bool { return strings.ToLower(shows[i].Title) < strings.ToLower(shows[j].Title) })
+	return shows
+}
+
+func (s *Server) peerShows(ctx context.Context, shows []Show, query string) []Show {
+	gather(ctx, s.peers, "/api/v1/shows?"+query, func(pe *peer, list []Show) {
 		for _, sh := range list {
 			if pe.show(&sh); sh.ID != 0 {
 				shows = append(shows, sh)
 			}
 		}
 	})
-	sort.SliceStable(shows, func(i, j int) bool { return strings.ToLower(shows[i].Title) < strings.ToLower(shows[j].Title) })
 	return shows
 }
 

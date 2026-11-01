@@ -7,6 +7,7 @@
 3. In the window:
    - **Add movie folder…** for movies, **Add TV folder…** for TV shows (one subfolder per show; season folders optional). Don't list a TV folder as a movie folder too.
    - Paste your TMDB API key ([themoviedb.org/settings/api](https://www.themoviedb.org/settings/api)) for posters and descriptions.
+   - Optional, under **Home screen**: pick Claude, ChatGPT or Gemini and paste an API key from that provider ([console.anthropic.com](https://console.anthropic.com), [platform.openai.com](https://platform.openai.com), [aistudio.google.com](https://aistudio.google.com)). About once a week it sorts your library into themed rows for the home screen, the time of year first. Each refresh is billed to your account with that provider (with Claude, roughly $0.30). Without a key the rows come from TMDB genres. With several FLEX PCs, one key is enough.
    - **Save & restart server**, then **Scan now**.
    - When Windows Firewall asks, allow FLEX on **private** networks (the PS5 needs it).
    - Tick **Start FLEX with Windows** so it is always running.

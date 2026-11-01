@@ -51,6 +51,9 @@ Build order, each step produces something you can run.
    - [x] season folders named with air years ("1993-1994 - Season 1"), "0000 - Shorts" as specials, segment files ("201-a"); same-name series (TMNT 1987/2003/2012) told apart by an episode title, existing shows re-matched once
    - [x] PS5 player: volume on L1/R1 (0–200 %, applied in the audio callback so it's instant, remembered); late frames dropped instead of stalling, deblocking skipped when it keeps falling behind, OSD timing line; upscaled streams capped at 8 Mbit/s
    - [x] linked servers: every FLEX PC on the network lists the others' movies, shows and Continue Watching; play, images, progress and HLS passed on to the PC with the file (its GPU converts); verified against two real servers (merged 1013 movies, poster, Range, an HLS conversion on the other PC and its stop)
+   - [x] removing a library folder removes its movies and shows straight away
+   - [x] Netflix-style home: `/home` with a featured title, Continue Watching, themed and seasonal rows made weekly by Claude, ChatGPT or Gemini (or TMDB genres and keywords without a key; linked servers share one key's rows), Recently Added, TV Shows, genre rows; browser Home tab
+   - [ ] PS5 home screen from `/home`
    - [x] verified on hardware: seek
    - [ ] verified on hardware: tray on the library PC, remote from a phone, reboot + rejailbreak
 7. **Later**

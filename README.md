@@ -9,7 +9,8 @@ Phone / laptop (browser) ── Tailscale ────────────�
                                                      │     • library scan, TMDB metadata, SQLite
                                                      │     • FFmpeg: direct play / remux / transcode → HLS
                                                      │     • JSON API, LAN discovery, embedded Tailscale (tsnet)
-                                                     └     • lists other FLEX PCs' libraries too (linked servers)
+                                                     │     • lists other FLEX PCs' libraries too (linked servers)
+                                                     └     • Netflix-style home rows, themed by Claude, ChatGPT or Gemini
 ```
 
 ## Layout
@@ -29,7 +30,7 @@ Download `FLEX.exe` (Windows) and `FLEX-ps5.zip` from the [latest release](https
 
 ## Quick start (server, from source)
 
-Requirements: Go 1.23+, FFmpeg (`ffmpeg` and `ffprobe` on `PATH`), a free [TMDB API key](https://www.themoviedb.org/settings/api).
+Requirements: Go 1.26+, FFmpeg (`ffmpeg` and `ffprobe` on `PATH`), a free [TMDB API key](https://www.themoviedb.org/settings/api).
 
 ```bash
 cp .env.example .env            # add your TMDB key and library folders

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,7 +35,9 @@ CREATE TABLE IF NOT EXISTS movies (
 	mtime         INTEGER NOT NULL,
 	added_at      TEXT NOT NULL,
 	seen_at       TEXT NOT NULL,
-	match_ver     INTEGER NOT NULL DEFAULT 0
+	match_ver     INTEGER NOT NULL DEFAULT 0,
+	genres        TEXT, -- JSON lists from TMDB; NULL until fetched
+	keywords      TEXT
 );
 CREATE INDEX IF NOT EXISTS movies_title ON movies(title COLLATE NOCASE);
 
@@ -48,7 +51,9 @@ CREATE TABLE IF NOT EXISTS shows (
 	poster_path   TEXT,
 	backdrop_path TEXT,
 	added_at      TEXT NOT NULL,
-	match_ver     INTEGER NOT NULL DEFAULT 0
+	match_ver     INTEGER NOT NULL DEFAULT 0,
+	genres        TEXT,
+	keywords      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS episodes (
@@ -107,6 +112,10 @@ func OpenDB(path string) (*DB, error) {
 	}
 	db.Exec(`ALTER TABLE movies ADD COLUMN match_ver INTEGER NOT NULL DEFAULT 0`) // older DBs; fails harmlessly when present
 	db.Exec(`ALTER TABLE shows ADD COLUMN match_ver INTEGER NOT NULL DEFAULT 0`)
+	for _, t := range []string{"movies", "shows"} {
+		db.Exec(`ALTER TABLE ` + t + ` ADD COLUMN genres TEXT`)
+		db.Exec(`ALTER TABLE ` + t + ` ADD COLUMN keywords TEXT`)
+	}
 	if _, err := db.Exec(`INSERT OR IGNORE INTO progress
 		SELECT 'movie', movie_id, position_s, duration_s, watched, updated_at FROM progress_v1`); err == nil {
 		db.Exec(`DROP TABLE progress_v1`)
@@ -130,7 +139,7 @@ func migrate(db *sql.DB) error {
 
 const movieCols = `m.id, m.path, m.title, m.year, m.tmdb_id, m.overview, m.runtime_s,
 	m.poster_path, m.backdrop_path, m.media_json, m.added_at,
-	COALESCE(p.position_s, 0), COALESCE(p.watched, 0)`
+	COALESCE(p.position_s, 0), COALESCE(p.watched, 0), m.genres, m.keywords`
 
 const movieFrom = `FROM movies m LEFT JOIN progress p ON p.kind = 'movie' AND p.item_id = m.id`
 
@@ -178,14 +187,16 @@ func scanMovie(r rowScanner, withMedia bool) (*Movie, error) {
 		m                                  Movie
 		year, tmdbID, runtime              sql.NullInt64
 		overview, poster, backdrop, mediaJ sql.NullString
+		genres, keywords                   sql.NullString
 		added                              string
 		watched                            int
 	)
 	err := r.Scan(&m.ID, &m.Path, &m.Title, &year, &tmdbID, &overview, &runtime,
-		&poster, &backdrop, &mediaJ, &added, &m.ResumeS, &watched)
+		&poster, &backdrop, &mediaJ, &added, &m.ResumeS, &watched, &genres, &keywords)
 	if err != nil {
 		return nil, err
 	}
+	m.Genres, m.Holidays = tags(genres, keywords)
 	m.Year = int(year.Int64)
 	m.TMDBID = tmdbID.Int64
 	m.RuntimeS = int(runtime.Int64)
@@ -404,9 +415,83 @@ func (d *DB) SetMatchVersion(id int64, v int) {
 
 func (d *DB) SetMetadata(id int64, md Metadata) error {
 	_, err := d.Exec(`UPDATE movies SET tmdb_id = ?, title = ?, year = ?, overview = ?, runtime_s = ?,
-		poster_path = ?, backdrop_path = ? WHERE id = ?`,
+		poster_path = ?, backdrop_path = ?, genres = ?, keywords = ? WHERE id = ?`,
 		nullInt64(md.TMDBID), md.Title, nullInt(md.Year), md.Overview, md.RuntimeS,
-		md.PosterPath, md.BackdropPath, id)
+		md.PosterPath, md.BackdropPath, jsonList(md.Genres), jsonList(md.Keywords), id)
+	return err
+}
+
+// ---------------------------------------------------------------- genres and keywords
+
+// holidayKeywords maps TMDB keywords to the holidays the home screen has a
+// row for when Claude isn't making the rows.
+var holidayKeywords = map[string]string{
+	"halloween":         "halloween",
+	"trick or treating": "halloween",
+	"christmas":         "christmas",
+	"christmas eve":     "christmas",
+	"christmas party":   "christmas",
+	"christmas tree":    "christmas",
+	"santa claus":       "christmas",
+	"thanksgiving":      "thanksgiving",
+	"valentine's day":   "valentines",
+	"new year's eve":    "newyear",
+	"summer":            "summer",
+	"summer vacation":   "summer",
+	"summer camp":       "summer",
+}
+
+// tags turns the stored genre and keyword lists into the genres and
+// holidays the API shows.
+func tags(genres, keywords sql.NullString) ([]string, []string) {
+	var g, k []string
+	json.Unmarshal([]byte(genres.String), &g)
+	json.Unmarshal([]byte(keywords.String), &k)
+	var hol []string
+	for _, kw := range k {
+		if h, ok := holidayKeywords[strings.ToLower(kw)]; ok && !slices.Contains(hol, h) {
+			hol = append(hol, h)
+		}
+	}
+	return g, hol
+}
+
+// jsonList stores a list as JSON; a nil list stays NULL (not fetched).
+func jsonList(l []string) any {
+	if l == nil {
+		return nil
+	}
+	b, _ := json.Marshal(l)
+	return string(b)
+}
+
+// TagsNeeded lists matched movies and shows whose genres and keywords
+// were never fetched: [show (0/1), id, tmdb id].
+func (d *DB) TagsNeeded() ([][3]int64, error) {
+	rows, err := d.Query(`SELECT 0, id, tmdb_id FROM movies WHERE tmdb_id IS NOT NULL AND genres IS NULL
+		UNION ALL SELECT 1, id, tmdb_id FROM shows WHERE tmdb_id IS NOT NULL AND genres IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][3]int64
+	for rows.Next() {
+		var r [3]int64
+		if err := rows.Scan(&r[0], &r[1], &r[2]); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) SetTags(show bool, id int64, genres, keywords []string) error {
+	table := "movies"
+	if show {
+		table = "shows"
+	}
+	_, err := d.Exec(`UPDATE `+table+` SET genres = ?, keywords = ? WHERE id = ?`,
+		jsonList(append([]string{}, genres...)), jsonList(append([]string{}, keywords...)), id)
 	return err
 }
 
@@ -576,12 +661,13 @@ func (d *DB) SharedEpisodeNumbers(showID int64) map[[2]int64]bool {
 
 func (d *DB) SetShowMetadata(id int64, md Metadata) error {
 	_, err := d.Exec(`UPDATE shows SET tmdb_id = ?, title = ?, year = ?, overview = ?,
-		poster_path = ?, backdrop_path = ? WHERE id = ?`,
-		nullInt64(md.TMDBID), md.Title, nullInt(md.Year), md.Overview, md.PosterPath, md.BackdropPath, id)
+		poster_path = ?, backdrop_path = ?, genres = ?, keywords = ? WHERE id = ?`,
+		nullInt64(md.TMDBID), md.Title, nullInt(md.Year), md.Overview, md.PosterPath, md.BackdropPath,
+		jsonList(md.Genres), jsonList(md.Keywords), id)
 	return err
 }
 
-const showCols = `s.id, s.title, s.year, s.tmdb_id, s.overview, s.poster_path, s.backdrop_path, s.added_at,
+const showCols = `s.id, s.title, s.year, s.tmdb_id, s.overview, s.poster_path, s.backdrop_path, s.added_at, s.genres, s.keywords,
 	(SELECT COUNT(DISTINCT e.season) FROM episodes e WHERE e.show_id = s.id),
 	(SELECT COUNT(*) FROM episodes e WHERE e.show_id = s.id),
 	(SELECT COUNT(*) FROM episodes e LEFT JOIN progress p ON p.kind = 'episode' AND p.item_id = e.id
@@ -643,13 +729,15 @@ func scanShow(r rowScanner) (*Show, error) {
 		s                          Show
 		year, tmdbID               sql.NullInt64
 		overview, poster, backdrop sql.NullString
+		genres, keywords           sql.NullString
 		added                      string
 	)
-	err := r.Scan(&s.ID, &s.Title, &year, &tmdbID, &overview, &poster, &backdrop, &added,
+	err := r.Scan(&s.ID, &s.Title, &year, &tmdbID, &overview, &poster, &backdrop, &added, &genres, &keywords,
 		&s.Seasons, &s.Episodes, &s.Unwatched)
 	if err != nil {
 		return nil, err
 	}
+	s.Genres, s.Holidays = tags(genres, keywords)
 	s.Year = int(year.Int64)
 	s.TMDBID = tmdbID.Int64
 	s.Overview = overview.String

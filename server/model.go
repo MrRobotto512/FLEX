@@ -16,6 +16,8 @@ type Movie struct {
 	Watched  bool      `json:"watched"`
 	AddedAt  time.Time `json:"added_at"`
 	TMDBID   int64     `json:"tmdb_id,omitempty"`
+	Genres   []string  `json:"genres,omitempty"`   // TMDB's
+	Holidays []string  `json:"holidays,omitempty"` // from TMDB keywords: "halloween", "christmas", …
 
 	Media *MediaInfo `json:"media,omitempty"`
 
@@ -76,6 +78,8 @@ type Show struct {
 	Unwatched int       `json:"unwatched"`
 	AddedAt   time.Time `json:"added_at"`
 	TMDBID    int64     `json:"tmdb_id,omitempty"`
+	Genres    []string  `json:"genres,omitempty"`
+	Holidays  []string  `json:"holidays,omitempty"`
 
 	SeasonList  []Season `json:"season_list,omitempty"`
 	NextEpisode *Episode `json:"next_episode,omitempty"`
@@ -126,6 +130,8 @@ type Metadata struct {
 	RuntimeS     int
 	PosterPath   string // local file under PosterDir, "" if none
 	BackdropPath string
+	Genres       []string
+	Keywords     []string
 }
 
 // PlayInfo answers GET /movies/{id}/play.

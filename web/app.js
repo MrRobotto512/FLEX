@@ -1,6 +1,6 @@
-// FLEX browser client: Movies and TV grids driven by arrow keys / D-pad, an
-// episode list per show, and a player that asks the server how to play each
-// item (docs/api.md).
+// FLEX browser client: a Home screen of rows, Movies and TV grids, all driven
+// by arrow keys / D-pad, an episode list per show, and a player that asks the
+// server how to play each item (docs/api.md).
 const API = '/api/v1';
 const CLIENT = 'web';
 
@@ -12,8 +12,14 @@ const player = document.getElementById('player');
 const video = document.getElementById('video');
 const osd = document.getElementById('osd');
 const search = document.getElementById('search');
+const homeView = document.getElementById('home');
+const shelves = document.getElementById('shelves');
 
-let mode = 'movies';      // movies | tv
+let mode = 'home';        // home | movies | tv
+let shelfRows = [];       // home rows: { title, items, cont } (cont: Continue Watching items)
+let hero = null;          // the server's featured title
+let shelf = 0;            // focused home row
+let shelfCol = [];        // focused card in each home row
 let view = 'grid';        // grid | episodes | player
 let items = [];           // movies or shows in the grid
 let focus = 0;
@@ -35,6 +41,86 @@ async function loadServer() {
   } catch (e) {
     document.getElementById('server').textContent = 'server unreachable';
   }
+}
+
+// --- home (rows of posters, the focused title up top) ---
+
+async function loadHome() {
+  const home = await api('/home');
+  hero = home.hero;
+  shelfRows = [];
+  if (home.continue.length) shelfRows.push({ title: 'Continue Watching', items: home.continue, cont: true });
+  shelfRows.push(...home.rows);
+  shelf = Math.min(shelf, Math.max(0, shelfRows.length - 1));
+  renderHome();
+}
+
+function renderHome() {
+  shelves.innerHTML = '';
+  empty.hidden = shelfRows.length > 0;
+  empty.textContent = 'Nothing here yet. Add library folders and press Scan.';
+  shelfRows.forEach((row, r) => {
+    const sec = document.createElement('section');
+    sec.className = 'shelf';
+    sec.innerHTML = `<h3>${esc(row.title)}</h3><div class="strip"></div>`;
+    const strip = sec.querySelector('.strip');
+    row.items.forEach((it, c) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.dataset.r = r;
+      card.dataset.c = c;
+      const pct = it.runtime_s && !it.watched ? Math.min(100, Math.round(100 * (it.resume_s || 0) / it.runtime_s)) : 0;
+      const sub = row.cont ? it.subtitle || (it.resume_s ? `${fmtMin(it.runtime_s - it.resume_s)} left` : 'next episode')
+        : it.kind === 'show' ? `${it.seasons || 1} season${it.seasons === 1 ? '' : 's'}`
+        : `${it.year || ''}${it.watched ? ' · watched' : ''}`;
+      card.innerHTML = (it.poster ? `<img src="${it.poster}" alt="" loading="lazy">` : `<div class="noart">${esc(it.title)}</div>`) +
+        (pct > 0 ? `<div class="progress"><i style="width:${pct}%"></i></div>` : '') +
+        `<div class="title">${esc(it.title)}</div><div class="year">${esc(sub)}</div>`;
+      card.addEventListener('click', () => { focusShelf(r, c); activateShelf(); });
+      strip.appendChild(card);
+    });
+    shelves.appendChild(sec);
+  });
+  showHero(hero, shelfRows.find(r => r.items.some(it => hero && it.id === hero.id && it.kind === hero.kind))?.title);
+  focusShelf(shelf, shelfCol[shelf] || 0);
+}
+
+// focusShelf moves the focus to card c of row r and shows that title up top.
+function focusShelf(r, c) {
+  const row = shelfRows[r];
+  if (!row) return;
+  shelf = r;
+  shelfCol[r] = Math.max(0, Math.min(row.items.length - 1, c));
+  shelves.querySelectorAll('.card.focused').forEach(el => el.classList.remove('focused'));
+  const el = shelves.querySelector(`.card[data-r="${r}"][data-c="${shelfCol[r]}"]`);
+  if (el) {
+    el.classList.add('focused');
+    el.closest('.shelf').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const strip = el.parentElement;
+    strip.scrollTo({ left: el.offsetLeft - (strip.clientWidth - el.clientWidth) / 2, behavior: 'smooth' });
+  }
+  showHero(row.items[shelfCol[r]], row.title);
+}
+
+// showHero puts a title's backdrop and details up top (keeping the last one
+// for items without a backdrop, like Continue Watching).
+function showHero(it, tag) {
+  if (!it || !it.backdrop) return;
+  document.getElementById('hero').style.backgroundImage = `url("${it.backdrop}")`;
+  document.getElementById('hero-tag').textContent = tag || '';
+  document.getElementById('hero-title').textContent = it.title;
+  document.getElementById('hero-meta').textContent = [it.year, (it.genres || []).slice(0, 3).join(', '),
+    it.kind === 'show' ? `${it.seasons || 1} season${it.seasons === 1 ? '' : 's'}` : fmtMin(it.runtime_s)].filter(Boolean).join(' · ');
+  document.getElementById('hero-overview').textContent = it.overview || '';
+}
+
+// Enter on a home card: resume, play the movie or open the show.
+function activateShelf() {
+  const row = shelfRows[shelf];
+  const it = row && row.items[shelfCol[shelf]];
+  if (!it) return;
+  if (row.cont || it.kind === 'movie') play(it.kind, it);
+  else openShow(it.id);
 }
 
 // --- grid (movies or shows) ---
@@ -102,7 +188,15 @@ function setMode(m) {
   mode = m;
   focus = 0;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
-  loadGrid(search.value);
+  homeView.hidden = m !== 'home';
+  grid.hidden = m === 'home';
+  reload();
+}
+
+// reload refreshes whichever of Home and the grids is showing.
+function reload() {
+  if (mode === 'home') loadHome();
+  else loadGrid(search.value);
 }
 
 // Enter on a card: play the movie or open the show.
@@ -136,6 +230,7 @@ async function openShow(id, keepFocus = false) {
   renderEpisodes();
   view = 'episodes';
   grid.hidden = true;
+  homeView.hidden = true;
   empty.hidden = true;
   episodesView.hidden = false;
 }
@@ -175,9 +270,10 @@ function moveEpisode(dir) {
 function closeShow() {
   view = 'grid';
   episodesView.hidden = true;
-  grid.hidden = false;
+  homeView.hidden = mode !== 'home';
+  grid.hidden = mode === 'home';
   show = null;
-  loadGrid(search.value);
+  reload();
 }
 
 // --- playback (movies and episodes share everything but the URL prefix) ---
@@ -250,7 +346,7 @@ function stop() {
     setTimeout(() => openShow(show.id, true), 300); // let the progress PUT land first
   } else {
     view = 'grid';
-    setTimeout(() => loadGrid(search.value), 300);
+    setTimeout(reload, 300);
   }
 }
 
@@ -260,11 +356,14 @@ function showOSD() {
   osdTimer = setTimeout(() => osd.classList.add('hidden'), 3000);
 }
 
-// --- input: arrow keys (PS5 D-pad arrives as arrows), Enter, Escape/Backspace, Tab switches Movies/TV ---
+// --- input: arrow keys (PS5 D-pad arrives as arrows), Enter, Escape/Backspace, Tab switches Home/Movies/TV ---
 
 document.addEventListener('keydown', e => {
   if (e.target === search) {
-    if (e.key === 'Escape' || e.key === 'ArrowDown') { search.blur(); setFocus(focus); }
+    if (e.key === 'Escape' || e.key === 'ArrowDown') {
+      search.blur();
+      if (mode === 'home') focusShelf(shelf, shelfCol[shelf] || 0); else setFocus(focus);
+    }
     return;
   }
   if (view === 'player') {
@@ -291,6 +390,21 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     return;
   }
+  const next = { home: 'movies', movies: 'tv', tv: 'home' };
+  if (mode === 'home') {
+    const col = shelfCol[shelf] || 0;
+    switch (e.key) {
+      case 'ArrowRight': focusShelf(shelf, col + 1); break;
+      case 'ArrowLeft': focusShelf(shelf, col - 1); break;
+      case 'ArrowDown': if (shelf + 1 < shelfRows.length) focusShelf(shelf + 1, shelfCol[shelf + 1] || 0); break;
+      case 'ArrowUp': if (shelf === 0) search.focus(); else focusShelf(shelf - 1, shelfCol[shelf - 1] || 0); break;
+      case 'Enter': activateShelf(); break;
+      case 'Tab': setMode(next[mode]); break;
+      default: return;
+    }
+    e.preventDefault();
+    return;
+  }
   const cols = columns();
   switch (e.key) {
     case 'ArrowRight': setFocus(focus + 1); break;
@@ -298,7 +412,7 @@ document.addEventListener('keydown', e => {
     case 'ArrowDown': setFocus(focus + cols); break;
     case 'ArrowUp': if (focus < cols) search.focus(); else setFocus(focus - cols); break;
     case 'Enter': activate(); break;
-    case 'Tab': setMode(mode === 'movies' ? 'tv' : 'movies'); break;
+    case 'Tab': setMode(next[mode]); break;
     default: return;
   }
   e.preventDefault();
@@ -308,7 +422,11 @@ video.addEventListener('ended', stop);
 video.addEventListener('mousemove', showOSD);
 
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
-search.addEventListener('input', e => { focus = 0; loadGrid(e.target.value); });
+search.addEventListener('input', e => {
+  focus = 0;
+  if (mode === 'home') setMode('movies'); // search goes through the grids
+  else loadGrid(e.target.value);
+});
 document.getElementById('scan').addEventListener('click', async () => {
   await api('/library/scan', { method: 'POST' }).catch(() => {});
   const poll = setInterval(async () => {
@@ -316,7 +434,7 @@ document.getElementById('scan').addEventListener('click', async () => {
     document.getElementById('server').textContent = st.scanning
       ? `scanning… ${st.files_seen} files`
       : `${st.movies} movies · ${st.shows} shows`;
-    if (!st.scanning) { clearInterval(poll); loadGrid(search.value); }
+    if (!st.scanning) { clearInterval(poll); reload(); }
   }, 1500);
 });
 
@@ -325,4 +443,4 @@ function fmtMin(s) { return s ? Math.round(s / 60) + ' min' : ''; }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 loadServer();
-loadGrid();
+setMode('home');
