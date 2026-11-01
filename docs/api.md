@@ -128,7 +128,7 @@ An average says nothing about a variable-bitrate peak (an action scene in a 4.7 
 
 - `POST /library/scan` → `202` starts a scan (no-op if one is running).
 - `GET /library/status` → `{"scanning":true,"files_seen":812,"movies":790,"shows":12,"episodes":240,"last_scan":"…"}`
-- `GET /library/folders`, `PUT /library/folders` body `["D:\\Movies","E:\\More"]` — desktop UI only.
+- `GET /library/folders`, `PUT /library/folders` body `["D:\\Movies","E:\\More"]` — desktop UI only. Movies and episodes in no library folder (movie or TV) are deleted when the list changes and when the server starts, before any scan.
 - `POST /movies/{id}/match` body `{"tmdb_id":949}` — fix a wrong metadata match.
 - `GET /library/unmatched` → `{"movies":[{"id","title","year","path"}],"shows":[{"id","title","year","path","episodes"}]}` — what TMDB could not identify, with file paths. Home network only.
 

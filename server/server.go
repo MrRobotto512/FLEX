@@ -109,6 +109,8 @@ func (s *Server) Run(ctx context.Context) error {
 	s.mu.Lock()
 	s.ctx = ctx
 	s.mu.Unlock()
+	// the desktop app restarts the server to apply a changed folder list
+	s.dropRemovedFolders()
 
 	handler := s.Handler()
 	httpSrv := &http.Server{
@@ -176,7 +178,23 @@ func (s *Server) SetFolders(folders []string) error {
 	s.mu.Lock()
 	s.folders = folders
 	s.mu.Unlock()
+	s.dropRemovedFolders()
 	return nil
+}
+
+// dropRemovedFolders deletes the movies and episodes of folders no longer in
+// the library, without waiting for a scan (which may never run, if the last
+// folder went).
+func (s *Server) dropRemovedFolders() {
+	var dirs []string
+	for _, r := range s.roots() {
+		dirs = append(dirs, r.Path)
+	}
+	if n, err := s.db.DeleteOutside(dirs); err != nil {
+		s.log.Warn("library: dropping removed folders", "err", err)
+	} else if n > 0 {
+		s.log.Info("library: dropped the items of removed folders", "count", n)
+	}
 }
 
 // Scan starts a library scan; false if one is already running.
