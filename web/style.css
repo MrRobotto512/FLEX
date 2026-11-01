@@ -116,7 +116,17 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
   #eplist .state { width: 64px; }
   #grid { gap: 12px 12px; }
 }
-/* fingers: taller buttons and rows, no hover ring */
+/* a phone held sideways, or any short screen: a low hero, and the whole page scrolls */
+@media (max-height: 560px) {
+  #home { height: auto; }
+  #shelves { overflow: visible; }
+  #hero { height: auto; min-height: 0; padding-top: 12vh; }
+  #hero h2 { font-size: clamp(22px, 4vh, 32px); margin: 2px 0; }
+  #hero-overview { -webkit-line-clamp: 2; font-size: 14px; }
+}
+/* fingers: the page scrolls as a whole at any size (no scroll-inside-a-box), taller buttons and rows, no hover ring */
+body.touch #home { height: auto; }
+body.touch #shelves { overflow: visible; }
 body.touch button, body.touch input { min-height: 42px; }
 body.touch #eplist li { padding: 12px; }
 body.touch .card.focused img, body.touch .card.focused .noart { transform: none; }
