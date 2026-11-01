@@ -28,6 +28,8 @@ Headless instead of the window: `flexd.exe` with a `.env` (see `.env.example`); 
 
 Transcoding uses the GPU when it can: NVIDIA NVENC, Intel QuickSync, AMD AMF, then the GPU through Windows (older NVIDIA cards), and only then the CPU (the window shows which: "converts with …"). Only files the PS5 can't play as they are get converted, and only a little ahead of what is being watched. Ports: TCP 8484 (HTTP), UDP 7555 (discovery).
 
+**Upscaling:** Triangle on the PS5 turns server upscaling on or off (remembered). At home each FLEX PC upscales old SD and 720p video with AI on its own GPU, when the GPU is fast enough: Anime4K for cartoons, FSRCNNX for everything else. FLEX downloads both (about 1 MB) on the first start and tests them; the window shows "AI upscaling: …" when they passed. Over Tailscale, and on GPUs that are too slow, it upscales the plain way.
+
 ## The PS5 (jailbroken)
 
 1. Download `FLEX-ps5.zip` from the same release and copy its `FLEX` folder to the console so it becomes `/data/homebrew/FLEX/eboot.elf`, `.../sce_sys/icon0.png` and `.../assets/DejaVuSans.ttf` (FTP, or a USB stick and a file manager).

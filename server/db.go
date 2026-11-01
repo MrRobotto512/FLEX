@@ -485,6 +485,19 @@ func (d *DB) TagsNeeded() ([][3]int64, error) {
 	return out, rows.Err()
 }
 
+// Animated says whether TMDB files a movie, or an episode's show, under
+// Animation (kind "movie" or "episode").
+func (d *DB) Animated(kind string, id int64) bool {
+	var g sql.NullString
+	if kind == "movie" {
+		d.QueryRow(`SELECT genres FROM movies WHERE id = ?`, id).Scan(&g)
+	} else {
+		d.QueryRow(`SELECT s.genres FROM episodes e JOIN shows s ON s.id = e.show_id WHERE e.id = ?`, id).Scan(&g)
+	}
+	genres, _ := tags(g, sql.NullString{})
+	return slices.Contains(genres, "Animation")
+}
+
 func (d *DB) SetTags(show bool, id int64, genres, keywords []string) error {
 	table := "movies"
 	if show {
