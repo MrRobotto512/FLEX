@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/joho/godotenv v1.5.1
+	golang.org/x/sys v0.47.0
 	modernc.org/sqlite v1.34.1
 	tailscale.com v1.76.1
 )
@@ -107,7 +108,6 @@ require (
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.14.0 // indirect

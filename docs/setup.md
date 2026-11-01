@@ -12,6 +12,8 @@
    - When Windows Firewall asks, allow FLEX on **private** networks (the PS5 needs it).
    - Tick **Start FLEX with Windows** so it is always running.
 
+After that the library keeps itself up to date: movies and episodes copied into (or deleted from) a library folder show up (or go) about half a minute after the copying stops, and a full scan runs every night at 4:00. **Scan now** is still there for a drive that doesn't report changes (some network drives).
+
 To take a folder out of the library, press **Remove** next to it, then **Save & restart server**: its movies and shows (and their resume points) leave the library right away.
 
 Closing the window keeps FLEX running in the tray (on Windows 11 maybe under the ^ arrow). Settings, the database and the downloaded FFmpeg live in `%APPDATA%\FLEX`.

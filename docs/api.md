@@ -149,7 +149,7 @@ Movies and shows in `/movies` and `/shows` carry `"genres":["Horror"]` and, from
 
 ## Library
 
-- `POST /library/scan` → `202` starts a scan (no-op if one is running).
+- `POST /library/scan` → `202` starts a scan (no-op if one is running). Scans also start by themselves: when video files or folders in a library folder change (Windows change notifications; elsewhere a look every 3 minutes) and stay quiet for 30 s, and every night at 4:00 local time.
 - `GET /library/status` → `{"scanning":true,"files_seen":812,"movies":790,"shows":12,"episodes":240,"last_scan":"…"}`
 - `GET /library/folders`, `PUT /library/folders` body `["D:\\Movies","E:\\More"]` — desktop UI only. Movies and episodes in no library folder (movie or TV) are deleted when the list changes and when the server starts, before any scan.
 - `POST /movies/{id}/match` body `{"tmdb_id":949}` — fix a wrong metadata match.

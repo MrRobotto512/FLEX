@@ -148,6 +148,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	if roots := s.roots(); len(roots) > 0 {
 		s.scanner.Start(ctx, roots)
+		go watchLibrary(ctx, roots, s.Scan, s.log)
 	} else {
 		s.log.Warn("no library folders configured")
 	}
