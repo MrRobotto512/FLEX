@@ -63,9 +63,10 @@
 
 typedef enum { KIND_MOVIE, KIND_SHOW } Kind;
 
-/* The grid's tabs, in L1/R1 order. Continue is skipped while empty. */
-typedef enum { TAB_CONTINUE, TAB_MOVIES, TAB_SHOWS, TAB_SEARCH, TABS } Tab;
-static const char *tab_names[TABS] = {"Continue", "Movies", "TV", "Search"};
+/* The tabs, in L1/R1 order. Home needs a server with /home; Continue is
+ * skipped while empty, and while Home (whose first row it is) is there. */
+typedef enum { TAB_HOME, TAB_CONTINUE, TAB_MOVIES, TAB_SHOWS, TAB_SEARCH, TABS } Tab;
+static const char *tab_names[TABS] = {"Home", "Continue", "Movies", "TV", "Search"};
 
 /* One poster card: a movie or a show. On the Continue tab a card can stand
  * for an episode: it shows the show's poster and plays episode play_id. */
@@ -79,6 +80,8 @@ typedef struct {
     int year, resume_s, runtime_s, watched;
     int seasons, episodes, unwatched; /* shows */
     char poster[128];                 /* API path or "" when the server has no artwork */
+    char backdrop[128];               /* home cards: shown behind the details when focused */
+    char overview[400], genres[80];   /* home cards */
     int tmdb_id;                      /* part of the poster's cache name: a new match means a new poster */
     SDL_Texture *tex;                 /* decoded poster, NULL until loaded */
     int tex_state;                    /* 0 = not loaded yet, 1 = loaded, 2 = unavailable, 3 = requested */
@@ -114,7 +117,7 @@ static char g_lan[128] = "";    /* last address found by LAN discovery */
 static char g_remote[128] = ""; /* the server's Tailscale address, learned at home */
 static int g_port = 8484;
 static int g_is_remote;
-static TTF_Font *g_font, *g_small, *g_tiny;
+static TTF_Font *g_big, *g_font, *g_small, *g_tiny;
 
 static const char *kind_path(Kind k) { return k == KIND_MOVIE ? "movies" : "shows"; }
 
@@ -340,6 +343,24 @@ static Item *fetch_items(Kind kind, int *count) {
 /* fetch_continue reads the Continue Watching row: movies stopped part way
  * and the next episode of shows being watched, most recent first. An older
  * server has no /continue; the tab then stays empty. */
+static void parse_continue(cJSON *c, Item *it) {
+    char s[16];
+    jstr(c, "poster_of", s, sizeof s);
+    it->kind = strcmp(s, "show") == 0 ? KIND_SHOW : KIND_MOVIE;
+    it->id = jint(c, "poster_id");
+    jstr(c, "kind", s, sizeof s);
+    it->episode = strcmp(s, "episode") == 0;
+    it->play_id = jint(c, "id");
+    jstr(c, "title", it->title, sizeof it->title);
+    jstr(c, "subtitle", it->subtitle, sizeof it->subtitle);
+    jstr(c, "poster", it->poster, sizeof it->poster);
+    it->tmdb_id = jint(c, "tmdb_id");
+    it->resume_s = jint(c, "resume_s");
+    it->runtime_s = jint(c, "runtime_s");
+    /* the movie's or show's backdrop, for the home screen */
+    snprintf(it->backdrop, sizeof it->backdrop, "/api/v1/%s/%ld/backdrop", kind_path(it->kind), it->id);
+}
+
 static Item *fetch_continue(int *count) {
     *count = 0;
     char *body = flex_get(g_host, g_port, "/api/v1/continue?limit=24");
@@ -348,26 +369,210 @@ static Item *fetch_continue(int *count) {
     free(body);
     int n = cJSON_IsArray(arr) ? cJSON_GetArraySize(arr) : 0;
     Item *list = calloc(n ? n : 1, sizeof *list);
-    for (int i = 0; i < n; i++) {
-        cJSON *c = cJSON_GetArrayItem(arr, i);
-        Item *it = &list[i];
-        char s[16];
-        jstr(c, "poster_of", s, sizeof s);
-        it->kind = strcmp(s, "show") == 0 ? KIND_SHOW : KIND_MOVIE;
-        it->id = jint(c, "poster_id");
-        jstr(c, "kind", s, sizeof s);
-        it->episode = strcmp(s, "episode") == 0;
-        it->play_id = jint(c, "id");
-        jstr(c, "title", it->title, sizeof it->title);
-        jstr(c, "subtitle", it->subtitle, sizeof it->subtitle);
-        jstr(c, "poster", it->poster, sizeof it->poster);
-        it->tmdb_id = jint(c, "tmdb_id");
-        it->resume_s = jint(c, "resume_s");
-        it->runtime_s = jint(c, "runtime_s");
-    }
+    for (int i = 0; i < n; i++) parse_continue(cJSON_GetArrayItem(arr, i), &list[i]);
     cJSON_Delete(arr);
     *count = n;
     return list;
+}
+
+/* ---------- home ----------
+ * GET /api/v1/home: rows of posters (Continue Watching first) under the
+ * focused title's backdrop and details. The cards of every row sit in one
+ * list, lists[TAB_HOME], so posters and Cross work as on the other tabs; a
+ * row is a stretch of that list. */
+
+#define MAX_HOME_ROWS 40
+#define HOME_TOP 540 /* the focused row's name; the cards start 40 px below */
+#define HCARD_W 180
+#define HCARD_H 270
+#define HGAP 20
+#define HROW_H (40 + HCARD_H + 40)
+#define HCOLS ((SCREEN_W - MARGIN_X + HGAP) / (HCARD_W + HGAP)) /* whole cards in view */
+#define BACKDROP_X 640                                            /* 1280x720 backdrops, drawn unscaled */
+
+typedef struct {
+    char title[96];
+    int start, n;   /* the row's cards in the list */
+    int col, first; /* focused card, first card in view */
+} HomeRow;
+
+static void keep_posters(Item *old, int old_n, Item *fresh, int n);
+static void want_poster(Item *m);
+
+static HomeRow g_rows[MAX_HOME_ROWS];
+static int g_nrows, g_row;
+static SDL_Texture *g_backdrop, *g_fade;
+static char g_bd_kind; /* the backdrop wanted / shown: 'b' movie, 'd' show */
+static long g_bd_id;
+static Uint32 g_moved; /* when the home focus last moved */
+
+static void parse_card(cJSON *c, Item *it) {
+    char s[16];
+    jstr(c, "kind", s, sizeof s);
+    it->kind = strcmp(s, "show") == 0 ? KIND_SHOW : KIND_MOVIE;
+    it->id = jint(c, "id");
+    jstr(c, "title", it->title, sizeof it->title);
+    jstr(c, "poster", it->poster, sizeof it->poster);
+    jstr(c, "backdrop", it->backdrop, sizeof it->backdrop);
+    jstr(c, "overview", it->overview, sizeof it->overview);
+    it->year = jint(c, "year");
+    it->resume_s = jint(c, "resume_s");
+    it->runtime_s = jint(c, "runtime_s");
+    it->seasons = jint(c, "seasons");
+    it->watched = cJSON_IsTrue(cJSON_GetObjectItem(c, "watched"));
+    cJSON *g;
+    int ng = 0;
+    cJSON_ArrayForEach(g, cJSON_GetObjectItem(c, "genres")) {
+        if (!cJSON_IsString(g) || ng++ == 3) break;
+        size_t len = strlen(it->genres);
+        snprintf(it->genres + len, sizeof it->genres - len, "%s%s", len ? ", " : "", g->valuestring);
+    }
+}
+
+/* fetch_home reads the home screen; no rows from a server without /home. */
+static Item *fetch_home(int *count) {
+    *count = 0;
+    g_nrows = 0;
+    char *body = flex_get(g_host, g_port, "/api/v1/home");
+    if (!body) return NULL;
+    cJSON *j = cJSON_Parse(body);
+    free(body);
+    if (!cJSON_IsObject(j)) {
+        cJSON_Delete(j);
+        return NULL;
+    }
+    cJSON *cont = cJSON_GetObjectItem(j, "continue"), *rows = cJSON_GetObjectItem(j, "rows"), *r, *c;
+    int total = cJSON_GetArraySize(cont);
+    cJSON_ArrayForEach(r, rows) total += cJSON_GetArraySize(cJSON_GetObjectItem(r, "items"));
+    Item *list = calloc(total ? total : 1, sizeof *list);
+    int n = 0;
+    if (cJSON_GetArraySize(cont) > 0) {
+        HomeRow *hr = &g_rows[g_nrows++];
+        memset(hr, 0, sizeof *hr);
+        snprintf(hr->title, sizeof hr->title, "Continue Watching");
+        cJSON_ArrayForEach(c, cont) parse_continue(c, &list[n++]);
+        hr->n = n;
+    }
+    cJSON_ArrayForEach(r, rows) {
+        if (g_nrows == MAX_HOME_ROWS) break;
+        HomeRow *hr = &g_rows[g_nrows];
+        memset(hr, 0, sizeof *hr);
+        jstr(r, "title", hr->title, sizeof hr->title);
+        hr->start = n;
+        cJSON_ArrayForEach(c, cJSON_GetObjectItem(r, "items")) parse_card(c, &list[n++]);
+        hr->n = n - hr->start;
+        if (hr->n) g_nrows++;
+    }
+    cJSON_Delete(j);
+    *count = n;
+    return list;
+}
+
+/* home_sel is the focused card's place in lists[TAB_HOME]. */
+static int home_sel(void) { return g_nrows ? g_rows[g_row].start + g_rows[g_row].col : 0; }
+
+/* refresh_home re-fetches the home screen, keeping posters, the focused row
+ * and the place in each row, found by name (a Continue Watching row coming
+ * or going moves the others). */
+static void refresh_home(Item **list, int *n) {
+    HomeRow was[MAX_HOME_ROWS];
+    int nwas = g_nrows;
+    char focused[96] = "";
+    if (g_nrows) snprintf(focused, sizeof focused, "%s", g_rows[g_row].title);
+    memcpy(was, g_rows, sizeof was);
+    Item *old = *list;
+    int old_n = *n;
+    *list = fetch_home(n);
+    keep_posters(old, old_n, *list, *n);
+    g_row = 0;
+    for (int i = 0; i < g_nrows; i++) {
+        HomeRow *r = &g_rows[i];
+        for (int k = 0; k < nwas; k++)
+            if (strcmp(was[k].title, r->title) == 0) {
+                r->col = was[k].col < r->n ? was[k].col : r->n - 1;
+                r->first = was[k].first <= r->col ? was[k].first : r->col;
+                break;
+            }
+        if (strcmp(r->title, focused) == 0) g_row = i;
+    }
+}
+
+static void move_home(int button) {
+    if (!g_nrows) return;
+    HomeRow *r = &g_rows[g_row];
+    switch (button) {
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT: if (r->col > 0) r->col--; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: if (r->col + 1 < r->n) r->col++; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_UP: if (g_row > 0) g_row--; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN: if (g_row + 1 < g_nrows) g_row++; break;
+    }
+    r = &g_rows[g_row];
+    if (r->col < r->first) r->first = r->col;
+    if (r->col >= r->first + HCOLS) r->first = r->col - HCOLS + 1;
+    g_moved = SDL_GetTicks();
+}
+
+/* want_backdrop asks for the focused title's backdrop once the focus has
+ * rested on it a moment, so scrolling along a row doesn't fetch every one.
+ * A title without one keeps the last backdrop up. */
+static void want_backdrop(Item *f) {
+    if (!f || !f->backdrop[0] || SDL_GetTicks() - g_moved < 200) return;
+    char k = f->kind == KIND_MOVIE ? 'b' : 'd';
+    if (k == g_bd_kind && f->id == g_bd_id) return;
+    g_bd_kind = k;
+    g_bd_id = f->id;
+    posters_want(k, f->id, f->tmdb_id, f->backdrop);
+}
+
+/* load_home_posters wants the posters of the rows on screen (and the row
+ * above), the focused row's last so it is served first, and lets go of
+ * posters far away once many are held. */
+static void load_home_posters(Item *list, int n) {
+    if (!list || !g_nrows) return;
+    const int order[] = {2, 1, -1, 0};
+    for (int k = 0; k < 4; k++) {
+        int r = g_row + order[k];
+        if (r < 0 || r >= g_nrows) continue;
+        HomeRow *hr = &g_rows[r];
+        for (int c = hr->first + HCOLS + 1; c >= hr->first; c--)
+            if (c < hr->n) want_poster(&list[hr->start + c]);
+    }
+    int cached = 0;
+    for (int i = 0; i < n; i++) cached += list[i].tex != NULL;
+    if (cached <= 3 * MAX_CACHED_POSTERS / 2) return;
+    int lo = g_rows[g_row > 0 ? g_row - 1 : 0].start;
+    int top = g_row + 2 < g_nrows ? g_row + 2 : g_nrows - 1;
+    int hi = g_rows[top].start + g_rows[top].n;
+    for (int i = 0; i < n; i++)
+        if (list[i].tex && (i < lo || i >= hi)) {
+            SDL_DestroyTexture(list[i].tex);
+            list[i].tex = NULL;
+            list[i].tex_state = 0;
+        }
+}
+
+/* make_fade is drawn over the backdrop: it fades in from the background on
+ * the left, where the details are, out again at the bottom, under the rows,
+ * and darkens the top under the tabs. */
+static SDL_Texture *make_fade(SDL_Renderer *ren) {
+    SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 1280, 720, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!s) return NULL;
+    for (int y = 0; y < 720; y++) {
+        Uint32 *px = (Uint32 *)((Uint8 *)s->pixels + y * s->pitch);
+        for (int x = 0; x < 1280; x++) {
+            int a = x < 640 ? 255 - x * 255 / 640 : 0;
+            int b = y > 420 ? (y - 420) * 255 / 300 : 0;
+            int t = y < 150 ? 200 - y * 200 / 150 : 0;
+            if (b > a) a = b;
+            if (t > a) a = t;
+            if (a < 60) a = 60; /* a little darker throughout, for the text */
+            px[x] = SDL_MapRGBA(s->format, C_BG.r, C_BG.g, C_BG.b, (Uint8)a);
+        }
+    }
+    SDL_Texture *t = SDL_CreateTextureFromSurface(ren, s);
+    SDL_FreeSurface(s);
+    if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+    return t;
 }
 
 /* keep_posters moves decoded posters from old cards to the same items in a
@@ -481,6 +686,14 @@ static void take_posters(SDL_Renderer *ren, Item **lists, int *counts) {
     long id;
     SDL_Surface *s;
     while (posters_take(&kind, &id, &s)) {
+        if (kind == 'b' || kind == 'd') { /* a home backdrop: only the latest one wanted counts */
+            if (kind == g_bd_kind && id == g_bd_id) {
+                if (g_backdrop) SDL_DestroyTexture(g_backdrop);
+                g_backdrop = s ? SDL_CreateTextureFromSurface(ren, s) : NULL;
+            }
+            if (s) SDL_FreeSurface(s);
+            continue;
+        }
         for (int t = 0; t < TABS; t++)
             for (int i = 0; i < counts[t]; i++) {
                 Item *m = &lists[t][i];
@@ -802,14 +1015,19 @@ static void draw_keyboard(SDL_Renderer *ren, int nresults) {
         }
 }
 
-static void draw_grid(SDL_Renderer *ren, Tab tab, Item *list, int n, int sel, int first_row, const char *status,
-                      int have_continue) {
-    SDL_SetRenderDrawColor(ren, C_BG.r, C_BG.g, C_BG.b, 255);
-    SDL_RenderClear(ren);
+/* tab_shown: Home needs rows; Continue needs items and is a row of Home when that is there. */
+static int tab_shown(Tab t, const int *counts) {
+    if (t == TAB_HOME) return counts[TAB_HOME] > 0;
+    if (t == TAB_CONTINUE) return counts[TAB_CONTINUE] > 0 && counts[TAB_HOME] == 0;
+    return 1;
+}
+
+/* draw_header: the tabs, the server line and an offered update. */
+static void draw_header(SDL_Renderer *ren, Tab tab, const char *status, const int *counts) {
     int x = MARGIN_X;
     x += draw_text(ren, g_font, "FLEX", x, 50, C_FG) + 40;
     for (int t = 0; t < TABS; t++)
-        if (t != TAB_CONTINUE || have_continue)
+        if (tab_shown((Tab)t, counts))
             x += draw_text(ren, g_font, tab_names[t], x, 50, t == (int)tab ? C_FG : C_MUTED) + 30;
     draw_text(ren, g_tiny, "L1 / R1 switch  ·  Square search", SCREEN_W - MARGIN_X - 290, 62, C_MUTED);
     draw_text(ren, g_tiny, "v" FLEX_VERSION, SCREEN_W - MARGIN_X - 290, 36, C_MUTED);
@@ -819,6 +1037,76 @@ static void draw_grid(SDL_Renderer *ren, Tab tab, Item *list, int n, int sel, in
         snprintf(up, sizeof up, "Update %s ready  ·  press Options to install", g_update.version);
         draw_text(ren, g_small, up, MARGIN_X + sw + 40, 108, C_ACCENT);
     }
+}
+
+static void draw_home_card(SDL_Renderer *ren, Item *m, int x, int y, int selected) {
+    SDL_Rect card = {x, y, HCARD_W, HCARD_H};
+    if (selected) fill(ren, (SDL_Rect){x - 5, y - 5, HCARD_W + 10, HCARD_H + 10}, C_ACCENT);
+    if (m->tex) {
+        SDL_RenderCopy(ren, m->tex, NULL, &card);
+    } else {
+        fill(ren, card, C_PANEL);
+        draw_wrapped(ren, g_tiny, m->title, card, C_MUTED, 1);
+    }
+    if ((m->kind == KIND_MOVIE || m->episode) && !m->watched && m->resume_s > 0 && m->runtime_s > 0) {
+        int pct = 100 * m->resume_s / m->runtime_s;
+        if (pct > 100) pct = 100;
+        fill(ren, (SDL_Rect){x + 8, y + HCARD_H - 14, HCARD_W - 16, 5}, (SDL_Color){0, 0, 0, 160});
+        fill(ren, (SDL_Rect){x + 8, y + HCARD_H - 14, (HCARD_W - 16) * pct / 100, 5}, C_ACCENT);
+    }
+}
+
+/* draw_home: the focused title's backdrop and details on top, its row and
+ * the next one below. */
+static void draw_home(SDL_Renderer *ren, Item *list, int n, const char *status, const int *counts) {
+    SDL_SetRenderDrawColor(ren, C_BG.r, C_BG.g, C_BG.b, 255);
+    SDL_RenderClear(ren);
+    if (g_backdrop) {
+        SDL_Rect d = {BACKDROP_X, 0, 1280, 720};
+        SDL_RenderCopy(ren, g_backdrop, NULL, &d);
+        if (g_fade) SDL_RenderCopy(ren, g_fade, NULL, &d);
+    }
+    draw_header(ren, TAB_HOME, status, counts);
+    Item *f = n && g_nrows ? &list[home_sel()] : NULL;
+    if (f) {
+        draw_text(ren, g_tiny, g_rows[g_row].title, MARGIN_X, 180, C_ACCENT);
+        draw_text_fit(ren, g_big, f->title, MARGIN_X, 204, SCREEN_W - 2 * MARGIN_X, C_FG);
+        char meta[256] = "";
+        if (f->episode) {
+            snprintf(meta, sizeof meta, "%s", f->subtitle[0] ? f->subtitle : "next episode");
+        } else {
+            if (f->year) snprintf(meta, sizeof meta, "%d", f->year);
+            if (f->genres[0]) snprintf(meta + strlen(meta), sizeof meta - strlen(meta), "%s%s", meta[0] ? "  ·  " : "", f->genres);
+            if (f->kind == KIND_SHOW && f->seasons)
+                snprintf(meta + strlen(meta), sizeof meta - strlen(meta), "  ·  %d season%s", f->seasons, f->seasons == 1 ? "" : "s");
+            else if (f->runtime_s)
+                snprintf(meta + strlen(meta), sizeof meta - strlen(meta), "  ·  %d min", (f->runtime_s + 30) / 60);
+            if (f->watched) snprintf(meta + strlen(meta), sizeof meta - strlen(meta), "  ·  watched");
+        }
+        draw_text_fit(ren, g_small, meta, MARGIN_X, 284, 1100, C_MUTED);
+        draw_wrapped(ren, g_small, f->overview, (SDL_Rect){MARGIN_X, 326, 900, 150}, C_FG, 0);
+    }
+    for (int k = 0; k < 2 && g_row + k < g_nrows; k++) {
+        HomeRow *r = &g_rows[g_row + k];
+        int y = HOME_TOP + k * HROW_H;
+        draw_text(ren, g_small, r->title, MARGIN_X, y, k == 0 ? C_FG : C_MUTED);
+        for (int c = r->first; c < r->n && c <= r->first + HCOLS; c++)
+            draw_home_card(ren, &list[r->start + c], MARGIN_X + (c - r->first) * (HCARD_W + HGAP), y + 40,
+                           k == 0 && c == r->col);
+    }
+    if (g_row + 2 < g_nrows || g_row > 0) {
+        char pos[48];
+        snprintf(pos, sizeof pos, "row %d of %d", g_row + 1, g_nrows);
+        draw_text(ren, g_tiny, pos, SCREEN_W - MARGIN_X - 120, HOME_TOP + 4, C_MUTED);
+    }
+    SDL_RenderPresent(ren);
+}
+
+static void draw_grid(SDL_Renderer *ren, Tab tab, Item *list, int n, int sel, int first_row, const char *status,
+                      const int *counts) {
+    SDL_SetRenderDrawColor(ren, C_BG.r, C_BG.g, C_BG.b, 255);
+    SDL_RenderClear(ren);
+    draw_header(ren, tab, status, counts);
     if (tab == TAB_SEARCH) draw_keyboard(ren, n);
 
     int rv = rows_visible(tab), top = grid_top(tab), focus = tab != TAB_SEARCH || !kb_focus;
@@ -827,7 +1115,7 @@ static void draw_grid(SDL_Renderer *ren, Tab tab, Item *list, int n, int sel, in
         int col = i % COLS, row = i / COLS - first_row;
         draw_card(ren, &list[i], MARGIN_X + col * (CARD_W + GAP_X), top + row * ROW_H, focus && i == sel);
     }
-    const char *empty[TABS] = {"Nothing to continue.", "No movies. Add folders on the PC and scan.",
+    const char *empty[TABS] = {"", "Nothing to continue.", "No movies. Add folders on the PC and scan.",
                                "No TV shows found.", g_query[0] ? "Nothing matches." : ""};
     if (n == 0 && empty[tab][0]) draw_text(ren, g_font, empty[tab], MARGIN_X, top, C_MUTED);
 
@@ -1113,10 +1401,10 @@ static int move_kb(int button) {
     return 1;
 }
 
-/* next_tab steps L1/R1 through the tabs, skipping an empty Continue. */
-static Tab next_tab(Tab t, int dir, int have_continue) {
+/* next_tab steps L1/R1 through the tabs that are shown. */
+static Tab next_tab(Tab t, int dir, const int *counts) {
     do t = (Tab)((t + dir + TABS) % TABS);
-    while (t == TAB_CONTINUE && !have_continue);
+    while (!tab_shown(t, counts));
     return t;
 }
 
@@ -1195,13 +1483,15 @@ int main(int argc, char **argv) {
             fprintf(stderr, "FLEX: controller %d: %s\n", i, gc ? SDL_GameControllerName(gc) : SDL_GetError());
         }
 
+    g_big = TTF_OpenFont(FONT_PATH, 56);
     g_font = TTF_OpenFont(FONT_PATH, 36);
     g_small = TTF_OpenFont(FONT_PATH, 22);
     g_tiny = TTF_OpenFont(FONT_PATH, 18);
+    if (!g_big) g_big = TTF_OpenFont("assets/DejaVuSans.ttf", 56);
     if (!g_font) g_font = TTF_OpenFont("assets/DejaVuSans.ttf", 36);
     if (!g_small) g_small = TTF_OpenFont("assets/DejaVuSans.ttf", 22);
     if (!g_tiny) g_tiny = TTF_OpenFont("assets/DejaVuSans.ttf", 18);
-    if (!g_font || !g_small || !g_tiny) {
+    if (!g_big || !g_font || !g_small || !g_tiny) {
         fprintf(stderr, "font missing: put DejaVuSans.ttf in " APP_DIR "/assets (%s)\n", TTF_GetError());
         return 1;
     }
@@ -1213,8 +1503,10 @@ int main(int argc, char **argv) {
     load_picture();
     load_int(LINK_FILE, &g_link_kbps);
     if (getenv("FLEX_TEST_PATTERN")) test_pattern(ren);
+    g_fade = make_fade(ren);
     char status[256] = "Looking for a FLEX server…";
-    draw_grid(ren, TAB_MOVIES, NULL, 0, 0, 0, status, 0);
+    int none[TABS] = {0};
+    draw_grid(ren, TAB_MOVIES, NULL, 0, 0, 0, status, none);
     fprintf(stderr, "FLEX: first frame presented\n");
 
     Item *lists[TABS] = {NULL};
@@ -1230,10 +1522,12 @@ int main(int argc, char **argv) {
         lists[TAB_MOVIES] = fetch_items(KIND_MOVIE, &counts[TAB_MOVIES]);
         lists[TAB_SHOWS] = fetch_items(KIND_SHOW, &counts[TAB_SHOWS]);
         lists[TAB_CONTINUE] = fetch_continue(&counts[TAB_CONTINUE]);
-        fprintf(stderr, "FLEX: %d movies, %d shows, %d to continue\n", counts[TAB_MOVIES], counts[TAB_SHOWS],
-                counts[TAB_CONTINUE]);
+        lists[TAB_HOME] = fetch_home(&counts[TAB_HOME]);
+        fprintf(stderr, "FLEX: %d movies, %d shows, %d to continue, %d home rows\n", counts[TAB_MOVIES],
+                counts[TAB_SHOWS], counts[TAB_CONTINUE], g_nrows);
         set_status(status, sizeof status, counts[TAB_MOVIES], counts[TAB_SHOWS]);
-        if (counts[TAB_CONTINUE]) tab = TAB_CONTINUE;
+        if (counts[TAB_HOME]) tab = TAB_HOME;
+        else if (counts[TAB_CONTINUE]) tab = TAB_CONTINUE;
         posters_server(g_host, g_port);
         prefetch_posters(lists[TAB_MOVIES], counts[TAB_MOVIES]);
         prefetch_posters(lists[TAB_SHOWS], counts[TAB_SHOWS]);
@@ -1255,9 +1549,13 @@ int main(int argc, char **argv) {
         take_posters(ren, lists, counts);
         if (in_show) {
             draw_episodes(ren, &sv, list && *sel < n ? &list[*sel] : NULL, ep_sel, ep_first);
+        } else if (tab == TAB_HOME) {
+            load_home_posters(list, n);
+            want_backdrop(n ? &list[home_sel()] : NULL);
+            draw_home(ren, list, n, status, counts);
         } else {
             load_visible_posters(list, n, *first_row, rows_visible(tab));
-            draw_grid(ren, tab, list, n, *sel, *first_row, status, counts[TAB_CONTINUE] > 0);
+            draw_grid(ren, tab, list, n, *sel, *first_row, status, counts);
         }
 
         SDL_Event e;
@@ -1279,6 +1577,10 @@ int main(int argc, char **argv) {
                     held = -1;
                     refresh_items(KIND_SHOW, &lists[TAB_SHOWS], &counts[TAB_SHOWS]);
                     refresh_continue(&lists[TAB_CONTINUE], &counts[TAB_CONTINUE]);
+                    if (tab == TAB_HOME) {
+                        refresh_home(&lists[TAB_HOME], &counts[TAB_HOME]);
+                        sels[TAB_HOME] = home_sel();
+                    }
                     break;
                 case SDL_CONTROLLER_BUTTON_A:
                     if (ep_sel < sv.n && !sv.rows[ep_sel].header) {
@@ -1298,7 +1600,10 @@ int main(int argc, char **argv) {
             }
 
             if (is_dpad(button)) {
-                if (typing) {
+                if (tab == TAB_HOME) {
+                    move_home(button);
+                    *sel = home_sel();
+                } else if (typing) {
                     if (!move_kb(button) && n > 0) kb_focus = 0; /* Down off the keyboard: the results */
                 } else if (tab == TAB_SEARCH && button == SDL_CONTROLLER_BUTTON_DPAD_UP && *sel < COLS) {
                     kb_focus = 1; /* Up off the top row: back to the keyboard */
@@ -1312,7 +1617,7 @@ int main(int argc, char **argv) {
             switch (button) {
             case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
             case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
-                tab = next_tab(tab, button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER ? -1 : 1, counts[TAB_CONTINUE] > 0);
+                tab = next_tab(tab, button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER ? -1 : 1, counts);
                 if (tab == TAB_SEARCH && !counts[TAB_SEARCH]) kb_focus = 1;
                 break;
             case SDL_CONTROLLER_BUTTON_X: /* square: search, or delete while typing */
@@ -1340,6 +1645,7 @@ int main(int argc, char **argv) {
                     refresh_items(KIND_MOVIE, &lists[TAB_MOVIES], &counts[TAB_MOVIES]);
                     refresh_items(KIND_SHOW, &lists[TAB_SHOWS], &counts[TAB_SHOWS]);
                     refresh_continue(&lists[TAB_CONTINUE], &counts[TAB_CONTINUE]);
+                    refresh_home(&lists[TAB_HOME], &counts[TAB_HOME]);
                     run_search(lists, counts);
                     set_status(status, sizeof status, counts[TAB_MOVIES], counts[TAB_SHOWS]);
                     posters_server(g_host, g_port);
@@ -1351,7 +1657,8 @@ int main(int argc, char **argv) {
                     if (sels[k] >= counts[k]) sels[k] = counts[k] ? counts[k] - 1 : 0;
                     firsts[k] = 0;
                 }
-                if (tab == TAB_CONTINUE && !counts[TAB_CONTINUE]) tab = TAB_MOVIES;
+                sels[TAB_HOME] = home_sel();
+                if (!tab_shown(tab, counts)) tab = counts[TAB_HOME] ? TAB_HOME : TAB_MOVIES;
                 break;
             case SDL_CONTROLLER_BUTTON_A:
                 if (typing) {
@@ -1372,11 +1679,18 @@ int main(int argc, char **argv) {
                     refresh_items(KIND_MOVIE, &lists[TAB_MOVIES], &counts[TAB_MOVIES]);
                     refresh_continue(&lists[TAB_CONTINUE], &counts[TAB_CONTINUE]);
                     if (m.episode) refresh_items(KIND_SHOW, &lists[TAB_SHOWS], &counts[TAB_SHOWS]);
+                    if (tab == TAB_HOME) {
+                        int from_continue = g_nrows && strcmp(g_rows[g_row].title, "Continue Watching") == 0;
+                        refresh_home(&lists[TAB_HOME], &counts[TAB_HOME]);
+                        /* what was just played is first in Continue Watching now */
+                        if (from_continue && g_nrows) g_rows[g_row].col = g_rows[g_row].first = 0;
+                    }
                     if (tab == TAB_SEARCH) run_search(lists, counts);
                     for (int k = 0; k < TABS; k++)
                         if (sels[k] >= counts[k]) sels[k] = counts[k] ? counts[k] - 1 : 0;
                     if (tab == TAB_CONTINUE) sels[tab] = firsts[tab] = 0; /* what was just played is first now */
-                    if (tab == TAB_CONTINUE && !counts[TAB_CONTINUE]) tab = TAB_MOVIES;
+                    sels[TAB_HOME] = home_sel();
+                    if (!tab_shown(tab, counts)) tab = counts[TAB_HOME] ? TAB_HOME : TAB_MOVIES;
                 } else {
                     ep_sel = fetch_show(m.id, &sv);
                     ep_first = ep_sel > EP_ROWS_VISIBLE - 2 ? ep_sel - 2 : 0;
@@ -1388,7 +1702,10 @@ int main(int argc, char **argv) {
         }
         if (held >= 0 && SDL_GetTicks() >= next_repeat) {
             if (in_show) move_ep(&sv, &ep_sel, &ep_first, held == SDL_CONTROLLER_BUTTON_DPAD_UP ? -1 : 1);
-            else if (tab == TAB_SEARCH && kb_focus) move_kb(held);
+            else if (tab == TAB_HOME) {
+                move_home(held);
+                sels[TAB_HOME] = home_sel();
+            } else if (tab == TAB_SEARCH && kb_focus) move_kb(held);
             else move_sel(&sels[tab], &firsts[tab], counts[tab], held, rows_visible(tab));
             next_repeat = SDL_GetTicks() + 110;
         }
@@ -1397,6 +1714,9 @@ int main(int argc, char **argv) {
 
     free(sv.rows);
     for (int t = 0; t < TABS; t++) free_items(lists[t], counts[t]);
+    if (g_backdrop) SDL_DestroyTexture(g_backdrop);
+    if (g_fade) SDL_DestroyTexture(g_fade);
+    TTF_CloseFont(g_big);
     TTF_CloseFont(g_font);
     TTF_CloseFont(g_small);
     TTF_CloseFont(g_tiny);
