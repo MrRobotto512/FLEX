@@ -159,6 +159,13 @@ static int probe(const char *host) {
 
 static int find_server(void) {
     load_saved_server();
+    /* FLEX_SERVER=host:port (via websrv's env=) skips discovery and leaves
+     * the saved address alone, for trying a test server */
+    const char *fixed = getenv("FLEX_SERVER");
+    if (fixed && sscanf(fixed, "%127[^:]:%d", g_lan, &g_port) >= 1) {
+        g_is_remote = 0;
+        return probe(g_lan) ? 0 : -1;
+    }
     char found[128];
     int port = g_port;
     if (flex_discover(found, sizeof found, &port, 1500) == 0) {
