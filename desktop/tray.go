@@ -30,6 +30,7 @@ func (a *App) trayReady() {
 
 	open := systray.AddMenuItem("Open FLEX", "Show the settings window")
 	browse := systray.AddMenuItem("Open library in browser", "")
+	playerItem := systray.AddMenuItem("Open player (full screen)", "The TV-sized player on this PC; Q or Alt+F4 leaves it")
 	scan := systray.AddMenuItem("Scan library now", "")
 	systray.AddSeparator()
 	status := systray.AddMenuItem("Starting…", "")
@@ -48,6 +49,10 @@ func (a *App) trayReady() {
 				a.ShowWindow()
 			case <-browse.ClickedCh:
 				a.OpenLibrary()
+			case <-playerItem.ClickedCh:
+				if err := a.OpenPlayer(); err != nil {
+					a.log.Warn("player", "err", err)
+				}
 			case <-scan.ClickedCh:
 				a.StartScan()
 			case <-remote.ClickedCh:

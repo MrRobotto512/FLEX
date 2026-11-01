@@ -47,7 +47,12 @@
 <div class="row" style="margin-top:12px">
   <button id="scan">Scan now</button>
   <button id="open">Open library in browser</button>
+  <button id="player">Open player (full screen)</button>
 </div>
+
+<h2>Player</h2>
+<p class="note">The full-screen player shows this PC's library (and the other FLEX PCs') on a TV: the keyboard, a remote or a game controller moves around, <b>C</b> casts to a Chromecast, <b>Q</b> or Alt+F4 leaves. 4K and HEVC play as they are when this PC can decode them (HEVC needs Microsoft's "HEVC Video Extensions"); the rest is converted by the PC that has the file.</p>
+<div class="row"><label class="check"><input type="checkbox" id="player_at_start"> Open the player when FLEX starts (a PC that lives under the TV; tick "Start FLEX with Windows" too)</label></div>
 
 <h2>Server</h2>
 <div class="row"><label>Name</label><input id="name"></div>
@@ -120,7 +125,7 @@ const encoderNames = {
   h264_nvenc: 'NVIDIA GPU (NVENC)', h264_qsv: 'Intel GPU (QuickSync)', h264_amf: 'AMD GPU (AMF)',
   h264_mf: 'GPU through Windows', libx264: 'CPU (no usable GPU)',
 };
-const fields = ['name','http_port','tmdb_key','ai_provider','ai_key','ai_model','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher','link_servers','prep','topaz_dir','topaz_model'];
+const fields = ['name','http_port','tmdb_key','ai_provider','ai_key','ai_model','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher','link_servers','prep','topaz_dir','topaz_model','player_at_start'];
 
 async function load() {
   settings = await App().GetSettings();
@@ -255,6 +260,7 @@ $('add').onclick = async () => { const p = await App().PickFolder('Add a movie f
 $('addtv').onclick = async () => { const p = await App().PickFolder('Add a TV show folder'); if (p) { (settings.tv_library ||= []).push(p); renderFolders(); } };
 $('scan').onclick = () => App().StartScan();
 $('open').onclick = () => App().OpenLibrary();
+$('player').onclick = () => App().OpenPlayer();
 $('ts_signin').onclick = () => App().TailscaleSignIn();
 $('up_check').onclick = async () => { $('up_status').textContent = 'Checking…'; renderUpdate(await App().CheckUpdate()); };
 $('up_install').onclick = async () => {

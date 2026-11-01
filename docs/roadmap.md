@@ -59,7 +59,8 @@ Build order, each step produces something you can run.
    - [x] season prep: the AI's seasonal row picks SD titles, each PC upscales them ahead of time (Topaz Video AI's ffmpeg when installed, else the shaders) into direct-play 1080p files, removed after the season; add/remove by hand in the window
    - [x] Android / Android TV app (`android/`): the web client in a full-screen WebView, UDP discovery with the Tailscale address as the fallback, remote keys mapped to the page, offers each release's APK; built and signed in CI
    - [ ] PS5 home screen from `/home`
-   - [ ] Windows media-PC player: the PS5 SDL2/FFmpeg app ported, shipped in each release, self-updating
+   - [x] Windows media-PC player inside FLEX.exe (`--player`: the web client full screen in WebView2, GPU decoding, 4K `player` profile, controller input, open-at-start setting), instead of porting the PS5 app
+   - [x] Chromecast from every client: the server discovers the devices and casts the `cast` profile stream, remote in the web client (C)
    - [x] verified on hardware: seek
    - [ ] verified on hardware: tray on the library PC, remote from a phone, reboot + rejailbreak
 7. **Later**

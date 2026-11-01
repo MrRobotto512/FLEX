@@ -32,6 +32,19 @@ Transcoding uses the GPU when it can: NVIDIA NVENC, Intel QuickSync, AMD AMF, th
 
 **Upscaling:** Triangle on the PS5 turns server upscaling on or off (remembered). At home each FLEX PC upscales old SD and 720p video with AI on its own GPU, when the GPU is fast enough: Anime4K for cartoons, FSRCNNX for everything else. FLEX downloads both (about 1 MB) on the first start and tests them; the window shows "AI upscaling: …" when they passed. Over Tailscale, and on GPUs that are too slow, it upscales the plain way.
 
+## A Windows PC under the TV (media PC)
+
+The same `FLEX.exe` is the player. Install it on the media PC as above (it needs no movie folders of its own: with **Show the movies and shows of the other FLEX PCs** ticked it lists the other PCs' libraries and they do the converting), then:
+
+- **Open player (full screen)** in the window or the tray menu shows the library on the TV: arrow keys or a game controller move around, Enter plays, Backspace/Escape goes back, Tab switches Home → Movies → TV, **C** casts to a Chromecast, **Q** or Alt+F4 leaves.
+- Tick **Open the player when FLEX starts** together with **Start FLEX with Windows** and the TV goes straight to FLEX after the PC boots.
+
+The player decodes with the PC's GPU (through the Edge engine Windows ships with): 4K and H.264 play as they are, HEVC too once Microsoft's "HEVC Video Extensions" is installed from the Store; everything else is converted by the PC that has the file (up to 4K for the player).
+
+## Chromecast
+
+Press **C** on a title in the browser, the Android app or the player (or while it plays) and pick a Chromecast or a TV with Chromecast built in. The FLEX PC finds the devices on the home network itself and sends the stream (H.264/AAC, converted when the file isn't an MP4 the device plays), so this works from any client, not just Chrome. The same screen is the remote: Enter pauses, arrows seek, Backspace stops. Progress is saved as usual, so the title can be picked up on the PS5 or anywhere else.
+
 ## Android TV boxes, phones and tablets
 
 1. Download `FLEX-android.apk` from the same release and open it on the device (a USB stick or the box's browser, or `adb install FLEX-android.apk`). Android asks once to allow installing from that source.

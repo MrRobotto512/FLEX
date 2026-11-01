@@ -29,6 +29,11 @@ type profile struct {
 var profiles = map[string]profile{
 	"ps5":    {Name: "ps5", MaxHeight: 1080, MaxBitrate: 12_000_000, AudioBits: "192k"},
 	"remote": {Name: "remote", MaxHeight: 1080, MaxBitrate: 6_000_000, AudioBits: "128k"},
+	// the Windows player (FLEX.exe --player): a media PC with hardware
+	// decoding on a wired link, 4K when the file is
+	"player": {Name: "player", MaxHeight: 2160, MaxBitrate: 25_000_000, AudioBits: "256k"},
+	// a Chromecast: H.264 up to 1080p, AAC stereo, HLS when not MP4
+	"cast": {Name: "cast", MaxHeight: 1080, MaxBitrate: 10_000_000, AudioBits: "192k"},
 }
 
 // Transcoder owns ffmpeg HLS sessions. A session is one ffmpeg process writing
@@ -436,7 +441,12 @@ func (t *Transcoder) videoCodecArgs(r transcodeRequest) []string {
 	br := fmt.Sprintf("%d", p.MaxBitrate)
 	rate := []string{"-b:v", br, "-maxrate", br, "-bufsize", fmt.Sprintf("%d", p.MaxBitrate*2),
 		"-g", "96", "-keyint_min", "96"}
-	common := append(append([]string{}, rate...), "-profile:v", "high", "-level", "4.1")
+	// level 4.1 covers 1080p; a 4K picture (the player profile) needs 5.1
+	level := "4.1"
+	if min(r.Media.Video.Height, p.MaxHeight) > 1080 || (r.Upscale && p.MaxHeight > 1080) {
+		level = "5.1"
+	}
+	common := append(append([]string{}, rate...), "-profile:v", "high", "-level", level)
 	switch t.encoderFor(r) {
 	case "h264_nvenc":
 		return append([]string{"-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-bf", "2"}, common...)

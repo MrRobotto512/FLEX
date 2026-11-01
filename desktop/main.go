@@ -16,9 +16,18 @@ var assets embed.FS
 
 func main() {
 	minimized := false // started by the "Start with Windows" entry, or after an update
-	for _, a := range os.Args[1:] {
+	args := os.Args[1:]
+	for i, a := range args {
 		if a == "--minimized" {
 			minimized = true
+		}
+		if a == "--player" { // the full-screen player: its own process, no server
+			url := ""
+			if i+1 < len(args) {
+				url = args[i+1]
+			}
+			runPlayer(url)
+			return
 		}
 	}
 	afterUpdate(os.Args[1:])
