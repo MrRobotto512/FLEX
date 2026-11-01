@@ -3,7 +3,7 @@
 A full-screen WebView of the server's own web client (`web/`), so phones, tablets and Android TV boxes get the same Home screen, Movies and TV grids and player as a browser, launched from an icon. There is no UI of its own beyond finding the server:
 
 - On the first start it broadcasts for FLEX servers like the PS5 does (`FLEX_DISCOVER` to UDP 7555), opens the one it finds or offers a choice, and remembers it along with its Tailscale address (used when the home address doesn't answer, i.e. away from home). An address can be typed instead (`192.168.0.205:8484`, `flex:8484`).
-- **Hold Back** to pick another server. **Menu** switches Home → Movies → TV (the page's Tab). Play/pause, forward and rewind keys on a remote are passed to the player; the D-pad and OK arrive as arrows and Enter, which the page already handles. Back closes the player or an episode list, and leaves the app from the home screen.
+- **Hold Back** to pick another server. **Menu** switches Home → Movies → TV (the page's Tab); **holding Menu** opens *Cast to…* (the page's C); **Search** focuses the search box. Phones and tablets use the page's own buttons (Cast, Back, the player's control bar on a tap). Play/pause, forward and rewind keys on a remote are passed to the player; the D-pad and OK arrive as arrows and Enter, which the page already handles. Back closes the player or an episode list, and leaves the app from the home screen.
 - When the server runs a newer FLEX than the app, it offers to download that release's `FLEX-android.apk` and install it (Android asks once to allow installs from FLEX). The page itself always comes from the server, so the app rarely needs updating.
 
 ## Building

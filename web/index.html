@@ -17,6 +17,7 @@
   <span id="server" class="muted">connecting…</span>
   <span class="spacer"></span>
   <input id="search" type="search" placeholder="Search" autocomplete="off">
+  <button id="castbtn" title="Cast to… (C)">Cast</button>
   <button id="scan" title="Rescan library">Scan</button>
 </header>
 
@@ -40,6 +41,7 @@
       <p id="show-meta" class="muted"></p>
       <p id="show-overview"></p>
       <p class="muted hint">Enter plays · Backspace returns to the shows</p>
+      <p><button id="show-back">← Back</button></p>
     </div>
   </div>
   <ul id="eplist"></ul>
@@ -50,6 +52,16 @@
   <div id="osd">
     <strong id="osd-title"></strong>
     <span id="osd-info" class="muted"></span>
+  </div>
+  <div id="controls" class="hidden">
+    <button data-act="back" title="Stop (Esc)">✕</button>
+    <button data-act="-60" title="−60 s">−60</button>
+    <button data-act="-10" title="−10 s">−10</button>
+    <button data-act="toggle" title="Pause / play">⏯</button>
+    <button data-act="+10" title="+10 s">+10</button>
+    <button data-act="+60" title="+60 s">+60</button>
+    <span id="controls-time" class="muted"></span>
+    <button data-act="cast" title="Cast to… (C)">Cast</button>
   </div>
 </section>
 

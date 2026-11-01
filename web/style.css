@@ -103,7 +103,7 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
 
 /* --- Cast to… (device list, then the remote control for what is casting) --- */
 #cast { position: fixed; inset: 0; background: rgba(0, 0, 0, .7); display: flex; align-items: center; justify-content: center; z-index: 20; }
-#cast-box { background: #1a1f2b; border-radius: 12px; padding: 24px 32px; min-width: 420px; max-width: 80vw; box-shadow: 0 12px 48px rgba(0, 0, 0, .6); }
+#cast-box { background: #1a1f2b; border-radius: 12px; padding: 24px 32px; min-width: min(420px, 92vw); max-width: 92vw; box-sizing: border-box; box-shadow: 0 12px 48px rgba(0, 0, 0, .6); }
 #cast-box h2 { margin: 0 0 4px; }
 #cast-list { list-style: none; margin: 16px 0 8px; padding: 0; }
 #cast-list li { padding: 10px 14px; border-radius: 8px; font-size: 1.1em; }
@@ -115,3 +115,13 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
 
 /* the full-screen player on a media PC: no mouse pointer while idle */
 body.nocursor, body.nocursor * { cursor: none !important; }
+
+/* --- touch: the player's control bar, and buttons for what the keys do --- */
+#controls { position: absolute; left: 50%; bottom: 32px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px;
+  background: #0009; padding: 10px 14px; border-radius: 10px; transition: opacity .3s; max-width: calc(100vw - 32px); flex-wrap: wrap; justify-content: center; }
+#controls.hidden { opacity: 0; pointer-events: none; }
+#controls button { min-width: 48px; min-height: 40px; font-size: 16px; }
+#controls-time { padding: 0 8px; white-space: nowrap; }
+#cast-list li { cursor: pointer; }
+.cast-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.cast-buttons button { min-height: 40px; }

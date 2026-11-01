@@ -368,11 +368,35 @@ function stop() {
   }
 }
 
+const controls = document.getElementById('controls');
+
 function showOSD() {
   osd.classList.remove('hidden');
+  controls.classList.remove('hidden');
+  if (current) document.getElementById('controls-time').textContent = `${fmtTime(position())} / ${fmtTime(current.info.duration_s)}`;
   clearTimeout(osdTimer);
-  osdTimer = setTimeout(() => osd.classList.add('hidden'), 3000);
+  osdTimer = setTimeout(() => { osd.classList.add('hidden'); controls.classList.add('hidden'); }, 3000);
 }
+
+// --- touch and mouse: the player's control bar, a tap on the picture shows it ---
+
+controls.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b || !current) return;
+  switch (b.dataset.act) {
+    case 'back': stop(); return;
+    case 'toggle': video.paused ? video.play() : video.pause(); break;
+    case 'cast': openCast(); return;
+    default: video.currentTime += Number(b.dataset.act); break;
+  }
+  showOSD();
+});
+video.addEventListener('click', () => {
+  if (controls.classList.contains('hidden')) showOSD();
+  else { osd.classList.add('hidden'); controls.classList.add('hidden'); clearTimeout(osdTimer); }
+});
+document.getElementById('castbtn').addEventListener('click', openCast);
+document.getElementById('show-back').addEventListener('click', closeShow);
 
 // --- input: arrow keys (PS5 D-pad arrives as arrows), Enter, Escape/Backspace, Tab switches Home/Movies/TV ---
 
@@ -540,7 +564,8 @@ function renderCast(note = '') {
     head.textContent = 'Cast to…';
     sub.textContent = note;
     castList.innerHTML = castDevices.map((d, i) =>
-      `<li class="${i === castFocus ? 'focused' : ''}">${esc(d.name)}<span class="muted">${esc(d.model || '')}</span></li>`).join('');
+      `<li class="${i === castFocus ? 'focused' : ''}" data-i="${i}">${esc(d.name)}<span class="muted">${esc(d.model || '')}</span></li>`).join('') +
+      `<div class="cast-buttons"><button data-key="Escape">Close</button></div>`;
     hint.textContent = castDevices.length ? 'Enter casts · Esc closes' : 'Esc closes';
     return;
   }
@@ -550,9 +575,20 @@ function renderCast(note = '') {
   sub.textContent = st.title || '';
   const pct = st.duration_s ? Math.min(100, 100 * st.position_s / st.duration_s) : 0;
   castList.innerHTML = `<li><strong>${esc(st.state || '')}</strong><span class="muted">${fmtTime(st.position_s)} / ${fmtTime(st.duration_s)}</span></li>` +
-    `<div id="cast-bar"><div style="width:${pct}%"></div></div>`;
+    `<div id="cast-bar"><div style="width:${pct}%"></div></div>` +
+    `<div class="cast-buttons"><button data-key="ArrowDown">−60</button><button data-key="ArrowLeft">−10</button>` +
+    `<button data-key="Enter">⏯</button><button data-key="ArrowRight">+10</button><button data-key="ArrowUp">+60</button>` +
+    `<button data-key="Backspace">Stop casting</button><button data-key="Escape">Hide</button></div>`;
   hint.textContent = 'Enter pauses/plays · ←→ ±10 s · ↑↓ ±60 s · Backspace stops casting · Esc hides this';
 }
+
+// taps in the cast box do what the keys do
+castList.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (b) { castKey({ key: b.dataset.key }); return; }
+  const li = e.target.closest('li[data-i]');
+  if (li) { castFocus = Number(li.dataset.i); castKey({ key: 'Enter' }); }
+});
 
 async function castKey(e) {
   if (castView === 'devices') {
