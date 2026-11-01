@@ -38,6 +38,9 @@ type Settings struct {
 	TSHostname      string   `json:"ts_hostname"`
 	PS5KeepLauncher bool     `json:"ps5_keep_launcher"`
 	LinkServers     bool     `json:"link_servers"` // list the other FLEX PCs' libraries too
+	Prep            bool     `json:"prep"`         // season prep: upscale the season's titles ahead of time
+	TopazDir        string   `json:"topaz_dir"`    // Topaz Video AI's folder on this PC, "" for the built-in shaders
+	TopazModel      string   `json:"topaz_model"`  // its model, e.g. prob-3
 }
 
 type Status struct {
@@ -52,6 +55,9 @@ type Status struct {
 	Peers      []server.PeerInfo    `json:"peers"`     // linked FLEX PCs
 	HomeRows   string               `json:"home_rows"` // who makes the home screen's rows
 	Upscalers  map[string]string    `json:"upscalers"` // AI upscalers: "ok (…x real time)" or why not
+	Prep       []server.PrepItem    `json:"prep"`      // season prep list
+	PrepEngine string               `json:"prep_engine"`
+	PrepWhy    string               `json:"prep_why,omitempty"`
 
 	// first run on a PC without FFmpeg: the server starts once it is downloaded
 	FFmpegDownloading bool    `json:"ffmpeg_downloading"`
@@ -144,6 +150,8 @@ func (a *App) GetStatus() Status {
 		st.Peers = a.srv.Peers()
 		st.HomeRows = a.srv.HomeRows()
 		st.Upscalers = a.srv.Upscalers()
+		st.Prep = a.srv.Prep()
+		st.PrepEngine, st.PrepWhy = a.srv.PrepEngine()
 		ts := a.srv.TailscaleInfo()
 		st.TSState, st.TSDNS, st.TSIP, st.TSError = ts.State, ts.DNSName, ts.IP, ts.Error
 		st.TSNeedsLogin = ts.State == "NeedsLogin" && ts.AuthURL != ""
@@ -256,6 +264,7 @@ func (s Settings) config() server.Config {
 		FFmpeg: s.FFmpeg, FFprobe: s.FFprobe, Encoder: s.Encoder,
 		TSEnabled: s.TSEnabled, TSAuthKey: s.TSAuthKey, TSHostname: s.TSHostname,
 		PS5KeepLauncher: s.PS5KeepLauncher, NoPeers: !s.LinkServers,
+		PrepEnabled: s.Prep, TopazDir: s.TopazDir, TopazModel: s.TopazModel,
 	}
 }
 
@@ -273,7 +282,7 @@ func defaultSettings() Settings {
 	return Settings{
 		Name: host, DataDir: filepath.Join(data, "FLEX", "data"),
 		HTTPPort: 8484, DiscoveryPort: 7555, Encoder: "auto", TSHostname: "flex",
-		PS5KeepLauncher: true, LinkServers: true,
+		PS5KeepLauncher: true, LinkServers: true, Prep: true, TopazModel: "prob-3",
 	}
 }
 

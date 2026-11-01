@@ -76,6 +76,15 @@
 <p class="note">The AI sorts your library into Netflix-style rows (the time of year first, then moods, decades, series…) about once a week. Only titles, years and genres are sent. Each refresh is one request billed to your account with that provider; with Claude it is roughly $0.30. With more than one FLEX PC a key on one of them is enough: the others show its rows.</p>
 <div class="row"><span id="home_rows" class="muted"></span></div>
 
+<h2>Season prep</h2>
+<div class="row"><label class="check"><input type="checkbox" id="prep"> Upscale the season's movies and episodes ahead of time</label></div>
+<p class="note">The AI's row for the holiday or season (Home screen above) picks this PC's SD titles; FLEX upscales them to 1080p one at a time while nobody is watching, the PS5 then plays those files directly, and they are removed once the season is over. Titles you add here stay until you remove them. With Topaz Video AI installed on this PC, its own upscaler does the work; otherwise the built-in AI shaders do.</p>
+<div class="row"><label>Topaz Video AI folder</label><input id="topaz_dir" placeholder="C:\Program Files\Topaz Labs LLC\Topaz Video AI (empty: built-in shaders)"></div>
+<div class="row"><label>Topaz model</label><input id="topaz_model" placeholder="prob-3"></div>
+<div class="row"><span id="prep_engine" class="muted"></span></div>
+<div class="row"><label>Add a title</label><input id="prep_search" placeholder="type a movie or show title…" list="prep_list"><datalist id="prep_list"></datalist><button id="prep_add">Add</button></div>
+<ul id="prep_items" class="list"></ul>
+
 <h2>Other FLEX PCs</h2>
 <div class="row"><label class="check"><input type="checkbox" id="link_servers"> Show the movies and shows of the other FLEX PCs on this network</label></div>
 <p class="note">Each FLEX PC lists the others' libraries next to its own, so the PS5, browsers and phones see everything whichever PC they reach. A movie plays from the PC that has the file, converted by that PC's GPU. That PC has to be on.</p>
@@ -111,7 +120,7 @@ const encoderNames = {
   h264_nvenc: 'NVIDIA GPU (NVENC)', h264_qsv: 'Intel GPU (QuickSync)', h264_amf: 'AMD GPU (AMF)',
   h264_mf: 'GPU through Windows', libx264: 'CPU (no usable GPU)',
 };
-const fields = ['name','http_port','tmdb_key','ai_provider','ai_key','ai_model','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher','link_servers'];
+const fields = ['name','http_port','tmdb_key','ai_provider','ai_key','ai_model','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher','link_servers','prep','topaz_dir','topaz_model'];
 
 async function load() {
   settings = await App().GetSettings();
@@ -133,6 +142,48 @@ function aiHints() {
   $('ai_key').placeholder = aiKeys[p] || 'choose an AI first';
 }
 $('ai_provider').onchange = aiHints;
+
+// --- season prep: the list, and adding titles found through the server's API ---
+const api = (path, opts) => fetch(`http://localhost:${settings.http_port || 8484}/api/v1${path}`, opts);
+function renderPrep(items) {
+  const ul = $('prep_items');
+  const key = items.map(i => `${i.kind}${i.id}${i.state}${i.percent || 0}`).join();
+  if (ul.dataset.key === key) return;
+  ul.dataset.key = key;
+  ul.innerHTML = '';
+  if (!items.length) { ul.innerHTML = '<li class="muted">Nothing yet.</li>'; return; }
+  for (const it of items) {
+    const li = document.createElement('li');
+    const state = it.state === 'working' ? `upscaling ${it.percent || 0}%` : it.state === 'failed' ? `failed: ${it.error}` : it.state;
+    li.innerHTML = `<span>${esc(it.title || `${it.kind} ${it.id}`)} <small class="muted">${esc(state)} · ${it.source === 'ai' ? 'picked by the AI' : 'added by you'}</small></span><button>Remove</button>`;
+    li.querySelector('button').onclick = async () => { await api(`/prep/${it.kind}/${it.id}`, { method: 'DELETE' }).catch(() => {}); refresh(); };
+    ul.appendChild(li);
+  }
+}
+let prepHits = [];
+$('prep_search').oninput = async e => {
+  const q = e.target.value.trim();
+  if (q.length < 2) return;
+  const [movies, shows] = await Promise.all([api(`/movies?q=${encodeURIComponent(q)}`).then(r => r.json()), api(`/shows?q=${encodeURIComponent(q)}`).then(r => r.json())]).catch(() => [[], []]);
+  prepHits = [...movies.filter(m => m.id < 100000000).map(m => ({ kind: 'movie', id: m.id, label: `${m.title}${m.year ? ` (${m.year})` : ''}` })),
+    ...shows.filter(s => s.id < 100000000).map(s => ({ kind: 'show', id: s.id, label: `${s.title} (TV series)` }))].slice(0, 12);
+  $('prep_list').innerHTML = prepHits.map(h => `<option value="${esc(h.label)}">`).join('');
+};
+$('prep_add').onclick = async () => {
+  const hit = prepHits.find(h => h.label === $('prep_search').value);
+  if (!hit) { $('msg').textContent = 'Pick a title from the list first.'; return; }
+  let items = [hit];
+  if (hit.kind === 'show') { // every episode of the show
+    const show = await api(`/shows/${hit.id}`).then(r => r.json()).catch(() => null);
+    items = (show?.season_list || []).flatMap(s => s.episodes.map(ep => ({ kind: 'episode', id: ep.id })));
+  }
+  for (const it of items) {
+    const r = await api('/prep', { method: 'POST', body: JSON.stringify({ kind: it.kind, id: it.id }) }).catch(() => null);
+    if (r && !r.ok) $('msg').textContent = (await r.json().catch(() => ({}))).message || 'Could not add it.';
+  }
+  $('prep_search').value = '';
+  refresh();
+};
 
 function renderFolders() {
   renderList('folders', 'library');
@@ -168,6 +219,9 @@ async function refresh() {
   const peers = st.peers || [];
   peers.filter(p => p.online).forEach(p => pills.push(`<span class="pill ok">+ ${esc(p.name)}: ${p.movies} movies · ${p.shows} shows</span>`));
   $('home_rows').textContent = st.home_rows || '';
+  $('prep_engine').textContent = !settings.prep ? 'Off' : st.prep_engine === 'topaz' ? 'Upscales with Topaz Video AI'
+    : st.prep_engine === 'shaders' ? 'Upscales with the built-in AI shaders' : (st.prep_why || 'No upscaler yet');
+  renderPrep(st.prep || []);
   $('peers').textContent = !settings.link_servers ? 'Off' : peers.length === 0 ? 'None found yet'
     : peers.map(p => `${p.name} (${p.addr}, v${p.version}): ${p.online ? `${p.movies} movies · ${p.shows} shows` : 'not answering'}`).join(' · ');
   pills.push(`<span class="pill muted">v${esc(st.version)}</span>`);

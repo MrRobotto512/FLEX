@@ -97,6 +97,19 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 	// better than the console stretching the small picture itself; it means
 	// a transcode even for files that could play directly.
 	upscale = upscale && mi.Video.Height > 0 && mi.Video.Height < p.MaxHeight*9/10
+	// a title upscaled ahead of time (season prep) plays as that HD file
+	if upscale && s.prep != nil && start == 0 && sub < 0 && audio < 0 && profileName != "remote" {
+		if hd := s.prep.Ready(kind, id); hd != "" {
+			if hmi, err := Probe(ctx, s.cfg.FFprobe, hd); err == nil {
+				if v, a, c := playsAsIs(hmi, -1, p, caps, directRate); v && a && c {
+					info.Method, info.URL, info.Upscaled = "direct", fileURL+"?hd=1", true
+					info.VideoCodec, info.AudioCodec, info.Container = hmi.Video.Codec, defaultAudio(hmi, -1).Codec, hmi.Container
+					info.Width, info.Height, info.DurationS = hmi.Video.Width, hmi.Video.Height, hmi.DurationS
+					return info, nil
+				}
+			}
+		}
+	}
 	if upscale {
 		videoOK = false
 	}

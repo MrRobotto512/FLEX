@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS progress (
 	PRIMARY KEY (kind, item_id)
 );
 
+-- season prep: titles upscaled ahead of time (prep.go)
+CREATE TABLE IF NOT EXISTS prep (
+	kind    TEXT NOT NULL,
+	item_id INTEGER NOT NULL,
+	state   TEXT NOT NULL,
+	source  TEXT NOT NULL,
+	engine  TEXT,
+	file    TEXT,
+	error   TEXT,
+	added   TEXT NOT NULL,
+	PRIMARY KEY (kind, item_id)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -496,6 +509,96 @@ func (d *DB) Animated(kind string, id int64) bool {
 	}
 	genres, _ := tags(g, sql.NullString{})
 	return slices.Contains(genres, "Animation")
+}
+
+// ---------------------------------------------------------------- season prep
+
+func (d *DB) PrepList() ([]PrepItem, error) {
+	rows, err := d.Query(`SELECT p.kind, p.item_id, p.state, p.source, COALESCE(p.engine, ''), COALESCE(p.file, ''),
+		COALESCE(p.error, ''), p.added,
+		COALESCE((SELECT m.title FROM movies m WHERE p.kind = 'movie' AND m.id = p.item_id),
+		         (SELECT s.title || ' S' || printf('%02d', e.season) || 'E' || printf('%02d', e.episode) || ' ' || e.title
+		          FROM episodes e JOIN shows s ON s.id = e.show_id WHERE p.kind = 'episode' AND e.id = p.item_id), '')
+		FROM prep p ORDER BY p.added`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PrepItem{}
+	for rows.Next() {
+		var it PrepItem
+		var added string
+		if err := rows.Scan(&it.Kind, &it.ID, &it.State, &it.Source, &it.Engine, &it.file, &it.Error, &added, &it.Title); err != nil {
+			return nil, err
+		}
+		it.Added, _ = time.Parse(time.RFC3339, added)
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) PrepAdd(kind string, id int64, source string) error {
+	_, err := d.Exec(`INSERT OR IGNORE INTO prep(kind, item_id, state, source, added) VALUES (?, ?, ?, ?, ?)`,
+		kind, id, prepStateQueued, source, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+func (d *DB) PrepDelete(kind string, id int64) {
+	d.Exec(`DELETE FROM prep WHERE kind = ? AND item_id = ?`, kind, id)
+}
+
+func (d *DB) PrepState(kind string, id int64, state, file, engine, errText string) {
+	d.Exec(`UPDATE prep SET state = ?, file = ?, engine = ?, error = ? WHERE kind = ? AND item_id = ?`,
+		state, file, engine, errText, kind, id)
+}
+
+// PrepKey names a title the way the AI's rows do ("m603", "e615-S02E03").
+func (d *DB) PrepKey(kind string, id int64) string {
+	var tmdb sql.NullInt64
+	if kind == "movie" {
+		d.QueryRow(`SELECT tmdb_id FROM movies WHERE id = ?`, id).Scan(&tmdb)
+		if tmdb.Int64 != 0 {
+			return fmt.Sprintf("m%d", tmdb.Int64)
+		}
+		return ""
+	}
+	var season, episode int
+	d.QueryRow(`SELECT s.tmdb_id, e.season, e.episode FROM episodes e JOIN shows s ON s.id = e.show_id WHERE e.id = ?`, id).
+		Scan(&tmdb, &season, &episode)
+	if tmdb.Int64 != 0 {
+		return episodeKey(tmdb.Int64, season, episode)
+	}
+	return ""
+}
+
+// PrepLookup finds this server's title behind an AI row id.
+func (d *DB) PrepLookup(key string) (kind string, id int64, ok bool) {
+	var tmdb int64
+	var season, episode int
+	if n, _ := fmt.Sscanf(key, "m%d", &tmdb); n == 1 {
+		err := d.QueryRow(`SELECT id FROM movies WHERE tmdb_id = ? ORDER BY id LIMIT 1`, tmdb).Scan(&id)
+		return "movie", id, err == nil
+	}
+	if n, _ := fmt.Sscanf(key, "e%d-S%dE%d", &tmdb, &season, &episode); n == 3 {
+		err := d.QueryRow(`SELECT e.id FROM episodes e JOIN shows s ON s.id = e.show_id
+			WHERE s.tmdb_id = ? AND e.season = ? AND e.episode = ? ORDER BY e.id LIMIT 1`, tmdb, season, episode).Scan(&id)
+		return "episode", id, err == nil
+	}
+	return "", 0, false
+}
+
+// itemMedia is a title's file and probe result.
+func (d *DB) itemMedia(kind string, id int64) (string, *MediaInfo) {
+	var path string
+	var mj sql.NullString
+	table := "movies"
+	if kind == "episode" {
+		table = "episodes"
+	}
+	if d.QueryRow(`SELECT path, media_json FROM `+table+` WHERE id = ?`, id).Scan(&path, &mj) != nil {
+		return "", nil
+	}
+	return path, unmarshalMedia(mj)
 }
 
 func (d *DB) SetTags(show bool, id int64, genres, keywords []string) error {

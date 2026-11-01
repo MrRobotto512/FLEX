@@ -55,6 +55,8 @@ Build order, each step produces something you can run.
    - [x] removing a library folder removes its movies and shows straight away
    - [x] library watching (after Emby's library monitor): Windows change notifications on every library folder, a scan once changes settle for 30 s, a nightly scan at 4:00; polling elsewhere
    - [x] Netflix-style home: `/home` with a featured title, Continue Watching, themed and seasonal rows made weekly by Claude, ChatGPT or Gemini (or TMDB genres and keywords without a key; linked servers share one key's rows), Recently Added, TV Shows, genre rows; browser Home tab
+   - [x] holiday episodes in the seasonal rows (title/description match, `e<show>-S02E03` ids across servers)
+   - [x] season prep: the AI's seasonal row picks SD titles, each PC upscales them ahead of time (Topaz Video AI's ffmpeg when installed, else the shaders) into direct-play 1080p files, removed after the season; add/remove by hand in the window
    - [ ] PS5 home screen from `/home`
    - [x] verified on hardware: seek
    - [ ] verified on hardware: tray on the library PC, remote from a phone, reboot + rejailbreak
