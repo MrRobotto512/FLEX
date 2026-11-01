@@ -282,10 +282,82 @@ func (d *DB) DeleteUnseen(since time.Time, keep []string) (int64, error) {
 		return n, err
 	}
 	ne, _ := res.RowsAffected()
+	d.dropOrphans()
+	return n + ne, nil
+}
+
+// DeleteOutside drops movies and episodes whose file is in none of the
+// library folders, so a folder taken out of the library takes its movies and
+// shows with it straight away instead of when the next scan finishes. No
+// folders at all empties the library.
+func (d *DB) DeleteOutside(folders []string) (int64, error) {
+	tx, err := d.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var n int64
+	for _, table := range []string{"movies", "episodes"} {
+		rows, err := tx.Query(`SELECT id, path FROM ` + table)
+		if err != nil {
+			return 0, err
+		}
+		var gone []int64
+		for rows.Next() {
+			var id int64
+			var path string
+			if err := rows.Scan(&id, &path); err != nil {
+				rows.Close()
+				return 0, err
+			}
+			if !inFolders(path, folders) {
+				gone = append(gone, id)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+		for _, id := range gone {
+			if _, err := tx.Exec(`DELETE FROM `+table+` WHERE id = ?`, id); err != nil {
+				return 0, err
+			}
+		}
+		n += int64(len(gone))
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		d.dropOrphans()
+	}
+	return n, nil
+}
+
+// inFolders reports whether path is inside one of the folders, ignoring case
+// as Windows does: `M:\Movies` holds `m:\movies\Heat.mkv` but not
+// `M:\Movies 2\Heat.mkv`.
+func inFolders(path string, folders []string) bool {
+	sep := string(filepath.Separator)
+	p := strings.ToLower(filepath.Clean(path)) + sep
+	for _, f := range folders {
+		f = strings.ToLower(filepath.Clean(f))
+		if !strings.HasSuffix(f, sep) {
+			f += sep
+		}
+		if strings.HasPrefix(p, f) {
+			return true
+		}
+	}
+	return false
+}
+
+// dropOrphans deletes shows left without episodes and progress of items that
+// are gone.
+func (d *DB) dropOrphans() {
 	d.Exec(`DELETE FROM shows WHERE NOT EXISTS (SELECT 1 FROM episodes e WHERE e.show_id = shows.id)`)
 	d.Exec(`DELETE FROM progress WHERE kind = 'movie' AND item_id NOT IN (SELECT id FROM movies)`)
 	d.Exec(`DELETE FROM progress WHERE kind = 'episode' AND item_id NOT IN (SELECT id FROM episodes)`)
-	return n + ne, nil
 }
 
 func (d *DB) SetTitle(id int64, title string, year int) {

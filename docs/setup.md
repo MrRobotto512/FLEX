@@ -11,6 +11,8 @@
    - When Windows Firewall asks, allow FLEX on **private** networks (the PS5 needs it).
    - Tick **Start FLEX with Windows** so it is always running.
 
+To take a folder out of the library, press **Remove** next to it, then **Save & restart server**: its movies and shows (and their resume points) leave the library right away.
+
 Closing the window keeps FLEX running in the tray (on Windows 11 maybe under the ^ arrow). Settings, the database and the downloaded FFmpeg live in `%APPDATA%\FLEX`.
 
 **Updates:** FLEX checks GitHub every few hours. The tray menu and the window's Updates section show "Update to …"; installing restarts FLEX. FLEX.exe must sit in a folder it can write to (not Program Files) for that.
