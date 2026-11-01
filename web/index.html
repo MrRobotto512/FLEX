@@ -10,7 +10,8 @@
 <header>
   <h1>FLEX</h1>
   <nav id="tabs">
-    <button data-mode="movies" class="active">Movies</button>
+    <button data-mode="home" class="active">Home</button>
+    <button data-mode="movies">Movies</button>
     <button data-mode="tv">TV</button>
   </nav>
   <span id="server" class="muted">connecting…</span>
@@ -19,7 +20,16 @@
   <button id="scan" title="Rescan library">Scan</button>
 </header>
 
-<main id="grid" role="grid" aria-label="Library"></main>
+<main id="home" aria-label="Home">
+  <div id="hero">
+    <span id="hero-tag" class="tag"></span>
+    <h2 id="hero-title"></h2>
+    <p id="hero-meta" class="muted"></p>
+    <p id="hero-overview"></p>
+  </div>
+  <div id="shelves"></div>
+</main>
+<main id="grid" role="grid" aria-label="Library" hidden></main>
 <p id="empty" class="muted" hidden></p>
 
 <section id="episodes" hidden>

@@ -20,6 +20,13 @@ type Config struct {
 	DiscoveryPort int
 
 	TMDBKey string
+	// An AI makes the home screen's themed and seasonal rows: AIProvider is
+	// "claude", "openai" or "gemini", AIKey that provider's API key and
+	// AIModel an optional model in place of the default. Without one the rows
+	// come from a linked server's AI, or from TMDB genres and keywords.
+	AIProvider string
+	AIKey      string
+	AIModel    string
 
 	FFmpeg  string // path or "" for PATH lookup
 	FFprobe string
@@ -57,6 +64,9 @@ func FromEnv() (Config, error) {
 		HTTPPort:      envInt("FLEX_HTTP_PORT", 8484),
 		DiscoveryPort: envInt("FLEX_DISCOVERY_PORT", 7555),
 		TMDBKey:       os.Getenv("FLEX_TMDB_KEY"),
+		AIProvider:    os.Getenv("FLEX_AI_PROVIDER"),
+		AIKey:         os.Getenv("FLEX_AI_KEY"),
+		AIModel:       os.Getenv("FLEX_AI_MODEL"),
 		FFmpeg:        os.Getenv("FLEX_FFMPEG"),
 		FFprobe:       os.Getenv("FLEX_FFPROBE"),
 		Encoder:       envOr("FLEX_ENCODER", "auto"),

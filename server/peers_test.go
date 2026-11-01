@@ -72,6 +72,8 @@ func (f *fakePeer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET /api/v1/continue":
 		js(`[{"kind":"episode","id":70,"title":"Futurama","poster":"/api/v1/shows/7/poster","poster_of":"show",
 			"poster_id":7,"show_id":7,"played":"` + time.Now().UTC().Format(time.RFC3339) + `"}]`)
+	case "GET /api/v1/home/themes":
+		js(`{"by":"Claude","from":"Garage","made":"2026-10-26T09:00:00Z","titles":40,"rows":[{"title":"Spooky","items":["m603"]}]}`)
 	case "GET /api/v1/movies/42/play":
 		js(`{"method":"hls","url":"/api/v1/hls/abc123/index.m3u8","duration_s":100}`)
 	case "GET /api/v1/hls/abc123/index.m3u8":

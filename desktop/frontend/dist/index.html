@@ -63,6 +63,19 @@
 <div class="row"><label>FFprobe path</label><input id="ffprobe" placeholder="leave empty: next to FLEX.exe, else downloaded automatically"></div>
 <div class="row"><label class="check"><input type="checkbox" id="autostart"> Start FLEX with Windows (in the tray)</label></div>
 
+<h2>Home screen</h2>
+<div class="row"><label>AI for themed rows</label>
+  <select id="ai_provider">
+    <option value="">None: rows from TMDB genres</option>
+    <option value="claude">Claude (Anthropic)</option>
+    <option value="openai">ChatGPT (OpenAI)</option>
+    <option value="gemini">Gemini (Google)</option>
+  </select></div>
+<div class="row"><label>API key</label><input id="ai_key" type="password" placeholder="your key from that provider"></div>
+<div class="row"><label>Model</label><input id="ai_model" placeholder="leave empty for the default"></div>
+<p class="note">The AI sorts your library into Netflix-style rows (the time of year first, then moods, decades, series…) about once a week. Only titles, years and genres are sent. Each refresh is one request billed to your account with that provider; with Claude it is roughly $0.30. With more than one FLEX PC a key on one of them is enough: the others show its rows.</p>
+<div class="row"><span id="home_rows" class="muted"></span></div>
+
 <h2>Other FLEX PCs</h2>
 <div class="row"><label class="check"><input type="checkbox" id="link_servers"> Show the movies and shows of the other FLEX PCs on this network</label></div>
 <p class="note">Each FLEX PC lists the others' libraries next to its own, so the PS5, browsers and phones see everything whichever PC they reach. A movie plays from the PC that has the file, converted by that PC's GPU. That PC has to be on.</p>
@@ -98,7 +111,7 @@ const encoderNames = {
   h264_nvenc: 'NVIDIA GPU (NVENC)', h264_qsv: 'Intel GPU (QuickSync)', h264_amf: 'AMD GPU (AMF)',
   h264_mf: 'GPU through Windows', libx264: 'CPU (no usable GPU)',
 };
-const fields = ['name','http_port','tmdb_key','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher','link_servers'];
+const fields = ['name','http_port','tmdb_key','ai_provider','ai_key','ai_model','encoder','ffmpeg','ffprobe','ts_enabled','ts_authkey','ts_hostname','ps5_keep_launcher','link_servers'];
 
 async function load() {
   settings = await App().GetSettings();
@@ -106,9 +119,20 @@ async function load() {
     if ($(f).type === 'checkbox') $(f).checked = !!settings[f];
     else $(f).value = settings[f] ?? '';
   }
+  aiHints();
   renderFolders();
   refresh();
 }
+
+// the model field shows the chosen provider's default
+const aiModels = { claude: 'claude-opus-5-5', openai: 'gpt-6-astra', gemini: 'gemini-3.8-flash' };
+const aiKeys = { claude: 'from console.anthropic.com', openai: 'from platform.openai.com', gemini: 'from aistudio.google.com' };
+function aiHints() {
+  const p = $('ai_provider').value;
+  $('ai_model').placeholder = p ? `leave empty for ${aiModels[p]}` : 'leave empty for the default';
+  $('ai_key').placeholder = aiKeys[p] || 'choose an AI first';
+}
+$('ai_provider').onchange = aiHints;
 
 function renderFolders() {
   renderList('folders', 'library');
@@ -141,6 +165,7 @@ async function refresh() {
   (st.transcodes || []).forEach(t => pills.push(`<span class="pill warn">${esc(t.mode)}: ${esc(t.file)}</span>`));
   const peers = st.peers || [];
   peers.filter(p => p.online).forEach(p => pills.push(`<span class="pill ok">+ ${esc(p.name)}: ${p.movies} movies · ${p.shows} shows</span>`));
+  $('home_rows').textContent = st.home_rows || '';
   $('peers').textContent = !settings.link_servers ? 'Off' : peers.length === 0 ? 'None found yet'
     : peers.map(p => `${p.name} (${p.addr}, v${p.version}): ${p.online ? `${p.movies} movies · ${p.shows} shows` : 'not answering'}`).join(' · ');
   pills.push(`<span class="pill muted">v${esc(st.version)}</span>`);

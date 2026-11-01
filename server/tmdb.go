@@ -47,6 +47,48 @@ type tmdbMovie struct {
 	PosterPath   string `json:"poster_path"`
 	BackdropPath string `json:"backdrop_path"`
 	Runtime      int    `json:"runtime"`
+	tmdbTags
+}
+
+type tmdbName struct {
+	Name string `json:"name"`
+}
+
+// tmdbTags is the genre and keyword part of a movie's or show's details,
+// asked for with append_to_response=keywords (TMDB names the keyword list
+// differently for TV).
+type tmdbTags struct {
+	Genres   []tmdbName `json:"genres"`
+	Keywords struct {
+		Movie []tmdbName `json:"keywords"`
+		TV    []tmdbName `json:"results"`
+	} `json:"keywords"`
+}
+
+func (t tmdbTags) names() (genres, keywords []string) {
+	genres, keywords = []string{}, []string{}
+	for _, g := range t.Genres {
+		genres = append(genres, g.Name)
+	}
+	for _, k := range append(t.Keywords.Movie, t.Keywords.TV...) {
+		keywords = append(keywords, k.Name)
+	}
+	return genres, keywords
+}
+
+// Tags fetches only the genres and keywords of a movie (or show), for
+// libraries matched before FLEX kept them.
+func (t *TMDB) Tags(ctx context.Context, show bool, id int64) (genres, keywords []string, err error) {
+	path := fmt.Sprintf("/movie/%d", id)
+	if show {
+		path = fmt.Sprintf("/tv/%d", id)
+	}
+	var tags tmdbTags
+	if err := t.get(ctx, path, url.Values{"append_to_response": {"keywords"}}, &tags); err != nil {
+		return nil, nil, err
+	}
+	genres, keywords = tags.names()
+	return genres, keywords, nil
 }
 
 var ErrNoMatch = errors.New("tmdb: no match")
@@ -66,7 +108,7 @@ func (t *TMDB) Match(ctx context.Context, title string, year int) (Metadata, err
 // Fetch pulls details for a known TMDB id (used by the manual fix-match endpoint).
 func (t *TMDB) Fetch(ctx context.Context, id int64) (Metadata, error) {
 	var m tmdbMovie
-	if err := t.get(ctx, fmt.Sprintf("/movie/%d", id), nil, &m); err != nil {
+	if err := t.get(ctx, fmt.Sprintf("/movie/%d", id), url.Values{"append_to_response": {"keywords"}}, &m); err != nil {
 		return Metadata{}, err
 	}
 	md := Metadata{
@@ -75,6 +117,7 @@ func (t *TMDB) Fetch(ctx context.Context, id int64) (Metadata, error) {
 		Overview: m.Overview,
 		RuntimeS: m.Runtime * 60,
 	}
+	md.Genres, md.Keywords = m.names()
 	if len(m.ReleaseDate) >= 4 {
 		md.Year, _ = strconv.Atoi(m.ReleaseDate[:4])
 	}
@@ -113,6 +156,7 @@ type tmdbShow struct {
 	Overview     string `json:"overview"`
 	PosterPath   string `json:"poster_path"`
 	BackdropPath string `json:"backdrop_path"`
+	tmdbTags
 }
 
 // EpisodeHint is one file of a show on disk, used to tell apart series that
@@ -204,10 +248,11 @@ func sameEpisodeTitle(a, b string) bool {
 
 func (t *TMDB) FetchShow(ctx context.Context, id int64) (Metadata, error) {
 	var sh tmdbShow
-	if err := t.get(ctx, fmt.Sprintf("/tv/%d", id), nil, &sh); err != nil {
+	if err := t.get(ctx, fmt.Sprintf("/tv/%d", id), url.Values{"append_to_response": {"keywords"}}, &sh); err != nil {
 		return Metadata{}, err
 	}
 	md := Metadata{TMDBID: sh.ID, Title: sh.Name, Overview: sh.Overview}
+	md.Genres, md.Keywords = sh.names()
 	if len(sh.FirstAirDate) >= 4 {
 		md.Year, _ = strconv.Atoi(sh.FirstAirDate[:4])
 	}

@@ -5,8 +5,10 @@
   --muted: #8a90a0;
   --accent: #5aa9ff;
   --poster-w: 180px;
+  --row-w: 150px;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.4 system-ui, sans-serif; }
 header { display: flex; align-items: center; gap: 16px; padding: 16px 32px; }
 header h1 { margin: 0; font-size: 20px; letter-spacing: 0.2em; }
@@ -41,6 +43,23 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
 
 #empty { padding: 0 32px; }
 
+/* home: the focused title up top, rows of posters below */
+#home { display: flex; flex-direction: column; height: calc(100vh - 72px); }
+#hero { position: relative; flex: none; height: 42vh; min-height: 240px; padding: 0 32px 24px;
+  display: flex; flex-direction: column; justify-content: flex-end; background: var(--bg) center 20% / cover no-repeat; }
+#hero::before { content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, var(--bg) 22%, #0f111500 70%), linear-gradient(0deg, var(--bg), #0f111500 45%); }
+#hero > * { position: relative; max-width: 640px; margin: 0; }
+#hero .tag { font-size: 12px; letter-spacing: .15em; text-transform: uppercase; color: var(--accent); }
+#hero h2 { font-size: 40px; line-height: 1.1; margin: 6px 0; }
+#hero-overview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 6px; }
+#shelves { flex: 1; overflow-y: auto; padding-bottom: 48px; }
+.shelf h3 { margin: 14px 32px 2px; font-size: 18px; font-weight: 600; }
+.strip { position: relative; display: flex; gap: 14px; overflow-x: auto; padding: 10px 32px 8px; scrollbar-width: none; }
+.strip::-webkit-scrollbar { display: none; }
+.strip .card { flex: none; width: var(--row-w); }
+.strip .card img, .strip .card .noart { width: var(--row-w); }
+
 /* episodes view */
 #episodes { padding: 0 32px 48px; }
 #show-head { display: flex; gap: 24px; align-items: flex-start; margin-bottom: 20px; }
@@ -69,8 +88,13 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
 #osd.hidden { opacity: 0; }
 
 @media (max-width: 700px) {
-  :root { --poster-w: 120px; }
-  header, #grid, #episodes { padding-left: 16px; padding-right: 16px; }
+  :root { --poster-w: 120px; --row-w: 110px; }
+  header, #grid, #episodes, #hero, .strip { padding-left: 16px; padding-right: 16px; }
+  .shelf h3 { margin-left: 16px; }
+  #home { height: auto; } /* the header wraps here: let the page scroll instead */
+  #shelves { overflow: visible; }
+  #hero { height: 34vh; }
+  #hero h2 { font-size: 28px; }
   header { flex-wrap: wrap; }
   #show-head img { width: 100px; }
   #eplist .still { display: none; }

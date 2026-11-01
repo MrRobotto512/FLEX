@@ -120,6 +120,29 @@ An average says nothing about a variable-bitrate peak (an action scene in a 4.7 
 ```
 `id` is what `/movies/{id}/play` or `/episodes/{id}/play` takes (by `kind`); `poster_of`/`poster_id` say whose poster it is.
 
+## Home
+
+`GET /home` → the home screen: a featured title, Continue Watching (as `/continue`) and rows of movies and shows, linked servers' included and each title once.
+```json
+{"hero":{"kind":"movie","id":42,"title":"Halloween","year":1978,"poster":"…","backdrop":"…",
+   "overview":"…","genres":["Horror","Thriller"],"runtime_s":5460},
+ "continue":[…],
+ "rows":[{"title":"Halloween Night","items":[{"kind":"movie","id":42,"title":"Halloween","year":1978,
+   "poster":"…","backdrop":"…","overview":"…","genres":["Horror"],"watched":false,"resume_s":0,"runtime_s":5460},
+   {"kind":"show","id":7,"title":"Futurama","seasons":7,"…":"…"}]}],
+ "themes":"Claude"}
+```
+Rows, in order: the themed rows an AI made (the first one is for the time of year, then Recently Added after it), TV Shows, and genre rows. `themes` says who made the themed rows: `Claude`, `ChatGPT`, `Gemini`, or `TMDB` when no AI did (then one row for the time of year comes from TMDB keywords and genres). Genre rows are shuffled once a day. `hero` is an unwatched title with a backdrop from the first row, a different one each time.
+
+The AI (`FLEX_AI_PROVIDER` = `claude` | `openai` | `gemini`, `FLEX_AI_KEY`, optional `FLEX_AI_MODEL`) gets the library's titles, years and genres about once a week (again when the month turns or the library grows by a quarter, at most every 6 hours) and answers with rows of TMDB ids. `GET /home/themes` hands those rows to linked servers, so a key on one FLEX PC serves all of them:
+```json
+{"by":"Claude","from":"Robot","made":"2026-10-26T09:00:00Z","titles":1040,
+ "rows":[{"title":"Halloween Night","items":["m948","m4232","s1399"]}]}
+```
+`m<id>` is a TMDB movie, `s<id>` a TMDB show. `404` until there are rows.
+
+Movies and shows in `/movies` and `/shows` carry `"genres":["Horror"]` and, from TMDB keywords, `"holidays":["halloween"]` (`halloween`, `christmas`, `thanksgiving`, `valentines`, `newyear`, `summer`).
+
 ## Progress
 
 `PUT /movies/{id}/progress` body `{"position_s":1830,"duration_s":10210}` → `204`. Positions within the last 5 % mark the movie watched; positions under 30 s are stored as 0 (no resume point). Clients send this every ~10 s during playback and on stop.

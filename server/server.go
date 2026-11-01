@@ -26,9 +26,10 @@ type Server struct {
 	log     *slog.Logger
 	web     fs.FS // static UI, may be nil
 
-	ps5   *ps5Keeper
-	ps5up *ps5Updates // newest PS5 client build, offered to consoles
-	peers *peers      // other FLEX servers whose libraries this one lists; nil when off
+	ps5    *ps5Keeper
+	ps5up  *ps5Updates // newest PS5 client build, offered to consoles
+	peers  *peers      // other FLEX servers whose libraries this one lists; nil when off
+	themes *themer     // the home screen's AI-made rows
 
 	gpus         []string          // graphics adapters Windows reports
 	encoderTests map[string]string // hardware encoder -> "ok" or why not
@@ -71,6 +72,7 @@ func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
 	if !cfg.NoPeers {
 		s.peers = newPeers(s)
 	}
+	s.themes = newThemer(s)
 
 	s.folders = cfg.Library
 	if len(s.folders) == 0 {
@@ -132,6 +134,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.peers != nil {
 		go s.peers.run(ctx)
 	}
+	go s.themes.run(ctx)
 	s.log.Info("FLEX listening", "http", s.cfg.HTTPPort, "name", s.cfg.Name, "id", s.id)
 
 	if s.cfg.TSEnabled || s.cfg.TSAuthKey != "" {
@@ -226,6 +229,9 @@ func (s *Server) Peers() []PeerInfo {
 	}
 	return s.peers.info()
 }
+
+// HomeRows says who makes the home screen's rows, for the desktop window.
+func (s *Server) HomeRows() string { return s.themes.Status() }
 
 // Config returns the configuration the server was started with.
 func (s *Server) Config() Config { return s.cfg }

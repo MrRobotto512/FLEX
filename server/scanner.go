@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,7 +52,7 @@ type Scanner struct {
 
 	// per-scan caches, guarded by showMu (show creation and TMDB show
 	// matching run one at a time so two workers never create the same show)
-	showMu  sync.Mutex
+	showMu    sync.Mutex
 	shows     map[string]int64 // show key -> id
 	touched   map[int64]bool   // shows seen this scan (episode metadata pass)
 	rematched map[int64]bool   // shows now matched to another TMDB series: their episodes' TMDB data is stale
@@ -198,6 +199,7 @@ func (s *Scanner) scan(ctx context.Context, roots []Root) error {
 		s.log.Info("scan: merged duplicate shows", "count", n)
 	}
 	s.episodeMetadata(ctx)
+	s.fetchTags(ctx)
 	s.setCurrent("Cleaning up")
 	removed, err := s.db.DeleteUnseen(start, unreachable)
 	if err != nil {
@@ -392,6 +394,50 @@ func (s *Scanner) episodeFile(ctx context.Context, root, path string, size, mtim
 	}
 	s.log.Info("scan: added episode", "show", series, "season", ep.Season, "episode", ep.Episode)
 	return nil
+}
+
+// fetchTags gets the genres and keywords (which the home screen's rows are
+// made from) of movies and shows matched before FLEX kept them.
+func (s *Scanner) fetchTags(ctx context.Context) {
+	if s.tmdb == nil {
+		return
+	}
+	need, err := s.db.TagsNeeded()
+	if err != nil || len(need) == 0 {
+		return
+	}
+	s.log.Info("tmdb: fetching genres and keywords", "items", len(need))
+	jobs := make(chan [3]int64)
+	var wg sync.WaitGroup
+	var left atomic.Int64
+	left.Store(int64(len(need)))
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				show := j[0] == 1
+				genres, keywords, err := s.tmdb.Tags(ctx, show, j[2])
+				if err != nil {
+					// gone from TMDB: store empty lists so it isn't asked again
+					if !strings.Contains(err.Error(), "HTTP 404") {
+						s.log.Warn("tmdb: genres", "tmdb_id", j[2], "err", err)
+						continue
+					}
+				}
+				s.db.SetTags(show, j[1], genres, keywords)
+				s.setCurrent(fmt.Sprintf("Genres from TMDB (%d left)", left.Add(-1)))
+			}
+		}()
+	}
+	for _, j := range need {
+		if ctx.Err() != nil {
+			break
+		}
+		jobs <- j
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // episodeMetadata fills in titles, overviews and stills for episodes that

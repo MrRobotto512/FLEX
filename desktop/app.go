@@ -27,6 +27,9 @@ type Settings struct {
 	HTTPPort        int      `json:"http_port"`
 	DiscoveryPort   int      `json:"discovery_port"`
 	TMDBKey         string   `json:"tmdb_key"`
+	AIProvider      string   `json:"ai_provider"` // claude | openai | gemini; "" for none
+	AIKey           string   `json:"ai_key"`
+	AIModel         string   `json:"ai_model"` // "" for the provider's default
 	FFmpeg          string   `json:"ffmpeg"`
 	FFprobe         string   `json:"ffprobe"`
 	Encoder         string   `json:"encoder"`
@@ -46,7 +49,8 @@ type Status struct {
 	Version    string               `json:"version"`
 	Encoder    string               `json:"encoder"`
 	Transcodes []server.SessionInfo `json:"transcodes"`
-	Peers      []server.PeerInfo    `json:"peers"` // linked FLEX PCs
+	Peers      []server.PeerInfo    `json:"peers"`     // linked FLEX PCs
+	HomeRows   string               `json:"home_rows"` // who makes the home screen's rows
 
 	// first run on a PC without FFmpeg: the server starts once it is downloaded
 	FFmpegDownloading bool    `json:"ffmpeg_downloading"`
@@ -137,6 +141,7 @@ func (a *App) GetStatus() Status {
 		st.Encoder = a.srv.Encoder()
 		st.Transcodes = a.srv.Transcodes()
 		st.Peers = a.srv.Peers()
+		st.HomeRows = a.srv.HomeRows()
 		ts := a.srv.TailscaleInfo()
 		st.TSState, st.TSDNS, st.TSIP, st.TSError = ts.State, ts.DNSName, ts.IP, ts.Error
 		st.TSNeedsLogin = ts.State == "NeedsLogin" && ts.AuthURL != ""
@@ -245,6 +250,7 @@ func (s Settings) config() server.Config {
 	return server.Config{
 		Name: s.Name, Library: s.Library, TVLibrary: s.TVLibrary, DataDir: s.DataDir,
 		HTTPPort: s.HTTPPort, DiscoveryPort: s.DiscoveryPort, TMDBKey: s.TMDBKey,
+		AIProvider: s.AIProvider, AIKey: s.AIKey, AIModel: s.AIModel,
 		FFmpeg: s.FFmpeg, FFprobe: s.FFprobe, Encoder: s.Encoder,
 		TSEnabled: s.TSEnabled, TSAuthKey: s.TSAuthKey, TSHostname: s.TSHostname,
 		PS5KeepLauncher: s.PS5KeepLauncher, NoPeers: !s.LinkServers,
