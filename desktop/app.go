@@ -39,10 +39,10 @@ type Settings struct {
 	TSAuthKey       string   `json:"ts_authkey"`
 	TSHostname      string   `json:"ts_hostname"`
 	PS5KeepLauncher bool     `json:"ps5_keep_launcher"`
-	LinkServers     bool     `json:"link_servers"` // list the other FLEX PCs' libraries too
-	Prep            bool     `json:"prep"`         // season prep: upscale the season's titles ahead of time
-	TopazDir        string   `json:"topaz_dir"`    // Topaz Video AI's folder on this PC, "" for the built-in shaders
-	TopazModel      string   `json:"topaz_model"`  // its model, e.g. prob-3
+	LinkServers     bool     `json:"link_servers"`    // list the other FLEX PCs' libraries too
+	Prep            bool     `json:"prep"`            // season prep: upscale the season's titles ahead of time
+	TopazDir        string   `json:"topaz_dir"`       // Topaz Video AI's folder on this PC, "" for the built-in shaders
+	TopazModel      string   `json:"topaz_model"`     // its model, e.g. prob-3
 	PlayerAtStart   bool     `json:"player_at_start"` // a media PC: open the full-screen player when FLEX starts
 }
 
