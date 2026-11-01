@@ -95,8 +95,45 @@ final class Updater {
         return false;
     }
 
+    /** Check for updates from the menu: asks GitHub for the latest release
+     *  rather than the server, so it works away from home and before the
+     *  server has updated itself; "Later" is not remembered here. */
+    void checkGitHub() {
+        Toast.makeText(act, "Checking GitHub…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String v = latestRelease();
+            act.runOnUiThread(() -> {
+                if (v == null) Toast.makeText(act, "Couldn't reach GitHub.", Toast.LENGTH_LONG).show();
+                else if (newer(v, BuildConfig.VERSION_NAME)) offer(v, true);
+                else Toast.makeText(act, "FLEX " + BuildConfig.VERSION_NAME + " is the latest.", Toast.LENGTH_LONG).show();
+            });
+        }).start();
+    }
+
+    private static String latestRelease() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("https://api.github.com/repos/" + REPO + "/releases/latest").openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setRequestProperty("Accept", "application/vnd.github+json");
+            try (InputStream in = c.getInputStream()) {
+                byte[] b = new byte[256 * 1024];
+                int n, len = 0;
+                while (len < b.length && (n = in.read(b, len, b.length - len)) > 0) len += n;
+                String tag = new JSONObject(new String(b, 0, len, "UTF-8")).optString("tag_name", "");
+                return tag.startsWith("v") ? tag.substring(1) : tag;
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private void offer(String v) {
-        if (v.equals(act.prefs().getString("skip", ""))) return;
+        offer(v, false);
+    }
+
+    private void offer(String v, boolean force) {
+        if (!force && v.equals(act.prefs().getString("skip", ""))) return;
         new AlertDialog.Builder(act)
                 .setTitle("FLEX " + v + " is out")
                 .setMessage("Download and install the new app? (This app is " + BuildConfig.VERSION_NAME + ".)")
