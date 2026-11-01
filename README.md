@@ -5,6 +5,7 @@ A self-hosted movie server for your home PC with a native client for a jailbroke
 ```
 PS5 homebrew client ── LAN (UDP discovery) ─────────┐
 PS5 homebrew client ── Tailscale via travel router ─┤
+Android TV / phone (FLEX app) ── LAN or Tailscale ──┤
 Phone / laptop (browser) ── Tailscale ──────────────┼──▶  FLEX desktop app (Windows) = server + config UI
                                                      │     • library scan, TMDB metadata, SQLite
                                                      │     • FFmpeg: direct play / remux / transcode → HLS
@@ -22,11 +23,12 @@ Phone / laptop (browser) ── Tailscale ────────────�
 | `desktop/` | Windows tray app with the config window; embeds `server/` | Go + Wails |
 | `web/` | Browser client, also used as the Wails frontend | HTML/JS |
 | `ps5-client/` | Native PS5 homebrew player (ps5-payload-sdk, SDL2, FFmpeg) | C |
+| `android/` | Android / Android TV app: the web client full screen, finds the server like the PS5 | Java |
 | `docs/api.md` | The JSON API contract every client follows | |
 
 ## Install
 
-Download `FLEX.exe` (Windows) and `FLEX-ps5.zip` from the [latest release](https://github.com/MrRobotto512/FLEX/releases/latest); FLEX fetches FFmpeg itself on the first start. Step by step: [docs/setup.md](docs/setup.md).
+Download `FLEX.exe` (Windows), `FLEX-ps5.zip` and `FLEX-android.apk` (Android TV, phones) from the [latest release](https://github.com/MrRobotto512/FLEX/releases/latest); FLEX fetches FFmpeg itself on the first start. Step by step: [docs/setup.md](docs/setup.md).
 
 ## Quick start (server, from source)
 

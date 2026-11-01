@@ -57,7 +57,9 @@ Build order, each step produces something you can run.
    - [x] Netflix-style home: `/home` with a featured title, Continue Watching, themed and seasonal rows made weekly by Claude, ChatGPT or Gemini (or TMDB genres and keywords without a key; linked servers share one key's rows), Recently Added, TV Shows, genre rows; browser Home tab
    - [x] holiday episodes in the seasonal rows (title/description match, `e<show>-S02E03` ids across servers)
    - [x] season prep: the AI's seasonal row picks SD titles, each PC upscales them ahead of time (Topaz Video AI's ffmpeg when installed, else the shaders) into direct-play 1080p files, removed after the season; add/remove by hand in the window
+   - [x] Android / Android TV app (`android/`): the web client in a full-screen WebView, UDP discovery with the Tailscale address as the fallback, remote keys mapped to the page, offers each release's APK; built and signed in CI
    - [ ] PS5 home screen from `/home`
+   - [ ] Windows media-PC player: the PS5 SDL2/FFmpeg app ported, shipped in each release, self-updating
    - [x] verified on hardware: seek
    - [ ] verified on hardware: tray on the library PC, remote from a phone, reboot + rejailbreak
 7. **Later**

@@ -32,6 +32,13 @@ Transcoding uses the GPU when it can: NVIDIA NVENC, Intel QuickSync, AMD AMF, th
 
 **Upscaling:** Triangle on the PS5 turns server upscaling on or off (remembered). At home each FLEX PC upscales old SD and 720p video with AI on its own GPU, when the GPU is fast enough: Anime4K for cartoons, FSRCNNX for everything else. FLEX downloads both (about 1 MB) on the first start and tests them; the window shows "AI upscaling: …" when they passed. Over Tailscale, and on GPUs that are too slow, it upscales the plain way.
 
+## Android TV boxes, phones and tablets
+
+1. Download `FLEX-android.apk` from the same release and open it on the device (a USB stick or the box's browser, or `adb install FLEX-android.apk`). Android asks once to allow installing from that source.
+2. Start FLEX. It finds the server on the same network by itself (with more than one FLEX PC it asks which; either one shows the whole library), or you can type an address such as `192.168.0.205:8484`. It remembers the server's Tailscale address too, so away from home it still opens with Tailscale on the device.
+
+It is the same screen as the browser, full screen: the D-pad and OK move and open, **Back** closes the player or an episode list, **Menu** switches Home → Movies → TV, the remote's play/pause and forward/rewind keys work in the player, and **holding Back** picks another server. When the server runs a newer FLEX, the app offers to install that release's APK.
+
 ## The PS5 (jailbroken)
 
 1. Download `FLEX-ps5.zip` from the same release and copy its `FLEX` folder to the console so it becomes `/data/homebrew/FLEX/eboot.elf`, `.../sce_sys/icon0.png` and `.../assets/DejaVuSans.ttf` (FTP, or a USB stick and a file manager).
