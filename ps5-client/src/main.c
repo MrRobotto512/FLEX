@@ -418,6 +418,14 @@ static void parse_card(cJSON *c, Item *it) {
     jstr(c, "kind", s, sizeof s);
     it->kind = strcmp(s, "show") == 0 ? KIND_SHOW : KIND_MOVIE;
     it->id = jint(c, "id");
+    if (strcmp(s, "episode") == 0) {
+        /* a single episode (the seasonal rows): the show's poster, Cross plays the episode */
+        it->kind = KIND_SHOW;
+        it->id = jint(c, "show_id");
+        it->episode = 1;
+        it->play_id = jint(c, "id");
+        jstr(c, "subtitle", it->subtitle, sizeof it->subtitle);
+    }
     jstr(c, "title", it->title, sizeof it->title);
     jstr(c, "poster", it->poster, sizeof it->poster);
     jstr(c, "backdrop", it->backdrop, sizeof it->backdrop);
