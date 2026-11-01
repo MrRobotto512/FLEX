@@ -33,12 +33,26 @@ final class Updater {
         this.act = act;
     }
 
-    /** Asks the server its version off the main thread; offers the update on it. */
+    /** Asks the server about itself off the main thread: its Tailscale address
+     *  is kept for away from home, and a newer version is offered. */
     void check(String base) {
-        if (BuildConfig.VERSION_NAME.equals("0.0.0")) return; // a dev build
         new Thread(() -> {
-            String v = serverVersion(base);
-            if (v != null && newer(v, BuildConfig.VERSION_NAME)) act.runOnUiThread(() -> offer(v));
+            JSONObject s = serverInfo(base);
+            if (s == null) return;
+            JSONObject ts = s.optJSONObject("tailscale");
+            String ip = ts != null ? ts.optString("ip", "") : "";
+            int port = 8484;
+            try {
+                int p = new URL(base).getPort();
+                if (p > 0) port = p;
+            } catch (Exception ignored) {
+            }
+            String tsUrl = ip.isEmpty() ? null : "http://" + ip + ":" + port;
+            String v = s.optString("version", "");
+            act.runOnUiThread(() -> {
+                act.rememberTailscale(tsUrl);
+                if (!BuildConfig.VERSION_NAME.equals("0.0.0") && newer(v, BuildConfig.VERSION_NAME)) offer(v);
+            });
         }).start();
     }
 
@@ -49,7 +63,7 @@ final class Updater {
         }
     }
 
-    private static String serverVersion(String base) {
+    private static JSONObject serverInfo(String base) {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL(base + "/api/v1/server").openConnection();
             c.setConnectTimeout(5000);
@@ -59,7 +73,7 @@ final class Updater {
                 byte[] b = new byte[64 * 1024];
                 int n, len = 0;
                 while (len < b.length && (n = in.read(b, len, b.length - len)) > 0) len += n;
-                return new JSONObject(new String(b, 0, len, "UTF-8")).optString("version", "");
+                return new JSONObject(new String(b, 0, len, "UTF-8"));
             }
         } catch (Exception e) {
             return null;

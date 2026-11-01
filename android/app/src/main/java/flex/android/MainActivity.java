@@ -142,6 +142,15 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             List<Discovery.Found> found = Discovery.run(2000);
             ui.post(() -> {
+                String ts = prefs.getString("ts", null);
+                if (found.isEmpty() && ts != null && !manual) {
+                    // another network: the server's Tailscale address, if the phone runs Tailscale
+                    Toast.makeText(this, "Not at home: trying the server over Tailscale…", Toast.LENGTH_SHORT).show();
+                    triedTs = true;
+                    base = ts;
+                    web.loadUrl(ts + "/");
+                    return;
+                }
                 if (found.isEmpty()) {
                     new AlertDialog.Builder(this)
                             .setTitle("No FLEX server found")
@@ -165,6 +174,14 @@ public class MainActivity extends Activity {
                 }
             });
         }).start();
+    }
+
+    /** The server's Tailscale address, refreshed on every visit (null when
+     *  its remote access is off), so a phone with Tailscale reaches it from
+     *  anywhere once the home address stops answering. */
+    void rememberTailscale(String tsUrl) {
+        if (tsUrl == null) prefs.edit().remove("ts").apply();
+        else prefs.edit().putString("ts", tsUrl).apply();
     }
 
     private void choose(Discovery.Found f) {

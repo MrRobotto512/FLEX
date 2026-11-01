@@ -21,6 +21,10 @@ Headless (`flexd`): set `FLEX_TS_ENABLE=1`, start it, and open the sign-in URL f
 
 Install Tailscale, sign in to the same tailnet, and open `http://flex:8484` (or the full `flex.<tailnet>.ts.net` name). The web UI works as at home.
 
+## The Android app
+
+With the Tailscale app on the phone signed in to the same tailnet, the FLEX app needs nothing else: it keeps the server's Tailscale address (from the discovery reply and from `/server` on every visit) and switches to it when the home address doesn't answer. Typing `flex:8484` under *Enter address* works too. Streams come through the `remote` profile.
+
 ## The PS5
 
 The PS5 can't run Tailscale. Away from home it needs a **travel router with Tailscale built in** (GL.iNet's firmware has it) that is signed in to your tailnet. Connect the PS5 to that router's Wi-Fi.
