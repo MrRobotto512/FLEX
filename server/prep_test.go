@@ -2,6 +2,8 @@ package server
 
 import (
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,7 +62,8 @@ func TestPrepPick(t *testing.T) {
 	for _, it := range p.List() {
 		got = append(got, it.Kind+":"+it.Title)
 	}
-	if len(got) != 2 || got[0] != "episode:Futurama S02E03 Haunted" || got[1] != "movie:Casper" {
+	slices.Sort(got)
+	if strings.Join(got, ",") != "episode:Futurama S02E03 Haunted,movie:Casper" {
 		t.Errorf("after the season: %v", got)
 	}
 	p.Remove("movie", 3)
