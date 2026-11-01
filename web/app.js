@@ -2,7 +2,7 @@
 // by arrow keys / D-pad, an episode list per show, and a player that asks the
 // server how to play each item (docs/api.md).
 const API = '/api/v1';
-const CLIENT = 'web';
+const CLIENT = /FLEX-Android\//.test(navigator.userAgent) ? 'android' : 'web';
 
 const grid = document.getElementById('grid');
 const empty = document.getElementById('empty');
@@ -358,6 +358,14 @@ function showOSD() {
 }
 
 // --- input: arrow keys (PS5 D-pad arrives as arrows), Enter, Escape/Backspace, Tab switches Home/Movies/TV ---
+
+// The Android app's Back key: close what is open and say so; false at the home screen (the app leaves).
+window.flexBack = () => {
+  if (view === 'player') { stop(); return true; }
+  if (view === 'episodes') { closeShow(); return true; }
+  if (mode !== 'home') { setMode('home'); return true; }
+  return false;
+};
 
 document.addEventListener('keydown', e => {
   if (e.target === search) {

@@ -2,9 +2,10 @@
 #
 #   git tag v0.3.0 && git push origin v0.3.0
 #
-# Builds the PS5 client, the Windows app and flexd with that version, and
-# attaches them with SHA256SUMS. FLEX servers pick the PS5 build up from here
-# and offer it to consoles; the Windows app updates itself from it.
+# Builds the PS5 client, the Windows app and flexd, and the Android app with
+# that version, and attaches them with SHA256SUMS. FLEX servers pick the PS5
+# build up from here and offer it to consoles; the Windows and Android apps
+# update themselves from it.
 name: release
 
 on:
@@ -71,8 +72,42 @@ jobs:
           name: windows
           path: dist/
 
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      # the release key (a PKCS12 keystore, alias "flex") from the repository's
+      # secrets; the same key every release, or Android refuses the update
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE }}
+        run: |
+          test -n "$KEYSTORE_B64" || { echo "secret ANDROID_KEYSTORE is not set"; exit 1; }
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/flex.p12"
+      - name: Build
+        working-directory: android
+        env:
+          FLEX_KEYSTORE: ${{ runner.temp }}/flex.p12
+          FLEX_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: gradle --no-daemon assembleRelease -PflexVersion="${TAG#v}"
+      - name: Collect
+        run: mkdir dist && cp android/app/build/outputs/apk/release/app-release.apk dist/FLEX-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/
+
   publish:
-    needs: [ps5, windows]
+    needs: [ps5, windows, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +120,7 @@ jobs:
           merge-multiple: true
       - name: Checksums
         working-directory: dist
-        run: sha256sum FLEX.exe flexd.exe FLEX-ps5.elf FLEX-ps5.zip > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum FLEX.exe flexd.exe FLEX-ps5.elf FLEX-ps5.zip FLEX-android.apk > SHA256SUMS && cat SHA256SUMS
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

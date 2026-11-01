@@ -1,0 +1,57 @@
+// The FLEX Android app: a full-screen WebView of the server's web client.
+// Version from -PflexVersion=0.6.0 (CI passes the tag); the release signing
+// key from FLEX_KEYSTORE / FLEX_KEYSTORE_PASSWORD (CI secrets), else the
+// debug key so a plain `gradle assembleRelease` still works.
+plugins {
+    id 'com.android.application'
+}
+
+def flexVersion = project.hasProperty('flexVersion') ? project.flexVersion : '0.0.0'
+def parts = (flexVersion =~ /(\d+)\.(\d+)\.(\d+)/)
+def flexCode = parts ? (parts[0][1] as int) * 1000000 + (parts[0][2] as int) * 1000 + (parts[0][3] as int) : 1
+def keystore = System.getenv('FLEX_KEYSTORE')
+
+android {
+    namespace 'flex.android'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'flex.android'
+        minSdk 21
+        targetSdk 35
+        versionCode Math.max(flexCode, 1)
+        versionName flexVersion
+    }
+
+    signingConfigs {
+        if (keystore) {
+            release {
+                storeFile file(keystore)
+                storeType 'PKCS12'
+                storePassword System.getenv('FLEX_KEYSTORE_PASSWORD')
+                keyAlias 'flex'
+                keyPassword System.getenv('FLEX_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig keystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1' // FileProvider for installing updates
+}
