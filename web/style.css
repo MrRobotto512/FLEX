@@ -36,7 +36,8 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
 .card .title { margin-top: 8px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .year { font-size: 12px; color: var(--muted); }
 .card.focused img, .card.focused .noart { box-shadow: 0 0 0 4px var(--accent); transform: scale(1.04); transition: transform .1s; }
-.card .progress { position: absolute; left: 6px; right: 6px; bottom: 44px; height: 4px; background: #0008; border-radius: 2px; }
+.card .art { position: relative; }
+.card .progress { position: absolute; left: 6px; right: 6px; bottom: 6px; height: 4px; background: #0008; border-radius: 2px; }
 .card .progress i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
 .card .badge { position: absolute; top: 8px; right: 8px; background: var(--accent); color: #000; font-size: 12px;
   font-weight: 600; padding: 2px 8px; border-radius: 999px; }
