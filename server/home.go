@@ -12,9 +12,12 @@ import (
 
 // HomeCard is one poster on the home screen: a movie or a show.
 type HomeCard struct {
-	Kind     string   `json:"kind"` // "movie" | "show"
-	ID       int64    `json:"id"`
+	Kind     string   `json:"kind"` // "movie" | "show" | "episode"
+	ID       int64    `json:"id"`   // what /{kind}s/{id}/play takes
 	Title    string   `json:"title"`
+	Subtitle string   `json:"subtitle,omitempty"` // episodes: "S05E09 · Christmas Party"
+	ShowID   int64    `json:"show_id,omitempty"`  // episodes: whose poster and backdrop these are
+	Still    string   `json:"still,omitempty"`
 	Year     int      `json:"year,omitempty"`
 	Poster   string   `json:"poster,omitempty"`
 	Backdrop string   `json:"backdrop,omitempty"`
@@ -42,26 +45,40 @@ type Home struct {
 	Themes   string         `json:"themes"` // who made the themed rows: "Claude", "ChatGPT", "Gemini" or "TMDB"
 }
 
-// library is every movie and show this server lists, the linked servers'
-// included.
-func (s *Server) library(ctx context.Context) ([]Movie, []Show) {
+// library is every movie and show this server lists, plus the episodes
+// about a holiday, the linked servers' included.
+func (s *Server) library(ctx context.Context) ([]Movie, []Show, []Episode) {
 	movies, _ := s.db.ListMovies("", "")
 	shows, _ := s.db.ListShows("")
+	eps, _ := s.db.HolidayEpisodes()
 	if s.peers != nil {
 		movies = s.peerMovies(ctx, movies, "")
 		shows = s.peerShows(ctx, shows, "")
+		eps = s.peerSeasonal(ctx, eps)
 	}
-	return movies, shows
+	return movies, shows, eps
+}
+
+// handleSeasonal lists this server's holiday episodes, for linked servers.
+func (s *Server) handleSeasonal(w http.ResponseWriter, r *http.Request) {
+	eps, err := s.db.HolidayEpisodes()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, eps)
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	var movies []Movie
 	var shows []Show
+	var eps []Episode
 	if s.linking(r) {
-		movies, shows = s.library(r.Context())
+		movies, shows, eps = s.library(r.Context())
 	} else {
 		movies, _ = s.db.ListMovies("", "")
 		shows, _ = s.db.ListShows("")
+		eps, _ = s.db.HolidayEpisodes()
 	}
 	cont, err := s.db.ContinueWatching(20)
 	if err != nil {
@@ -75,7 +92,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	if s.themes != nil {
 		th = s.themes.current()
 	}
-	writeJSON(w, http.StatusOK, buildHome(movies, shows, cont, th, time.Now(), nil))
+	writeJSON(w, http.StatusOK, buildHome(movies, shows, eps, cont, th, time.Now(), nil))
 }
 
 // handleThemes hands this server's AI rows to linked servers without a key.
@@ -95,7 +112,7 @@ func (s *Server) handleThemes(w http.ResponseWriter, r *http.Request) {
 // one is the time of year), then Recently Added, TV Shows and genres; without
 // AI rows a row for the time of year comes from TMDB keywords and genres.
 // rnd picks the featured title (nil: a new one each time).
-func buildHome(movies []Movie, shows []Show, cont []ContinueItem, th *Themes, now time.Time, rnd *rand.Rand) Home {
+func buildHome(movies []Movie, shows []Show, eps []Episode, cont []ContinueItem, th *Themes, now time.Time, rnd *rand.Rand) Home {
 	if rnd == nil {
 		rnd = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 	}
@@ -142,6 +159,22 @@ func buildHome(movies []Movie, shows []Show, cont []ContinueItem, th *Themes, no
 		}
 	}
 	movieCards, showCards := cards[:nMovies], cards[nMovies:]
+	// holiday episodes stand for themselves in the seasonal rows only
+	sort.SliceStable(eps, func(i, j int) bool { return eps[i].ID < eps[j].ID })
+	for _, e := range eps {
+		c := HomeCard{Kind: "episode", ID: e.ID, Title: e.ShowTitle, Subtitle: fmt.Sprintf("S%02dE%02d · %s", e.Season, e.Episode, e.Title),
+			ShowID: e.ShowID, Still: e.Still, Poster: e.Poster, Backdrop: e.Backdrop, Overview: e.Overview, Genres: e.Genres,
+			Watched: e.Watched, ResumeS: e.ResumeS, RuntimeS: e.RuntimeS, added: e.AddedAt}
+		if e.ShowTMDBID != 0 {
+			c.tmdb = episodeKey(e.ShowTMDBID, e.Season, e.Episode)
+		}
+		n := len(cards)
+		if add(c); len(cards) > n {
+			for _, h := range e.Holidays {
+				holidays[h] = append(holidays[h], c)
+			}
+		}
+	}
 
 	// the same shuffle all day, so the PS5 and a browser agree
 	y, m, d := now.Date()
@@ -256,6 +289,12 @@ func buildHome(movies []Movie, shows []Show, cont []ContinueItem, th *Themes, no
 		}
 	}
 	return home
+}
+
+// episodeKey names an episode across servers: the show's TMDB id and the
+// episode's number ("e1399-S05E09").
+func episodeKey(showTMDB int64, season, episode int) string {
+	return fmt.Sprintf("e%d-S%02dE%02d", showTMDB, season, episode)
 }
 
 // season is the row for the time of year when no AI makes the rows: its

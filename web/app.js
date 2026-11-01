@@ -72,6 +72,7 @@ function renderHome() {
       const pct = it.runtime_s && !it.watched ? Math.min(100, Math.round(100 * (it.resume_s || 0) / it.runtime_s)) : 0;
       const sub = row.cont ? it.subtitle || (it.resume_s ? `${fmtMin(it.runtime_s - it.resume_s)} left` : 'next episode')
         : it.kind === 'show' ? `${it.seasons || 1} season${it.seasons === 1 ? '' : 's'}`
+        : it.kind === 'episode' ? it.subtitle
         : `${it.year || ''}${it.watched ? ' · watched' : ''}`;
       card.innerHTML = (it.poster ? `<img src="${it.poster}" alt="" loading="lazy">` : `<div class="noart">${esc(it.title)}</div>`) +
         (pct > 0 ? `<div class="progress"><i style="width:${pct}%"></i></div>` : '') +
@@ -109,7 +110,7 @@ function showHero(it, tag) {
   document.getElementById('hero').style.backgroundImage = `url("${it.backdrop}")`;
   document.getElementById('hero-tag').textContent = tag || '';
   document.getElementById('hero-title').textContent = it.title;
-  document.getElementById('hero-meta').textContent = [it.year, (it.genres || []).slice(0, 3).join(', '),
+  document.getElementById('hero-meta').textContent = [it.kind === 'episode' ? it.subtitle : it.year, (it.genres || []).slice(0, 3).join(', '),
     it.kind === 'show' ? `${it.seasons || 1} season${it.seasons === 1 ? '' : 's'}` : fmtMin(it.runtime_s)].filter(Boolean).join(' · ');
   document.getElementById('hero-overview').textContent = it.overview || '';
 }
@@ -119,7 +120,7 @@ function activateShelf() {
   const row = shelfRows[shelf];
   const it = row && row.items[shelfCol[shelf]];
   if (!it) return;
-  if (row.cont || it.kind === 'movie') play(it.kind, it);
+  if (row.cont || it.kind !== 'show') play(it.kind, it);
   else openShow(it.id);
 }
 

@@ -167,7 +167,7 @@ type themeTitle struct {
 }
 
 // themeCatalog lists every matched title once, however many servers have it.
-func themeCatalog(movies []Movie, shows []Show) []themeTitle {
+func themeCatalog(movies []Movie, shows []Show, eps []Episode) []themeTitle {
 	var out []themeTitle
 	seen := map[string]bool{}
 	add := func(id, title string, year int, genres []string) {
@@ -191,6 +191,12 @@ func themeCatalog(movies []Movie, shows []Show) []themeTitle {
 			add(fmt.Sprintf("s%d", sh.TMDBID), sh.Title+" (TV series)", sh.Year, sh.Genres)
 		}
 	}
+	for _, e := range eps {
+		if e.ShowTMDBID != 0 {
+			add(episodeKey(e.ShowTMDBID, e.Season, e.Episode),
+				fmt.Sprintf("%s S%02dE%02d \"%s\" (episode)", e.ShowTitle, e.Season, e.Episode, e.Title), 0, e.Genres)
+		}
+	}
 	return out
 }
 
@@ -198,7 +204,7 @@ const themesSystem = `You arrange the home screen of a family's home media serve
 
 const themesPrompt = `Today is %s.
 
-Make 10 to 14 rows from this library. Open with one or two rows for the time of year (a holiday that is on or coming up, or the season) when the library has enough titles that fit; make the rest varied and fun to browse: moods, decades, franchises, directors or stars, genre blends, overlooked gems. Each row has 8 to 30 titles in the order they should be shown and a short, catchy name (at most 32 characters, no emoji). A title can be in up to three rows. Use only ids from the library.
+Make 10 to 14 rows from this library. Open with one or two rows for the time of year (a holiday that is on or coming up, or the season) when the library has enough titles that fit: put the holiday movies and the holiday episodes (ids starting with "e", single episodes of series about that holiday) in them together, episodes only in those rows. Make the rest varied and fun to browse: moods, decades, franchises, directors or stars, genre blends, overlooked gems. Each row has 8 to 30 titles in the order they should be shown and a short, catchy name (at most 32 characters, no emoji). A title can be in up to three rows. Use only ids from the library.
 
 <library>
 %s</library>`

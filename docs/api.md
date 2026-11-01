@@ -139,7 +139,7 @@ The AI (`FLEX_AI_PROVIDER` = `claude` | `openai` | `gemini`, `FLEX_AI_KEY`, opti
 {"by":"Claude","from":"Robot","made":"2026-10-26T09:00:00Z","titles":1040,
  "rows":[{"title":"Halloween Night","items":["m948","m4232","s1399"]}]}
 ```
-`m<id>` is a TMDB movie, `s<id>` a TMDB show. `404` until there are rows.
+`m<id>` is a TMDB movie, `s<id>` a TMDB show, `e<show id>-S02E03` an episode. Episodes whose title or description names a holiday (`GET /library/seasonal` lists this server's, with the show's artwork and `holidays`) are offered to the AI for the seasonal rows and go into the TMDB fallback's holiday row; a home card for one has `"kind":"episode"`, `subtitle`, `show_id` and the show's poster. `404` until there are rows.
 
 Movies and shows in `/movies` and `/shows` carry `"genres":["Horror"]` and, from TMDB keywords, `"holidays":["halloween"]` (`halloween`, `christmas`, `thanksgiving`, `valentines`, `newyear`, `summer`).
 
