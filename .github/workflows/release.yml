@@ -52,12 +52,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
+      # the Wails CLI's golang.org/x/tools no longer builds with the Go in
+      # go.mod: build the CLI with an older Go, then switch for the app
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+      - name: Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.9.2
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.9.2
       - name: FLEX.exe
         working-directory: desktop
         run: wails build -clean -ldflags "-X flex/server.Version=${TAG#v}"
