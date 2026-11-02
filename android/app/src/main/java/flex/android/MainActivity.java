@@ -11,6 +11,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -63,6 +64,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);
         s.setUserAgentString(s.getUserAgentString() + " FLEX-Android/" + BuildConfig.VERSION_NAME);
+        web.addJavascriptInterface(new FlexApp(), "FlexApp"); // the page's ⋮ button and "Update the app" bar
         web.setWebViewClient(new WebViewClient() {
             @Override public void onReceivedError(WebView v, WebResourceRequest req, WebResourceError err) {
                 if (req.isForMainFrame()) ui.post(MainActivity.this::unreachable);
@@ -176,7 +178,15 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Hold Back: the app's own menu (the page has everything else). */
+    /** What the page may ask of the app (window.FlexApp): the pages only
+     *  come from FLEX servers, and these do nothing a key can't. */
+    public class FlexApp {
+        @JavascriptInterface public void menu() { ui.post(MainActivity.this::showMenu); }
+        @JavascriptInterface public void update() { ui.post(updater::checkGitHub); }
+        @JavascriptInterface public String version() { return BuildConfig.VERSION_NAME; }
+    }
+
+    /** Hold Back, or the page's ⋮: the app's own menu (the page has everything else). */
     private void showMenu() {
         String[] items = {"Search for FLEX PCs", "Enter an address…", "Check for updates"};
         new AlertDialog.Builder(this)

@@ -130,7 +130,7 @@ func (a *App) watchUpdates() {
 		if info.Error != "" {
 			a.log.Warn("update check", "err", info.Error)
 		}
-		time.Sleep(6 * time.Hour)
+		time.Sleep(time.Hour) // a release shows up in the window and the tray within the hour
 	}
 }
 

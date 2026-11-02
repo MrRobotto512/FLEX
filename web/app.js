@@ -40,9 +40,36 @@ async function loadServer() {
   try {
     const s = await api('/server');
     document.getElementById('server').textContent = `${s.name}${s.remote ? ' · remote' : ''}`;
+    if (CLIENT === 'android') androidApp(s.version);
   } catch (e) {
     document.getElementById('server').textContent = 'server unreachable';
   }
+}
+
+// --- the Android app: a menu button, and a bar when the app is older than its server ---
+// (the app puts FLEX-Android/<version> in its user agent and, from 0.7.4, a
+// FlexApp object on the page with menu() and update())
+
+function androidApp(serverVersion) {
+  const app = window.FlexApp;
+  const menu = document.getElementById('appmenu');
+  menu.hidden = false;
+  menu.onclick = () => app ? app.menu() : alert('Hold the Back button for the app\'s menu (servers, address, updates).');
+  const m = /FLEX-Android\/(\d+\.\d+\.\d+)/.exec(navigator.userAgent);
+  const appVersion = m ? m[1] : '';
+  if (!appVersion || !newerVersion(serverVersion, appVersion)) return;
+  const bar = document.getElementById('appupdate');
+  document.getElementById('appupdate-text').textContent = `FLEX app ${appVersion} → ${serverVersion} is out.`;
+  document.getElementById('appupdate-btn').onclick = () => app ? app.update()
+    : alert('Hold the Back button and pick "Check for updates" (or accept the update the app offers).');
+  bar.hidden = false;
+}
+
+function newerVersion(a, b) {
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  if (x.length !== 3 || y.length !== 3 || [...x, ...y].some(isNaN)) return false;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
 }
 
 // --- home (rows of posters, the focused title up top) ---
