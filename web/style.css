@@ -156,3 +156,9 @@ body.nocursor, body.nocursor * { cursor: none !important; }
 #cast-list li { cursor: pointer; }
 .cast-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .cast-buttons button { min-height: 40px; }
+
+/* the Android app: its menu button, and a bar when the app is older than the server */
+#appmenu { font-size: 20px; padding: 4px 12px; line-height: 1; }
+#appupdate { display: flex; align-items: center; gap: 12px; margin: 0 16px 8px; padding: 10px 14px; border-radius: 8px;
+  background: #1f2a3d; border: 1px solid var(--accent); flex-wrap: wrap; }
+#appupdate button { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }

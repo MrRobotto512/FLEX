@@ -30,7 +30,7 @@ const (
 	ReleaseRepo  = "MrRobotto512/FLEX"
 	PS5Asset     = "FLEX-ps5.elf"
 	sumsAsset    = "SHA256SUMS"
-	updateEvery  = 6 * time.Hour
+	updateEvery  = time.Hour // consoles get a release within the hour
 	maxAssetSize = 256 << 20
 )
 
