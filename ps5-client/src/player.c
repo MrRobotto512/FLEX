@@ -900,9 +900,9 @@ static int full_range(const AVFrame *f) {
 }
 
 /* to_display returns the frame ready for the screen: at the size it takes
- * there (Lanczos on several threads, so 4K comes out as a sharp 1080p
- * picture and SD/720p are upscaled better than the renderer's bilinear
- * stretch) and already in RGB, converted with the frame's own matrix and
+ * there (Lanczos on a few threads, so 4K comes out as a sharp 1080p picture
+ * and SD/720p are upscaled better than the renderer's bilinear stretch; a
+ * picture already that size is only converted) and already in RGB, converted with the frame's own matrix and
  * range rather than whatever SDL would infer from the texture, and off the
  * main thread. (Checked with FLEX_DUMP_FRAME: the result matches a textbook
  * decode of the file pixel for pixel.) out is scratch space. */
@@ -927,10 +927,15 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
         av_opt_set_int(p->vsws, "dstw", w, 0);
         av_opt_set_int(p->vsws, "dsth", h, 0);
         av_opt_set_int(p->vsws, "dst_format", AV_PIX_FMT_BGRA, 0); /* SDL's ARGB8888 in memory order */
-        /* full-resolution chroma both ways: sharper colour edges than the default */
+        /* A smaller picture is scaled with Lanczos and full-resolution chroma
+         * both ways (sharper colour edges than the default). One already the
+         * screen's size (every 1080p stream) only needs YUV to RGB: FFmpeg's
+         * unscaled converter does that in one pass, many times cheaper than
+         * the full scaler run at the same size, so 2 threads do it. */
+        int same = in->width == w && in->height == h;
         av_opt_set_int(p->vsws, "sws_flags",
-                       SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP, 0);
-        av_opt_set_int(p->vsws, "threads", av_cpu_count() > 1 ? av_cpu_count() / 2 : 4, 0);
+                       same ? SWS_BILINEAR : SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP, 0);
+        av_opt_set_int(p->vsws, "threads", same ? 2 : 4, 0);
         if (sws_init_context(p->vsws, NULL, NULL) < 0) {
             fprintf(stderr, "player: cannot scale %dx%d to %dx%d\n", in->width, in->height, w, h);
             sws_freeContext(p->vsws);
@@ -945,9 +950,9 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
         memcpy(p->vsws_key, key, sizeof key);
         static const char *names[] = {[SWS_CS_ITU709] = "BT.709", [SWS_CS_FCC] = "FCC", [SWS_CS_ITU601] = "BT.601",
                                       [SWS_CS_SMPTE240M] = "SMPTE 240M", [SWS_CS_BT2020] = "BT.2020"};
-        fprintf(stderr, "player: %dx%d %s (%s, %s range) to %dx%d RGB (Lanczos)\n", in->width, in->height,
+        fprintf(stderr, "player: %dx%d %s (%s, %s range) to %dx%d RGB (%s)\n", in->width, in->height,
                 av_get_pix_fmt_name(in->format), names[matrix(in)] ? names[matrix(in)] : "?",
-                full_range(in) ? "full" : "limited", w, h);
+                full_range(in) ? "full" : "limited", w, h, same ? "unscaled" : "Lanczos");
     }
     out->format = AV_PIX_FMT_BGRA;
     out->width = w;
@@ -1058,14 +1063,23 @@ static int audio_thread(void *arg) {
 
 /* ---------- decode setup ---------- */
 
+/* decode_threads: enough for the picture, not the whole console. FFmpeg's
+ * "auto" took every core the PS5 reports: 16 frame threads, each holding
+ * frames of its own, beside the scaler's 8 and the system's own work (the PS
+ * button, the network), which needs cores too. 1080p H.264 decodes several
+ * times faster than real time on 4 Zen 2 threads; 4K HEVC gets 8. */
+static int decode_threads(const AVCodecParameters *par) {
+    if (par->codec_type != AVMEDIA_TYPE_VIDEO) return 1;
+    return par->height > 1088 ? 8 : par->height > 720 ? 4 : 3;
+}
+
 static int open_decoder(AVFormatContext *fmt, enum AVMediaType type, AVCodecContext **out) {
     const AVCodec *codec = NULL;
     int idx = av_find_best_stream(fmt, type, -1, -1, &codec, 0);
     if (idx < 0) return -1;
     AVCodecContext *c = avcodec_alloc_context3(codec);
     avcodec_parameters_to_context(c, fmt->streams[idx]->codecpar);
-    /* all cores; if FFmpeg can't count the PS5's, still use several */
-    c->thread_count = av_cpu_count() > 1 ? 0 : 6;
+    c->thread_count = decode_threads(fmt->streams[idx]->codecpar);
     c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
     if (avcodec_open2(c, codec, NULL) < 0) {
         avcodec_free_context(&c);

@@ -1474,7 +1474,8 @@ int main(int argc, char **argv) {
     if (SDL_GetDesktopDisplayMode(0, &dm) == 0) fprintf(stderr, "FLEX: desktop mode %dx%d @%dHz\n", dm.w, dm.h, dm.refresh_rate);
     for (int i = 0, n = SDL_GetNumDisplayModes(0); i < n; i++)
         if (SDL_GetDisplayMode(0, i, &dm) == 0) fprintf(stderr, "FLEX: display mode %d: %dx%d @%dHz\n", i, dm.w, dm.h, dm.refresh_rate);
-    fprintf(stderr, "FLEX: %d CPU cores for decoding (SDL sees %d)\n", av_cpu_count(), SDL_GetCPUCount());
+    fprintf(stderr, "FLEX: %d CPU threads (SDL sees %d); decoding uses 3-8 of them by picture size\n", av_cpu_count(),
+            SDL_GetCPUCount());
 
     /* Same setup as ps5-payload-dev/jtplay, which is known to display on the
      * console: a plain 1920x1080 window and SDL's software renderer (the
