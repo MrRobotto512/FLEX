@@ -14,6 +14,7 @@ typedef struct {
     int volume;      /* percent, 0..200 */
     int picture[3];  /* PIC_*: saturation and contrast in percent (100 = as is), brightness -30..30 */
     int may_give_up; /* stop if the link can't keep up, so the caller asks for a stream it can carry */
+    double stop_after_s; /* the self-test: stop this long after the picture starts (0 = play on) */
     TTF_Font *font;  /* OSD text */
 } PlayOpts;
 

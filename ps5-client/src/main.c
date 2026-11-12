@@ -8,6 +8,9 @@
 
 #include <SDL.h>
 #include <SDL_image.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 #include <SDL_ttf.h>
 #include <libavutil/cpu.h>
 #include <libavutil/mem.h>
@@ -18,6 +21,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "blackbox.h"
 #include "cJSON.h"
 #include "net.h"
 #include "player.h"
@@ -795,6 +799,103 @@ static void load_visible_posters(Item *list, int n, int first_row, int rows) {
             }
 }
 
+/* ---------- the self-test ----------
+ * FLEX_BENCH (websrv's env=) or a bench.txt in the app folder, which is
+ * removed once read so the next start is a normal one:
+ *   movies/60 start=300 secs=30 runs=new,old; movies/56 start=600
+ * plays that title from `start` for `secs` once per run and quits; the
+ * black box has the figures. A run is settings joined by +: new (as
+ * shipped), old (FFmpeg's automatic decoder threads and the full scaler at
+ * every size, as before the thread change), t<N> (N decoder threads),
+ * buf<N> (N MB read-ahead), lanczos (the full scaler only). Nothing is
+ * saved: no progress, no settings. */
+#define BENCH_FILE APP_DIR "/bench.txt"
+
+static int read_bench(char *buf, int size) {
+    const char *e = getenv("FLEX_BENCH");
+    if (e && *e) {
+        snprintf(buf, size, "%s", e);
+        return 1;
+    }
+    FILE *f = fopen(BENCH_FILE, "r");
+    if (!f) return 0;
+    int ok = fgets(buf, size, f) != NULL;
+    fclose(f);
+    remove(BENCH_FILE);
+    buf[strcspn(buf, "\r\n")] = 0;
+    return ok && *buf;
+}
+
+static void bench_play(SDL_Renderer *ren, const char *kind, long id, int start, int secs, const char *run) {
+    char path[320];
+    int n = snprintf(path, sizeof path, "/api/v1/%s/%ld/play?profile=ps5&caps=" PLAYER_CAPS "&start=%d&upscale=0", kind,
+                     id, start);
+    if (g_link_kbps > 0) snprintf(path + n, sizeof path - n, "&max_kbps=%d", g_link_kbps);
+    char *body = flex_get(g_host, g_port, path);
+    cJSON *info = body ? cJSON_Parse(body) : NULL;
+    free(body);
+    const char *rel = cJSON_GetStringValue(cJSON_GetObjectItem(info, "url"));
+    const char *method = cJSON_GetStringValue(cJSON_GetObjectItem(info, "method"));
+    if (!rel) {
+        bb_log("bench %s: the server gave no stream for %s", run, path);
+        cJSON_Delete(info);
+        return;
+    }
+    int hls = method && strcmp(method, "hls") == 0;
+    cJSON *dur = cJSON_GetObjectItem(info, "duration_s");
+    char url[512];
+    snprintf(url, sizeof url, "http://%s:%d%s", g_host, g_port, rel);
+    bb_log("bench %s: %s via %s", run, url, method ? method : "?");
+    PlayOpts o = {.url = url, .title = run, .offset = hls ? start : 0, .initial = hls ? 0 : start,
+                  .duration = cJSON_IsNumber(dur) && dur->valuedouble > 0 ? dur->valuedouble : start + secs + 60,
+                  .seekable = !hls, .aspect = ASPECT_AUTO, .volume = g_volume, .font = g_small, .stop_after_s = secs};
+    memcpy(o.picture, g_picture, sizeof o.picture);
+    player_play(ren, &o);
+    if (hls) {
+        char session[64] = "";
+        sscanf(rel, "/api/v1/hls/%63[^/]", session);
+        snprintf(path, sizeof path, "/api/v1/hls/%s", session);
+        free(flex_http(g_host, g_port, "DELETE", path, NULL, NULL));
+    }
+    cJSON_Delete(info);
+}
+
+static void run_bench(SDL_Renderer *ren, const char *spec) {
+    char kind[16] = "movies", runs[160] = "new,old";
+    long id = 0;
+    int start = 300, secs = 30;
+    const char *s;
+    while (*spec == ' ') spec++; /* "...; movies/56" */
+    sscanf(spec, "%15[^/]/%ld", kind, &id);
+    if ((s = strstr(spec, "start="))) start = atoi(s + 6);
+    if ((s = strstr(spec, "secs="))) secs = atoi(s + 5);
+    if ((s = strstr(spec, "runs="))) sscanf(s + 5, "%159s", runs);
+    bb_log("bench: %s/%ld from %d s, %d s per run, runs %s", kind, id, start, secs, runs);
+    char *save = NULL;
+    for (char *run = strtok_r(runs, ",", &save); run; run = strtok_r(NULL, ",", &save)) {
+        unsetenv("FLEX_DEC_THREADS");
+        unsetenv("FLEX_SWS");
+        unsetenv("FLEX_BUFFER_MB");
+        char parts[64], *save2 = NULL;
+        snprintf(parts, sizeof parts, "%s", run);
+        for (char *t = strtok_r(parts, "+", &save2); t; t = strtok_r(NULL, "+", &save2)) {
+            if (strcmp(t, "old") == 0) {
+                setenv("FLEX_DEC_THREADS", "0", 1);
+                setenv("FLEX_SWS", "lanczos", 1);
+            } else if (strcmp(t, "lanczos") == 0) {
+                setenv("FLEX_SWS", "lanczos", 1);
+            } else if (t[0] == 't' && t[1] >= '0' && t[1] <= '9') {
+                setenv("FLEX_DEC_THREADS", t + 1, 1);
+            } else if (strncmp(t, "buf", 3) == 0) {
+                setenv("FLEX_BUFFER_MB", t + 3, 1);
+            }
+        }
+        bench_play(ren, kind, id, start, secs, run);
+        SDL_Delay(3000); /* memory settles between runs */
+        bb_every(0, "bench: after the run");
+    }
+}
+
 /* play_item plays a movie ("movies") or an episode ("episodes"), then saves
  * the position. Direct files seek in place; a transcoded HLS session cannot
  * seek, so a seek ends it and a new session starts at the target. */
@@ -826,7 +927,7 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
         int upscaled = cJSON_IsTrue(cJSON_GetObjectItem(info, "upscaled"));
         char url[512];
         snprintf(url, sizeof url, "http://%s:%d%s", g_host, g_port, rel ? rel : "");
-        fprintf(stderr, "FLEX: play \"%s\" via %s from %.0fs: %s\n", title, method ? method : "?", start, url);
+        bb_log("FLEX: play \"%s\" via %s from %.0fs: %s", title, method ? method : "?", start, url);
 
         PlayOpts o = {.url = url, .title = title, .offset = hls ? start : 0, .initial = hls ? 0 : start,
                       .duration = duration, .seekable = !hls, .aspect = aspect, .upscaled = upscaled,
@@ -845,7 +946,7 @@ static void play_item(SDL_Renderer *ren, const char *kind, long id, const char *
             memcpy(g_picture, r.picture, sizeof g_picture);
             save_picture();
         }
-        fprintf(stderr, "FLEX: stopped at %.1fs%s\n", r.position, r.seek_to >= 0 ? " (seek)" : "");
+        bb_log("FLEX: stopped at %.1fs%s", r.position, r.seek_to >= 0 ? " (seek)" : "");
 
         if (hls && rel) {
             /* /api/v1/hls/<session>/index.m3u8 -> DELETE /api/v1/hls/<session> */
@@ -1462,6 +1563,17 @@ int main(int argc, char **argv) {
     /* stdout/stderr may be a pipe back to the dev machine (websrv pipe=1);
      * when that side hangs up we must not die on the next log line */
     signal(SIGPIPE, SIG_IGN);
+    /* One FLEX at a time: two fighting over the screen froze the whole
+     * console. The lock goes with the process, however it ends; after an
+     * update websrv is still ending the old copy as this one starts, so it
+     * gets 10 s to go. Nothing has touched the screen yet. */
+    int lock = open(APP_DIR "/running.lock", O_RDWR | O_CREAT, 0666), tries = 0;
+    while (lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) != 0 && ++tries <= 20) usleep(500 * 1000);
+    if (tries > 20) {
+        fprintf(stderr, "FLEX: another FLEX is already running; this one quits\n");
+        return 0;
+    }
+    bb_open(FLEX_VERSION);
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
@@ -1474,8 +1586,8 @@ int main(int argc, char **argv) {
     if (SDL_GetDesktopDisplayMode(0, &dm) == 0) fprintf(stderr, "FLEX: desktop mode %dx%d @%dHz\n", dm.w, dm.h, dm.refresh_rate);
     for (int i = 0, n = SDL_GetNumDisplayModes(0); i < n; i++)
         if (SDL_GetDisplayMode(0, i, &dm) == 0) fprintf(stderr, "FLEX: display mode %d: %dx%d @%dHz\n", i, dm.w, dm.h, dm.refresh_rate);
-    fprintf(stderr, "FLEX: %d CPU threads (SDL sees %d); decoding uses 3-8 of them by picture size\n", av_cpu_count(),
-            SDL_GetCPUCount());
+    bb_log("FLEX: %d CPU threads (SDL sees %d); decoding uses 3-8 of them by picture size", av_cpu_count(),
+           SDL_GetCPUCount());
 
     /* Same setup as ps5-payload-dev/jtplay, which is known to display on the
      * console: a plain 1920x1080 window and SDL's software renderer (the
@@ -1532,9 +1644,16 @@ int main(int argc, char **argv) {
     ShowView sv = {0};
     int in_show = 0, ep_sel = 0, ep_first = 0;
 
-    if (find_server() == 0) {
-        fprintf(stderr, "FLEX: server %s:%d%s (tailscale %s)\n", g_host, g_port, g_is_remote ? " via tailscale" : "",
-                g_remote[0] ? g_remote : "unknown");
+    int found = find_server() == 0;
+    char bench[256];
+    if (found && read_bench(bench, sizeof bench)) {
+        char *save = NULL; /* several titles: separated by ; */
+        for (char *one = strtok_r(bench, ";", &save); one; one = strtok_r(NULL, ";", &save)) run_bench(ren, one);
+        bb_log("FLEX: self-test done, quitting");
+        quit = 1;
+    } else if (found) {
+        bb_log("FLEX: server %s:%d%s (tailscale %s)", g_host, g_port, g_is_remote ? " via tailscale" : "",
+               g_remote[0] ? g_remote : "unknown");
         lists[TAB_MOVIES] = fetch_items(KIND_MOVIE, &counts[TAB_MOVIES]);
         lists[TAB_SHOWS] = fetch_items(KIND_SHOW, &counts[TAB_SHOWS]);
         lists[TAB_CONTINUE] = fetch_continue(&counts[TAB_CONTINUE]);
@@ -1558,6 +1677,7 @@ int main(int argc, char **argv) {
     Uint32 next_repeat = 0;
 
     while (!quit) {
+        bb_every(5000, "grid");
         Item *list = lists[tab];
         int n = counts[tab], *sel = &sels[tab], *first_row = &firsts[tab];
         int typing = tab == TAB_SEARCH && kb_focus;
@@ -1728,6 +1848,7 @@ int main(int argc, char **argv) {
         SDL_Delay(16);
     }
 
+    bb_log("FLEX: quit");
     free(sv.rows);
     for (int t = 0; t < TABS; t++) free_items(lists[t], counts[t]);
     if (g_backdrop) SDL_DestroyTexture(g_backdrop);
