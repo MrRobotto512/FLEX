@@ -228,7 +228,7 @@ async function refresh() {
     : st.prep_engine === 'shaders' ? 'Upscales with the built-in AI shaders' : (st.prep_why || 'No upscaler yet');
   renderPrep(st.prep || []);
   $('peers').textContent = !settings.link_servers ? 'Off' : peers.length === 0 ? 'None found yet'
-    : peers.map(p => `${p.name} (${p.addr}, v${p.version}): ${p.online ? `${p.movies} movies · ${p.shows} shows` : 'not answering'}`).join(' · ');
+    : peers.map(p => `${p.name} (${p.addr}${p.via === 'tailscale' ? ' over Tailscale' : ''}, v${p.version}): ${p.online ? `${p.movies} movies · ${p.shows} shows` : 'not answering'}`).join(' · ');
   pills.push(`<span class="pill muted">v${esc(st.version)}</span>`);
   $('status').innerHTML = pills.join('');
 

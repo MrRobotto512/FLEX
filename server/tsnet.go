@@ -12,6 +12,19 @@ import (
 	"tailscale.com/tsnet"
 )
 
+// tsnetServer and tsnetClient are FLEX's own tailnet node once it runs, else nil.
+func (s *Server) tsnetServer() *tsnet.Server {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tsSrv
+}
+
+func (s *Server) tsnetClient() *tailscale.LocalClient {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tsLC
+}
+
 // TSInfo is the remote-access state shown in the desktop app and, without
 // the sign-in URL, to clients.
 type TSInfo struct {
@@ -57,6 +70,9 @@ func (s *Server) startTailscale(ctx context.Context, handler http.Handler) (*tsn
 		s.setTS(TSInfo{State: "Error", Error: err.Error()})
 		return nil, err
 	}
+	s.mu.Lock()
+	s.tsSrv, s.tsLC = ts, lc
+	s.mu.Unlock()
 	go s.watchTailscale(ctx, ts, lc, handler)
 	return ts, nil
 }

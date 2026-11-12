@@ -243,7 +243,9 @@ func (s *Server) handlePlay(kind string) http.HandlerFunc {
 // the limit: same codecs, lower bitrate.
 func playProfile(r *http.Request) string {
 	profile := r.URL.Query().Get("profile")
-	remote := isTailnetAddr(r.RemoteAddr)
+	// a linked server reaching this one over the tailnet chose the profile for
+	// its own client already (it may be a console on its home network)
+	remote := isTailnetAddr(r.RemoteAddr) && r.Header.Get(peerHeader) == ""
 	switch {
 	case profile == "" && r.Header.Get("X-Flex-Client") == "ps5":
 		profile = "ps5"

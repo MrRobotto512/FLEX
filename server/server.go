@@ -12,6 +12,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"tailscale.com/client/tailscale"
+	"tailscale.com/tsnet"
 )
 
 // Server ties the pieces together. The desktop app and flexd both construct
@@ -40,7 +43,9 @@ type Server struct {
 	folders   []string
 	ctx       context.Context
 	ts        TSInfo
-	upscalers map[string]string // AI upscaler -> "ok (…x real time)" or why not
+	tsSrv     *tsnet.Server          // FLEX's own tailnet node, once it runs
+	tsLC      *tailscale.LocalClient // and its local API
+	upscalers map[string]string      // AI upscaler -> "ok (…x real time)" or why not
 }
 
 func New(cfg Config, log *slog.Logger, web fs.FS) (*Server, error) {
