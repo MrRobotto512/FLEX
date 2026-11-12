@@ -4,5 +4,5 @@ package web
 
 import "embed"
 
-//go:embed index.html app.js style.css hls.min.js
+//go:embed index.html app.js style.css hls.min.js favicon.png
 var Files embed.FS
