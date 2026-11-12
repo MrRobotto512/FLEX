@@ -192,8 +192,9 @@ The broadcast stays on its own network, so each minute a server also asks, for s
 ## Client updates
 The server checks the latest GitHub release every 6 h (unless `FLEX_NO_UPDATES=1`) and keeps its PS5 build, verified against the release's `SHA256SUMS`, in `<data>/ps5/client/`.
 
-- `GET /client/ps5` → `{"version":"0.3.0","sha256":"…","size":35927528,"url":"/api/v1/client/ps5/eboot.elf"}`, or `404 no_build` before the first download.
+- `GET /client/ps5` → `{"version":"0.3.0","sha256":"…","size":35927528,"url":"/api/v1/client/ps5/eboot.elf"}`, or `404 no_build` before the first download. From releases that carry `FLEX-ps5-app.zip` it also has `"app":{"title_id":"PPSA84840","files":[{"path":"eboot.bin","sha256":"…","size":33488021,"url":"/api/v1/client/ps5/app/eboot.bin"},…]}`: the client built as its own PS5 app, file by file; the app fetches the files that differ from its own.
 - `GET /client/ps5/eboot.elf` — the build itself (`Range` works).
+- `GET /client/ps5/app/{path}` — one file of the app build, e.g. `eboot.bin` or `sce_module/libc.prx` (only the listed files).
 
 The PS5 client offers it when `version` is newer than its own (any release is newer than a dev build) and checks `size` and `sha256` before swapping it in.
 

@@ -2,6 +2,8 @@
 
 Native homebrew player for a jailbroken PS5. C, SDL2 (video out, audio, controller), SDL2_ttf (text), FFmpeg (demux + CPU decode). It finds the server over UDP, lists the library and plays the `ps5` profile the server prepares (≤1080p H.264 + AAC) so software decoding keeps up.
 
+The same sources build two ways: a payload (`build/FLEX.elf`) that websrv's Homebrew Launcher starts, and a PS5 app (`build/app/PPSA84840/`, see [As its own app](#as-its-own-app)) whose home-screen tile is FLEX itself.
+
 ## Toolchain (once, in WSL Ubuntu or any Debian-like Linux)
 
 ```bash
@@ -58,7 +60,7 @@ The FLEX server must be running on the PC (`go run ./cmd/flexd` or the desktop a
 | Grid | Square | search |
 | Grid | Triangle | re-discover the server and refresh |
 | Grid | Options | install the update the server offers ("Update … ready" in the top line) |
-| Grid | Circle | quit |
+| Grid | Circle (hold) | close FLEX: a toast fills up while it's held, letting go early cancels |
 | Search | D-pad / Cross | move on the keyboard / type (Space, Delete, Clear on the bottom row); results update as you type |
 | Search | Square | delete the last letter |
 | Search | Down from the keyboard / Up from the results | move between the keyboard and the results |
@@ -93,8 +95,27 @@ Away from home the client falls back to the server's Tailscale address, which it
 - `main.c`: SDL window, controller input, 6×2 poster grid, saved server address at `/data/homebrew/FLEX/server.txt` (used when discovery finds nothing, e.g. over Tailscale).
 - `posters.c`: four worker threads fetch posters (`/movies/{id}/poster`) and decode them with SDL2_image, so the grid never waits on the network; the rows on screen are asked for last and served first. Every poster is kept in `/data/homebrew/FLEX/cache/` (named kind, id and TMDB id, so a fixed match gets its new poster), and after the library loads the workers quietly fill that cache with the whole library (~65 KB a poster). At most 48 textures stay in memory.
 - `player.c`: four threads. A reader demuxes the URL the server returned (direct file or HLS) up to 5 min / 512 MB ahead (less if malloc's footprint passes 1 GB or memory runs out), so bitrate peaks, slow links and segment requests play out of memory instead of stalling; the converted pictures come from a fixed pool (an 8 MB picture allocated per frame made malloc hold ~15× what was read ahead, which froze the console); a video thread decodes (3-8 threads by picture size) into a queue of 8 frames; an audio thread converts to S16 stereo for SDL; the main thread presents YUV frames in sync with the audio clock. After a seek the audio waits for the first video frame, so the frames between the keyframe and the target aren't counted late.
-- Updates: on connect the client asks `/api/v1/client/ps5`; Options downloads it to `eboot.elf.new`, checks size and SHA-256, keeps the old one as `eboot.elf.bak` and asks websrv (`127.0.0.1:8080/hbldr`) to start the new one, which also ends the running copy.
+- Updates: on connect the client asks `/api/v1/client/ps5`; Options downloads it to `eboot.elf.new`, checks size and SHA-256, keeps the old one as `eboot.elf.bak` and asks websrv (`127.0.0.1:8080/hbldr`) to start the new one, which also ends the running copy. The app instead takes the response's `app` files: each one that differs from its own (outside `sce_sys/`, which the home screen copied at install) is fetched to `<file>.new` in `/data/homebrew/<TITLEID>/` and checked, then all are swapped in (old ones kept as `.bak`) and FLEX closes, to be opened again.
 - `third_party/cJSON/`: vendored cJSON 1.7.18.
+
+## As its own app
+
+```bash
+bash tools/setup-app-kit.sh   # once: the app kit's converter and libc.prx, into ~/ps5-app-kit
+make app                      # -> build/app/PPSA84840/{eboot.bin, sce_module/libc.prx, sce_sys/, assets/}
+make deploy-app               # upload it to /data/homebrew/PPSA84840 (Shadow Mount+ adds the tile)
+make app-release              # build/FLEX-ps5-app.zip, what a release carries
+make app APP_ID=PPSA84841 APP_NAME="FLEX Test"   # a second tile for trying a build
+```
+
+The payload SDK builds payloads that a loader injects into a running app; it has no tools for apps. The native-app kit inside [Forwarder Manager](https://github.com/heydemoura/ps5-forwarder-manager) (GPL-3.0-or-later, pinned in `tools/setup-app-kit.sh`) has the rest: its linker layout, a converter that turns the linked program into a PS5 executable signed as a fake SELF, and the clean-room `libc.prx` the system loader requires in `sce_module/`. The program itself is the same sources compiled with `FLEX_APP`, the same ports, and:
+
+- `app/start.c`: the app's own startup (an app is started by the system, not injected), closing the app when `main` returns (`sceSystemServiceLoadExec("exit")`); `stdout`/`stderr` go to `/data/homebrew/FLEX/app-log.txt`.
+- System modules an app doesn't get loaded leave their imports at address 0: SDL's USB keyboard and text-input dialog calls go through guards (`--wrap`, see `APP_WRAP`) that fail politely, and the start of the black box lists any other unbound import.
+- `app/heap.c`: the C library's heap in an app refuses even 8 MB blocks, so FLEX takes 1.5 GB of the app's direct memory (it has 12 GB) and runs the library's own allocator ("mspace") on it; `malloc` and friends are routed there.
+- The payload SDK's `libc.a` is linked after the system modules: its `mmap`/`mprotect` make raw system calls and change page rights with the payload's kernel access, which an app has neither of.
+
+Its settings, cache and black box are the payload's (`/data/homebrew/FLEX/`). Shadow Mount+ only accepts title IDs starting PPSA, CUSA, LAPY or FAKE.
 
 ## Next steps
 

@@ -1,7 +1,9 @@
 package server
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +11,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +34,7 @@ import (
 const (
 	ReleaseRepo  = "MrRobotto512/FLEX"
 	PS5Asset     = "FLEX-ps5.elf"
+	PS5AppAsset  = "FLEX-ps5-app.zip" // the same client as its own PS5 app
 	sumsAsset    = "SHA256SUMS"
 	updateEvery  = time.Hour // consoles get a release within the hour
 	maxAssetSize = 256 << 20
@@ -165,12 +171,78 @@ func parseVersion(v string) ([3]int, bool) {
 
 // ---------------------------------------------------------------- PS5 client
 
-// PS5Client describes the console build the server offers.
+// PS5Client describes the console build the server offers: the payload
+// (eboot.elf, started through websrv's Homebrew Launcher) and, from releases
+// that have it, the same client built as its own PS5 app.
 type PS5Client struct {
-	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
-	Size    int    `json:"size"`
-	URL     string `json:"url"`
+	Version string  `json:"version"`
+	SHA256  string  `json:"sha256"`
+	Size    int     `json:"size"`
+	URL     string  `json:"url"`
+	App     *PS5App `json:"app,omitempty"`
+}
+
+// PS5App is the client as a PS5 app (its home-screen tile is FLEX itself):
+// the files of its folder. The app compares them with its own and fetches
+// the ones that differ.
+type PS5App struct {
+	TitleID string       `json:"title_id"`
+	Files   []PS5AppFile `json:"files"`
+}
+
+type PS5AppFile struct {
+	Path   string `json:"path"` // inside the app's folder, e.g. "eboot.bin"
+	SHA256 string `json:"sha256"`
+	Size   int    `json:"size"`
+	URL    string `json:"url"`
+}
+
+var titleIDRe = regexp.MustCompile(`^[A-Z]{4}[0-9]{5}$`)
+
+// unpackPS5App reads the app's folder out of FLEX-ps5-app.zip: the one
+// <TITLEID>/ folder holding eboot.bin (the zip's other files are notes for
+// people installing it by hand).
+func unpackPS5App(b []byte) (string, map[string][]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		return "", nil, fmt.Errorf("app zip: %w", err)
+	}
+	id := ""
+	for _, f := range zr.File {
+		if dir, file := path.Split(f.Name); file == "eboot.bin" && titleIDRe.MatchString(strings.TrimSuffix(dir, "/")) {
+			if id != "" {
+				return "", nil, fmt.Errorf("app zip: more than one app")
+			}
+			id = strings.TrimSuffix(dir, "/")
+		}
+	}
+	if id == "" {
+		return "", nil, fmt.Errorf("app zip: no <TITLEID>/eboot.bin")
+	}
+	files := map[string][]byte{}
+	for _, f := range zr.File {
+		rel, ok := strings.CutPrefix(f.Name, id+"/")
+		if !ok || f.FileInfo().IsDir() || rel == "" {
+			continue
+		}
+		if path.Clean(rel) != rel || strings.HasPrefix(rel, "../") || path.IsAbs(rel) {
+			return "", nil, fmt.Errorf("app zip: bad path %q", f.Name)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return "", nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(rc, maxAssetSize+1))
+		rc.Close()
+		if err != nil {
+			return "", nil, fmt.Errorf("app zip: %s: %w", f.Name, err)
+		}
+		if len(data) > maxAssetSize {
+			return "", nil, fmt.Errorf("app zip: %s too large", f.Name)
+		}
+		files[rel] = data
+	}
+	return id, files, nil
 }
 
 type ps5Updates struct {
@@ -192,6 +264,14 @@ func (u *ps5Updates) load() {
 		return
 	}
 	if elf, err := os.ReadFile(filepath.Join(u.dir(), "eboot.elf")); err == nil && sha(elf) == cl.SHA256 {
+		if cl.App != nil {
+			for _, f := range cl.App.Files {
+				if b, err := os.ReadFile(filepath.Join(u.dir(), "app", filepath.FromSlash(f.Path))); err != nil || sha(b) != f.SHA256 {
+					cl.App = nil
+					break
+				}
+			}
+		}
 		u.mu.Lock()
 		u.cl = &cl
 		u.mu.Unlock()
@@ -204,13 +284,21 @@ func (u *ps5Updates) current() *PS5Client {
 	return u.cl
 }
 
-// store keeps elf as the offered build; the files are replaced atomically
-// so a console downloading the old one still gets a whole file.
-func (u *ps5Updates) store(version string, elf []byte) error {
+// store keeps elf (and the app from appZip, if any) as the offered build;
+// the files are replaced atomically so a console downloading the old one
+// still gets a whole file.
+func (u *ps5Updates) store(version string, elf, appZip []byte) error {
 	if err := os.MkdirAll(u.dir(), 0o755); err != nil {
 		return err
 	}
 	cl := &PS5Client{Version: version, SHA256: sha(elf), Size: len(elf), URL: "/api/v1/client/ps5/eboot.elf"}
+	if appZip != nil {
+		app, err := u.storeApp(appZip)
+		if err != nil {
+			return err
+		}
+		cl.App = app
+	}
 	meta, _ := json.MarshalIndent(cl, "", "  ")
 	for name, data := range map[string][]byte{"eboot.elf": elf, "client.json": meta} {
 		tmp := filepath.Join(u.dir(), name+".tmp")
@@ -244,10 +332,16 @@ func (u *ps5Updates) check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := u.store(rel.Version, elf); err != nil {
+	var app []byte
+	if rel.Has(PS5AppAsset) {
+		if app, err = rel.Download(ctx, PS5AppAsset); err != nil {
+			return err
+		}
+	}
+	if err := u.store(rel.Version, elf, app); err != nil {
 		return err
 	}
-	u.s.log.Info("ps5: new client build ready for consoles", "version", rel.Version, "bytes", len(elf))
+	u.s.log.Info("ps5: new client build ready for consoles", "version", rel.Version, "bytes", len(elf), "app", app != nil)
 	return nil
 }
 
@@ -264,8 +358,61 @@ func (u *ps5Updates) run(ctx context.Context) {
 	}
 }
 
-// StorePS5Client makes elf the build offered to consoles (desktop app, tests).
-func (s *Server) StorePS5Client(version string, elf []byte) error { return s.ps5up.store(version, elf) }
+// StorePS5Client makes elf (and the app in appZip, if not nil) the build
+// offered to consoles (tests).
+func (s *Server) StorePS5Client(version string, elf, appZip []byte) error {
+	return s.ps5up.store(version, elf, appZip)
+}
+
+// storeApp unpacks the app's files into app/ (replacing the previous ones
+// in one rename) and describes them.
+func (u *ps5Updates) storeApp(appZip []byte) (*PS5App, error) {
+	id, files, err := unpackPS5App(appZip)
+	if err != nil {
+		return nil, err
+	}
+	dir, staged, old := filepath.Join(u.dir(), "app"), filepath.Join(u.dir(), "app.new"), filepath.Join(u.dir(), "app.old")
+	os.RemoveAll(staged)
+	app := &PS5App{TitleID: id}
+	for rel, data := range files {
+		p := filepath.Join(staged, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			return nil, err
+		}
+		app.Files = append(app.Files, PS5AppFile{Path: rel, SHA256: sha(data), Size: len(data),
+			URL: "/api/v1/client/ps5/app/" + rel})
+	}
+	sort.Slice(app.Files, func(i, j int) bool { return app.Files[i].Path < app.Files[j].Path })
+	os.RemoveAll(old)
+	if err := os.Rename(dir, old); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.Rename(staged, dir); err != nil {
+		return nil, err
+	}
+	os.RemoveAll(old)
+	return app, nil
+}
+
+// handlePS5AppFile serves one file of the app build.
+func (s *Server) handlePS5AppFile(w http.ResponseWriter, r *http.Request) {
+	cl, rel := s.ps5up.current(), r.PathValue("path")
+	if cl == nil || cl.App == nil {
+		writeErr(w, http.StatusNotFound, "no_build", "this server has no PS5 app build yet")
+		return
+	}
+	for _, f := range cl.App.Files {
+		if f.Path == rel {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			http.ServeFile(w, r, filepath.Join(s.ps5up.dir(), "app", filepath.FromSlash(rel)))
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, "not_found", "no such file in the app build")
+}
 
 func (s *Server) handlePS5Client(w http.ResponseWriter, r *http.Request) {
 	cl := s.ps5up.current()

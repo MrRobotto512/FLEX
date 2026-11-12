@@ -2,7 +2,7 @@
 #
 #   git tag v0.3.0 && git push origin v0.3.0
 #
-# Builds the PS5 client, the Windows app and flexd, and the Android app with
+# Builds the PS5 client (payload and app), the Windows app and flexd, and the Android app with
 # that version, and attaches them with SHA256SUMS. FLEX servers pick the PS5
 # build up from here and offer it to consoles; the Windows and Android apps
 # update themselves from it.
@@ -32,17 +32,20 @@ jobs:
           ref: ${{ env.TAG }}
       - name: Toolchain
         run: bash ps5-client/tools/setup-wsl.sh
+      - name: App kit
+        run: bash ps5-client/tools/setup-app-kit.sh
       - name: Build
         working-directory: ps5-client
         env:
           PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
-        run: make release VERSION="${TAG#v}"
+        run: make release app-release VERSION="${TAG#v}"
       - uses: actions/upload-artifact@v4
         with:
           name: ps5
           path: |
             ps5-client/build/FLEX-ps5.elf
             ps5-client/build/FLEX-ps5.zip
+            ps5-client/build/FLEX-ps5-app.zip
 
   windows:
     runs-on: windows-latest
@@ -120,7 +123,7 @@ jobs:
           merge-multiple: true
       - name: Checksums
         working-directory: dist
-        run: sha256sum FLEX.exe flexd.exe FLEX-ps5.elf FLEX-ps5.zip FLEX-android.apk > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum FLEX.exe flexd.exe FLEX-ps5.elf FLEX-ps5.zip FLEX-ps5-app.zip FLEX-android.apk > SHA256SUMS && cat SHA256SUMS
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

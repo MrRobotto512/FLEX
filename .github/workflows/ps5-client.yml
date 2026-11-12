@@ -18,14 +18,17 @@ jobs:
           fetch-depth: 0 # git describe gives the version
       - name: Toolchain
         run: bash ps5-client/tools/setup-wsl.sh
+      - name: App kit
+        run: bash ps5-client/tools/setup-app-kit.sh
       - name: Build
         working-directory: ps5-client
         env:
           PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
-        run: make release
+        run: make release app-release
       - uses: actions/upload-artifact@v4
         with:
           name: FLEX-ps5
           path: |
             ps5-client/build/FLEX-ps5.elf
             ps5-client/build/FLEX-ps5.zip
+            ps5-client/build/FLEX-ps5-app.zip
