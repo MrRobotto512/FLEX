@@ -7,6 +7,13 @@ package server
 // for a linked item are passed on to the server that has the file, which
 // converts it on its own GPU.
 //
+// A broadcast stays on its own network, so a PC behind another router (one
+// on the internet provider's Wi-Fi, the other on the home router's) would
+// drop out. Each server therefore remembers where the others answered, and
+// also asks the devices on its tailnet: first at the direct address
+// Tailscale reaches them on (often reachable without Tailscale, and faster),
+// then at their Tailscale address.
+//
 // A linked item's id is its owner's id plus slot*peerStride, where the slot is
 // a small number this server keeps for each server it links (saved, so ids
 // stay put across restarts; 20 slots keep every id below 2^31 for the PS5).
@@ -20,12 +27,17 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"tailscale.com/client/tailscale"
+	"tailscale.com/ipn/ipnstate"
 )
 
 const (
@@ -37,6 +49,8 @@ const (
 	peerEvery   = time.Minute      // how often to look for servers
 	peerGone    = 3 * peerEvery    // not seen for this long: left out
 	peerBackoff = 30 * time.Second // after a request to it failed
+	// addresses kept per linked server, of each kind (home network, tailnet)
+	peerAddrsKept = 2
 )
 
 // PeerInfo is a linked server as GET /server and the desktop app show it.
@@ -48,6 +62,7 @@ type PeerInfo struct {
 	Movies  int    `json:"movies"`
 	Shows   int    `json:"shows"`
 	Online  bool   `json:"online"`
+	Via     string `json:"via,omitempty"` // "lan" or "tailscale": how this server reaches it
 }
 
 type peer struct {
@@ -64,20 +79,40 @@ type peers struct {
 
 	mu    sync.Mutex
 	byID  map[string]*peer
-	slots map[string]int // server id -> slot, kept in the settings table
+	slots map[string]int      // server id -> slot, kept in the settings table
+	known map[string][]string // server id -> where it answered, kept as "peer_addrs"
+	round map[string]bool     // linked during the current find (nil outside one)
+
+	status func(context.Context) *ipnstate.Status // the tailnet (tailnetStatus; tests swap it)
 }
 
 func newPeers(s *Server) *peers {
-	p := &peers{s: s, byID: map[string]*peer{}, slots: map[string]int{},
-		tr: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
-			ResponseHeaderTimeout: 90 * time.Second, // /play waits for the first segment
-			MaxIdleConnsPerHost:   8,
-		}}
+	p := &peers{s: s, byID: map[string]*peer{}, slots: map[string]int{}, known: map[string][]string{}}
+	p.status = p.tailnetStatus
+	p.tr = &http.Transport{
+		DialContext:           p.dial,
+		ResponseHeaderTimeout: 90 * time.Second, // /play waits for the first segment
+		MaxIdleConnsPerHost:   8,
+	}
 	if raw, _ := s.db.GetSetting("peer_slots"); raw != "" {
 		json.Unmarshal([]byte(raw), &p.slots)
 	}
+	if raw, _ := s.db.GetSetting("peer_addrs"); raw != "" {
+		json.Unmarshal([]byte(raw), &p.known)
+	}
 	return p
+}
+
+// dial reaches a linked server; a tailnet address goes through FLEX's own
+// Tailscale node when this PC has no Tailscale of its own to route it.
+func (p *peers) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, addr)
+	if err != nil && isTailnetAddr(addr) {
+		if ts := p.s.tsnetServer(); ts != nil {
+			return ts.Dial(ctx, network, addr)
+		}
+	}
+	return conn, err
 }
 
 // run looks for other servers now and every peerEvery until ctx ends.
@@ -93,8 +128,17 @@ func (p *peers) run(ctx context.Context) {
 }
 
 // find broadcasts for servers, adds the ones listed in the settings, and asks
-// each who it is and how much it holds.
+// each who it is and how much it holds. Then, for servers the broadcast
+// didn't reach: where they answered before, and the tailnet's devices.
 func (p *peers) find(ctx context.Context) {
+	p.mu.Lock()
+	p.round = map[string]bool{}
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.round = nil
+		p.mu.Unlock()
+	}()
 	addrs := broadcastDiscover(p.s.cfg.DiscoveryPort, p.s.id, 1500*time.Millisecond)
 	for _, a := range p.s.cfg.Peers {
 		if _, _, err := net.SplitHostPort(a); err != nil {
@@ -103,33 +147,98 @@ func (p *peers) find(ctx context.Context) {
 		addrs = append(addrs, a)
 	}
 	p.check(ctx, addrs)
+	// Direct addresses before Tailscale ones, remembered and the tailnet's
+	// devices alike: one PC can be several tailnet devices (the Tailscale
+	// app, FLEX's own node), and a Tailscale address mustn't win over a
+	// direct one for the same server.
+	p.check(ctx, p.remembered(false))
+	groups := p.unlinked(tailnetCandidates(p.status(ctx), p.ports()))
+	p.checkDevices(ctx, groups, false)
+	p.check(ctx, p.remembered(true))
+	p.checkDevices(ctx, p.unlinked(groups), true)
+}
+
+// checkDevices tries the devices at once, each at its home-network addresses
+// (tailnet false) or at its Tailscale ones, in order, until one links.
+func (p *peers) checkDevices(ctx context.Context, groups [][]string, tailnet bool) {
+	var wg sync.WaitGroup
+	for _, g := range groups {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.checkFirst(ctx, g, tailnet)
+		}()
+	}
+	wg.Wait()
 }
 
 // check asks the server at each address (host:port) who it is and links it.
 func (p *peers) check(ctx context.Context, addrs []string) {
 	for _, a := range addrs {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		var info ServerInfo
-		var st ScanStatus
-		pe := &peer{addr: a}
-		err := p.getJSON(ctx, pe, "/api/v1/server", &info)
-		if err == nil {
-			err = p.getJSON(ctx, pe, "/api/v1/library/status", &st)
-		}
-		cancel()
-		if err != nil {
-			p.s.log.Debug("linked server not answering", "addr", a, "err", err)
+		p.try(ctx, a)
+	}
+}
+
+// checkFirst tries one device's addresses of one kind in order and stops at
+// the first that answers; it and the device's addresses after it are
+// remembered for that server.
+func (p *peers) checkFirst(ctx context.Context, addrs []string, tailnet bool) {
+	for i, a := range addrs {
+		if isTailnetAddr(a) != tailnet {
 			continue
 		}
-		if info.ID != "" && info.ID != p.s.id {
-			p.add(info, a, st)
+		if id := p.try(ctx, a); id != "" {
+			p.mu.Lock()
+			p.rememberLocked(id, addrs[i:]...)
+			p.mu.Unlock()
+			return
 		}
 	}
+}
+
+// try asks the server at addr who it is and links it; its id, or "" if
+// nothing (else) answered there.
+func (p *peers) try(ctx context.Context, addr string) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var info ServerInfo
+	var st ScanStatus
+	pe := &peer{addr: addr}
+	err := p.getJSON(ctx, pe, "/api/v1/server", &info)
+	if err == nil {
+		err = p.getJSON(ctx, pe, "/api/v1/library/status", &st)
+	}
+	if err != nil {
+		p.s.log.Debug("linked server not answering", "addr", addr, "err", err)
+		return ""
+	}
+	if info.ID == "" || info.ID == p.s.id {
+		return ""
+	}
+	p.add(info, addr, st)
+	return info.ID
 }
 
 func (p *peers) add(info ServerInfo, addr string, st ScanStatus) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.round[info.ID] {
+		// already linked this round, over an address tried earlier (a better one)
+		if pe := p.byID[info.ID]; pe != nil {
+			pe.seen = time.Now()
+		}
+		return
+	}
+	if p.round != nil {
+		p.round[info.ID] = true
+	}
+	hints := []string{addr}
+	if info.Tailscale != nil && info.Tailscale.IP != "" {
+		if _, port, err := net.SplitHostPort(addr); err == nil {
+			hints = append(hints, net.JoinHostPort(info.Tailscale.IP, port)) // its own tailnet node
+		}
+	}
+	p.rememberLocked(info.ID, hints...)
 	pe := p.byID[info.ID]
 	if pe == nil {
 		slot, ok := p.slots[info.ID]
@@ -146,8 +255,161 @@ func (p *peers) add(info ServerInfo, addr string, st ScanStatus) {
 		p.byID[info.ID] = pe
 		p.s.log.Info("linked server", "name", info.Name, "addr", addr, "slot", slot)
 	}
+	if pe.addr != "" && pe.addr != addr {
+		p.s.log.Info("linked server moved", "name", info.Name, "from", pe.addr, "to", addr)
+	}
 	pe.name, pe.version, pe.addr, pe.seen = info.Name, info.Version, addr, time.Now()
 	pe.movies, pe.shows = st.Movies, st.Shows
+}
+
+// rememberLocked keeps addrs (best first) as where server id answers: the
+// newest first, at most peerAddrsKept of each kind, home-network ones ahead
+// of tailnet ones. Saved when it changes.
+func (p *peers) rememberLocked(id string, addrs ...string) {
+	old := p.known[id]
+	var lan, tail []string
+	for _, a := range append(append([]string{}, addrs...), old...) {
+		if slices.Contains(lan, a) || slices.Contains(tail, a) {
+			continue
+		}
+		if isTailnetAddr(a) {
+			if len(tail) < peerAddrsKept {
+				tail = append(tail, a)
+			}
+		} else if len(lan) < peerAddrsKept {
+			lan = append(lan, a)
+		}
+	}
+	list := append(lan, tail...)
+	if slices.Equal(list, old) {
+		return
+	}
+	p.known[id] = list
+	raw, _ := json.Marshal(p.known)
+	p.s.db.SetSetting("peer_addrs", string(raw))
+}
+
+// remembered is where the servers not linked yet this round answered before:
+// their Tailscale addresses, or (tailnet false) the others.
+func (p *peers) remembered(tailnet bool) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ids := make([]string, 0, len(p.known))
+	for id := range p.known {
+		if !p.round[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	var out []string
+	for _, id := range ids {
+		for _, a := range p.known[id] {
+			if isTailnetAddr(a) == tailnet {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+// unlinked drops the devices at an address of a server linked this round.
+func (p *peers) unlinked(groups [][]string) [][]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	owner := map[string]string{}
+	for id, addrs := range p.known {
+		for _, a := range addrs {
+			owner[a] = id
+		}
+	}
+	var out [][]string
+	for _, g := range groups {
+		if !slices.ContainsFunc(g, func(a string) bool { return p.round[owner[a]] }) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// ports are where a linked server may listen: this one's port, and FLEX's own.
+func (p *peers) ports() []int {
+	out := []int{8484}
+	if port := p.s.cfg.HTTPPort; port > 0 && port != 8484 {
+		out = append([]int{port}, out...)
+	}
+	return out
+}
+
+// tailnetStatus is the tailnet as the Tailscale app on this PC sees it, else
+// as FLEX's own node does; nil without either.
+func (p *peers) tailnetStatus(ctx context.Context) *ipnstate.Status {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var app tailscale.LocalClient // the Tailscale app's service, where it is installed
+	if st, err := app.Status(ctx); err == nil && st.BackendState == "Running" {
+		return st
+	}
+	if lc := p.s.tsnetClient(); lc != nil {
+		if st, err := lc.Status(ctx); err == nil && st.BackendState == "Running" {
+			return st
+		}
+	}
+	return nil
+}
+
+// tailnetCandidates lists, per online tailnet device that could run FLEX
+// (not phones), the addresses to try in order: the private addresses
+// Tailscale talks to it on directly (at most two), then its Tailscale
+// address, each at every port in ports.
+func tailnetCandidates(st *ipnstate.Status, ports []int) [][]string {
+	if st == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(st.Peer))
+	for k := range st.Peer {
+		keys = append(keys, k.String())
+	}
+	sort.Strings(keys)
+	byKey := map[string]*ipnstate.PeerStatus{}
+	for k, ps := range st.Peer {
+		byKey[k.String()] = ps
+	}
+	var groups [][]string
+	for _, k := range keys {
+		ps := byKey[k]
+		if ps == nil || !ps.Online || ps.OS == "android" || ps.OS == "iOS" {
+			continue
+		}
+		var g []string
+		add := func(ip netip.Addr) bool {
+			added := false
+			for _, port := range ports {
+				if a := netip.AddrPortFrom(ip, uint16(port)).String(); !slices.Contains(g, a) {
+					g, added = append(g, a), true
+				}
+			}
+			return added
+		}
+		direct := 0
+		for _, a := range append([]string{ps.CurAddr}, ps.Addrs...) {
+			ap, err := netip.ParseAddrPort(a)
+			if err != nil || !ap.Addr().Is4() || !ap.Addr().IsPrivate() || direct == 2 {
+				continue
+			}
+			if add(ap.Addr()) {
+				direct++
+			}
+		}
+		for _, ip := range ps.TailscaleIPs {
+			if ip.Is4() {
+				add(ip)
+			}
+		}
+		if len(g) > 0 {
+			groups = append(groups, g)
+		}
+	}
+	return groups
 }
 
 func (p *peers) freeSlot() int {
@@ -210,8 +472,12 @@ func (p *peers) info() []PeerInfo {
 	defer p.mu.Unlock()
 	out := []PeerInfo{}
 	for _, pe := range p.byID {
+		via := "lan"
+		if isTailnetAddr(pe.addr) {
+			via = "tailscale"
+		}
 		out = append(out, PeerInfo{Name: pe.name, ID: pe.id, Addr: pe.addr, Version: pe.version,
-			Movies: pe.movies, Shows: pe.shows, Online: online[pe.id]})
+			Movies: pe.movies, Shows: pe.shows, Online: online[pe.id], Via: via})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

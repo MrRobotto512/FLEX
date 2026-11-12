@@ -181,9 +181,11 @@ Every server looks for the others once a minute with the discovery broadcast abo
 - A linked item's id is the owner's id plus `slot × 100000000`; the slot (1–20) is this server's number for that server, saved, so ids stay put across restarts and stay below 2³¹. Its `poster`/`backdrop`/`still` URLs use that id.
 - Every `/movies|shows|episodes/{id}…` request for a linked id (details, images, `play`, `file` with `Range`, `progress`, `match`) is passed on to the owner. `/play` decides the profile where the client is (`remote` over the tailnet) and the owner converts on its own GPU; the answer's `url` becomes `/api/v1/hls/p<slot>-<session>/index.m3u8`, which this server passes through, `DELETE` included.
 - Server-to-server requests carry `X-Flex-Peer: <server id>` (and `X-Flex-Client: peer`); a server answers them with its own items only.
-- `GET /server` adds `peers`: `[{"name","id","addr","version","movies","shows","online"}]`.
+- `GET /server` adds `peers`: `[{"name","id","addr","version","movies","shows","online","via"}]`.
 
 A linked server that doesn't answer is left out for 30 s; one not seen for 3 minutes drops out of the lists.
+
+The broadcast stays on its own network, so each minute a server also asks, for servers it hasn't heard from in that round: the addresses where they answered before (kept in the settings as `peer_addrs`, newest first, two home-network and two tailnet addresses per server), then every online tailnet device that could run FLEX (seen through the Tailscale app on the PC, else FLEX's own node), first at the private address Tailscale reaches it on directly, then at its Tailscale address, at this server's port and 8484. The first address that answers is used (`peers[].via`: `lan` or `tailscale`); a server that moves keeps its slot, so ids don't change. A request with `X-Flex-Peer` keeps the profile it asks for even from a tailnet address (the linking server chose it for its own client), instead of being lowered to `remote`.
 
 ## Client updates
 The server checks the latest GitHub release every 6 h (unless `FLEX_NO_UPDATES=1`) and keeps its PS5 build, verified against the release's `SHA256SUMS`, in `<data>/ps5/client/`.
