@@ -148,6 +148,13 @@ function showHero(it, tag) {
   document.getElementById('hero-title').textContent = it.title;
   document.getElementById('hero-meta').textContent = [it.kind === 'episode' ? it.subtitle : it.year, (it.genres || []).slice(0, 3).join(', '),
     it.kind === 'show' ? `${it.seasons || 1} season${it.seasons === 1 ? '' : 's'}` : fmtMin(it.runtime_s)].filter(Boolean).join(' · ');
+  // the file: resolution, HDR, codec, audio (the server's "specs", one label each)
+  document.getElementById('hero-specs').replaceChildren(...(it.specs ? it.specs.split(' · ') : []).map(s => {
+    const label = document.createElement('span');
+    label.className = 'spec';
+    label.textContent = s;
+    return label;
+  }));
   document.getElementById('hero-overview').textContent = it.overview || '';
 }
 

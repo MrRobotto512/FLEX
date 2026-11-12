@@ -27,6 +27,7 @@ type HomeCard struct {
 	ResumeS  int      `json:"resume_s,omitempty"`
 	RuntimeS int      `json:"runtime_s,omitempty"`
 	Seasons  int      `json:"seasons,omitempty"`
+	Specs    string   `json:"specs,omitempty"` // movies and episodes: "1080p · H.264 · 5.1 AAC" (mediaSpecs)
 
 	tmdb  string // "m603" / "s1399": how the AI's rows name it
 	added time.Time
@@ -133,7 +134,8 @@ func buildHome(movies []Movie, shows []Show, eps []Episode, cont []ContinueItem,
 	holidays := map[string][]HomeCard{}
 	for _, m := range movies {
 		c := HomeCard{Kind: "movie", ID: m.ID, Title: m.Title, Year: m.Year, Poster: m.Poster, Backdrop: m.Backdrop,
-			Overview: m.Overview, Genres: m.Genres, Watched: m.Watched, ResumeS: m.ResumeS, RuntimeS: m.RuntimeS, added: m.AddedAt}
+			Overview: m.Overview, Genres: m.Genres, Watched: m.Watched, ResumeS: m.ResumeS, RuntimeS: m.RuntimeS, Specs: m.Specs,
+			added: m.AddedAt}
 		if m.TMDBID != 0 {
 			c.tmdb = fmt.Sprintf("m%d", m.TMDBID)
 		}
@@ -164,7 +166,7 @@ func buildHome(movies []Movie, shows []Show, eps []Episode, cont []ContinueItem,
 	for _, e := range eps {
 		c := HomeCard{Kind: "episode", ID: e.ID, Title: e.ShowTitle, Subtitle: fmt.Sprintf("S%02dE%02d · %s", e.Season, e.Episode, e.Title),
 			ShowID: e.ShowID, Still: e.Still, Poster: e.Poster, Backdrop: e.Backdrop, Overview: e.Overview, Genres: e.Genres,
-			Watched: e.Watched, ResumeS: e.ResumeS, RuntimeS: e.RuntimeS, added: e.AddedAt}
+			Watched: e.Watched, ResumeS: e.ResumeS, RuntimeS: e.RuntimeS, Specs: e.Specs, added: e.AddedAt}
 		if e.ShowTMDBID != 0 {
 			c.tmdb = episodeKey(e.ShowTMDBID, e.Season, e.Episode)
 		}

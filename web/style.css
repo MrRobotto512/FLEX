@@ -55,6 +55,11 @@ button:hover, input:focus { border-color: var(--accent); outline: none; }
 #hero > * { position: relative; max-width: 640px; margin: 0; text-shadow: 0 1px 2px #000c, 0 0 12px #0009; }
 #hero .tag { font-size: 12px; letter-spacing: .15em; text-transform: uppercase; color: var(--accent); }
 #hero h2 { font-size: clamp(26px, 4vw, 44px); line-height: 1.1; margin: 6px 0; }
+/* the file's details as small labels: 1080p, HDR10, HEVC, 5.1 Dolby Digital+ */
+#hero-specs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+#hero-specs:empty { display: none; }
+#hero-specs .spec { font-size: 12px; font-weight: 600; letter-spacing: .03em; padding: 2px 7px; border-radius: 4px;
+  border: 1px solid #ffffff4d; background: #00000066; color: var(--fg); text-shadow: none; }
 #hero-overview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 6px; }
 /* a single episode in a row: its own still, wide, with the episode under it */
 .strip .card.wide { width: calc(var(--row-w) * 1.6); }
