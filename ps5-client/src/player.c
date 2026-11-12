@@ -1,7 +1,9 @@
 #include "player.h"
+#include "blackbox.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/buffer.h>
 #include <libavutil/cpu.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
@@ -10,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* Four threads, so a slow network read or a heavy frame never stalls the
  * others:
@@ -39,10 +42,18 @@
 /* Read this far ahead of the video decoder, so a bitrate peak or a dip in
  * the link plays out of memory (a 4.7 Mbit/s average 4K file ran at 16-20
  * in an action scene). 512 MB is ~2.5 min of a 28 Mbit/s file and 5 min of
- * anything up to ~13. If memory runs out first, the reader settles below
- * where it ran out (buffer_cap). */
+ * anything up to ~13; with the pictures pooled (to_display) each MB read
+ * ahead costs ~1.2 MB in all, so ~700 MB at most. If memory runs out first,
+ * the reader settles below where it ran out (buffer_cap). FLEX_BUFFER_MB
+ * overrides the size for tests. */
 #define BUFFER_S 300.0
 #define BUFFER_BYTES (512 << 20)
+/* Reading ahead also pauses while malloc holds more than this from the
+ * system for FLEX. The console shares its memory with FLEX, and running it
+ * out takes the whole console down: before the pictures were pooled, 61 MB
+ * read ahead cost 1.1 GB and a few minutes of it froze the console; 1.5 GB
+ * was seen to be safe. */
+#define HEAP_CEILING_MB 1024
 #define FRAME_QUEUE 8           /* decoded frames waiting for their time */
 #define AUDIO_DRY_S 1.0         /* video waiting this long on silent audio: pace by wall time */
 #define BUFFERING_MS 300        /* no frame for this long: say "Buffering" */
@@ -134,6 +145,10 @@ typedef struct {
     SDL_atomic_t serial; /* bumped by each seek */
     PktQueue vq, aq;
     volatile long buffer_cap; /* BUFFER_BYTES, or less after memory ran out */
+    volatile Uint32 mem_checked; /* memory_short: when it last asked malloc */
+    volatile int mem_short;      /* malloc holds more than HEAP_CEILING_MB */
+    AVBufferPool *rgb_pool;      /* video thread: the converted pictures, reused (see to_display) */
+    size_t rgb_pool_size;
     FrameQueue fq;
 
     /* seek request, main -> reader */
@@ -187,6 +202,9 @@ typedef struct {
     /* how playback keeps up, shown on the OSD */
     double decode_acc;         /* video thread: ms in the decoder since the last frame came out */
     double decode_ms, draw_ms; /* moving averages per frame */
+    double upload_ms, render_ms, present_ms, draw_cpu_ms, convert_ms; /* draw_ms in parts; the video thread's RGB step */
+    int shown;                 /* frames put on screen */
+    Uint32 bb_next;            /* next black-box line */
     int dropped, drops_in_row;
     Uint32 drop_window; /* start of the 2 s window counting recent drops */
     Uint32 last_drop;
@@ -202,6 +220,15 @@ static double ms_since(Uint64 t0) {
 }
 
 static void average(double *avg, double v) { *avg = *avg > 0 ? *avg * 0.9 + v * 0.1 : v; }
+
+/* thread_cpu_ms: CPU time this thread has used. Next to the wall time of a
+ * step it says whether the step was working (equal) or waiting for a CPU or
+ * a lock (wall time far above it). -1 if the system can't say. */
+static double thread_cpu_ms(void) {
+    struct timespec t;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t) != 0) return -1;
+    return t.tv_sec * 1000.0 + t.tv_nsec / 1e6;
+}
 
 static int aborted(Player *p) { return SDL_AtomicGet(&p->abort); }
 static int cur_serial(Player *p) { return SDL_AtomicGet(&p->serial); }
@@ -567,11 +594,15 @@ static void draw_osd(Player *p) {
 
 /* redraw shows the current frame (letterboxed) plus the OSD. */
 static void redraw(Player *p) {
+    Uint64 t0 = SDL_GetPerformanceCounter();
     SDL_SetRenderDrawColor(p->ren, 0, 0, 0, 255);
     SDL_RenderClear(p->ren);
     if (p->tex) SDL_RenderCopy(p->ren, p->tex, NULL, &p->dst);
     draw_osd(p);
+    average(&p->render_ms, ms_since(t0));
+    Uint64 t1 = SDL_GetPerformanceCounter();
     SDL_RenderPresent(p->ren);
+    average(&p->present_ms, ms_since(t1));
 }
 
 /* ---------- input ---------- */
@@ -807,8 +838,24 @@ static double packet_ts(AVPacket *pkt, double tb, double start) {
     return ts == AV_NOPTS_VALUE ? 0 : ts * tb - start;
 }
 
+/* memory_short: malloc holds more than HEAP_CEILING_MB (asked at most 5 times a second) */
+static int memory_short(Player *p) {
+    Uint32 now = SDL_GetTicks();
+    if (now - p->mem_checked >= 200) {
+        p->mem_checked = now;
+        long inuse, system;
+        int is_short = bb_heap_mb(&inuse, &system) == 0 && system > HEAP_CEILING_MB;
+        if (is_short && !p->mem_short)
+            bb_log("player: malloc holds %ld MB (%ld in use), reading ahead paused at %ld MB / %.0f s", system, inuse,
+                   (long)((p->vq.bytes + p->aq.bytes) >> 20), buffered_s(p));
+        p->mem_short = is_short;
+    }
+    return p->mem_short;
+}
+
 static int buffer_full(Player *p) {
     if (p->vq.bytes + p->aq.bytes > p->buffer_cap) return 1;
+    if (memory_short(p)) return 1;
     return buffered_s(p) > BUFFER_S;
 }
 
@@ -820,8 +867,8 @@ static void queue_packet(Player *p, PktQueue *q, AVPacket *pkt, int serial, doub
         long held = p->vq.bytes + p->aq.bytes, cap = held * 3 / 4;
         if (cap < p->buffer_cap) {
             p->buffer_cap = cap > (8 << 20) ? cap : (8 << 20);
-            fprintf(stderr, "player: out of memory with %ld MB read ahead, keeping %ld MB from now on\n", held >> 20,
-                    p->buffer_cap >> 20);
+            bb_log("player: out of memory with %ld MB read ahead, keeping %ld MB from now on", held >> 20,
+                   p->buffer_cap >> 20);
         }
         SDL_Delay(50);
     }
@@ -900,9 +947,9 @@ static int full_range(const AVFrame *f) {
 }
 
 /* to_display returns the frame ready for the screen: at the size it takes
- * there (Lanczos on several threads, so 4K comes out as a sharp 1080p
- * picture and SD/720p are upscaled better than the renderer's bilinear
- * stretch) and already in RGB, converted with the frame's own matrix and
+ * there (Lanczos on a few threads, so 4K comes out as a sharp 1080p picture
+ * and SD/720p are upscaled better than the renderer's bilinear stretch; a
+ * picture already that size is only converted) and already in RGB, converted with the frame's own matrix and
  * range rather than whatever SDL would infer from the texture, and off the
  * main thread. (Checked with FLEX_DUMP_FRAME: the result matches a textbook
  * decode of the file pixel for pixel.) out is scratch space. */
@@ -927,10 +974,17 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
         av_opt_set_int(p->vsws, "dstw", w, 0);
         av_opt_set_int(p->vsws, "dsth", h, 0);
         av_opt_set_int(p->vsws, "dst_format", AV_PIX_FMT_BGRA, 0); /* SDL's ARGB8888 in memory order */
-        /* full-resolution chroma both ways: sharper colour edges than the default */
+        /* A smaller picture is scaled with Lanczos and full-resolution chroma
+         * both ways (sharper colour edges than the default). One already the
+         * screen's size (every 1080p stream) only needs YUV to RGB: FFmpeg's
+         * unscaled converter does that in one pass, many times cheaper than
+         * the full scaler run at the same size, so 2 threads do it. */
+        /* FLEX_SWS=lanczos: the old full scaler at every size, for comparing */
+        int lanczos = getenv("FLEX_SWS") && strcmp(getenv("FLEX_SWS"), "lanczos") == 0;
+        int same = !lanczos && in->width == w && in->height == h;
         av_opt_set_int(p->vsws, "sws_flags",
-                       SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP, 0);
-        av_opt_set_int(p->vsws, "threads", av_cpu_count() > 1 ? av_cpu_count() / 2 : 4, 0);
+                       same ? SWS_BILINEAR : SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP, 0);
+        av_opt_set_int(p->vsws, "threads", same ? 2 : lanczos && av_cpu_count() > 1 ? av_cpu_count() / 2 : 4, 0);
         if (sws_init_context(p->vsws, NULL, NULL) < 0) {
             fprintf(stderr, "player: cannot scale %dx%d to %dx%d\n", in->width, in->height, w, h);
             sws_freeContext(p->vsws);
@@ -945,13 +999,28 @@ static AVFrame *to_display(Player *p, AVFrame *in, AVFrame *out) {
         memcpy(p->vsws_key, key, sizeof key);
         static const char *names[] = {[SWS_CS_ITU709] = "BT.709", [SWS_CS_FCC] = "FCC", [SWS_CS_ITU601] = "BT.601",
                                       [SWS_CS_SMPTE240M] = "SMPTE 240M", [SWS_CS_BT2020] = "BT.2020"};
-        fprintf(stderr, "player: %dx%d %s (%s, %s range) to %dx%d RGB (Lanczos)\n", in->width, in->height,
+        fprintf(stderr, "player: %dx%d %s (%s, %s range) to %dx%d RGB (%s)\n", in->width, in->height,
                 av_get_pix_fmt_name(in->format), names[matrix(in)] ? names[matrix(in)] : "?",
-                full_range(in) ? "full" : "limited", w, h);
+                full_range(in) ? "full" : "limited", w, h, same ? "unscaled" : "Lanczos");
     }
     out->format = AV_PIX_FMT_BGRA;
     out->width = w;
     out->height = h;
+    /* Each picture is 8 MB and lives a fraction of a second; a fresh one per
+     * frame, freed between the read-ahead's small long-lived packets, kept
+     * malloc taking new memory from the system (1.1 GB for 61 MB read
+     * ahead). A pool hands the same few back. */
+    int linesize = FFALIGN(w * 4, 64);
+    size_t need = (size_t)linesize * h + 64;
+    if (!p->rgb_pool || p->rgb_pool_size != need) {
+        av_buffer_pool_uninit(&p->rgb_pool); /* pictures still out go back to free memory */
+        p->rgb_pool = av_buffer_pool_init(need, NULL);
+        p->rgb_pool_size = need;
+    }
+    if (!out->buf[0] && p->rgb_pool && (out->buf[0] = av_buffer_pool_get(p->rgb_pool))) {
+        out->data[0] = out->buf[0]->data;
+        out->linesize[0] = linesize;
+    } /* else sws_scale_frame allocates one */
     if (sws_scale_frame(p->vsws, out, in) < 0) {
         av_frame_unref(out);
         return in;
@@ -977,7 +1046,9 @@ static void decode_video(Player *p, AVPacket *pkt, AVFrame *frame, AVFrame *scal
                                                                     : frame->best_effort_timestamp * p->vtb - p->start;
         p->dec_last_pts = pts;
         if (pts >= p->drop_before - 0.05) {
+            Uint64 c0 = SDL_GetPerformanceCounter();
             AVFrame *d = to_display(p, frame, scaled);
+            average(&p->convert_ms, ms_since(c0));
             fq_put(p, d, pts, serial);
             if (d != frame) av_frame_unref(frame);
         } else {
@@ -1058,14 +1129,24 @@ static int audio_thread(void *arg) {
 
 /* ---------- decode setup ---------- */
 
+/* decode_threads: enough for the picture, not the whole console. FFmpeg's
+ * "auto" took every core the PS5 reports: 16 frame threads, each holding
+ * frames of its own, beside the scaler's 8 and the system's own work (the PS
+ * button, the network), which needs cores too. 1080p H.264 decodes several
+ * times faster than real time on 4 Zen 2 threads; 4K HEVC gets 8. */
+static int decode_threads(const AVCodecParameters *par) {
+    if (par->codec_type != AVMEDIA_TYPE_VIDEO) return 1;
+    if (getenv("FLEX_DEC_THREADS")) return atoi(getenv("FLEX_DEC_THREADS")); /* for comparing; 0 = FFmpeg's auto */
+    return par->height > 1088 ? 8 : par->height > 720 ? 4 : 3;
+}
+
 static int open_decoder(AVFormatContext *fmt, enum AVMediaType type, AVCodecContext **out) {
     const AVCodec *codec = NULL;
     int idx = av_find_best_stream(fmt, type, -1, -1, &codec, 0);
     if (idx < 0) return -1;
     AVCodecContext *c = avcodec_alloc_context3(codec);
     avcodec_parameters_to_context(c, fmt->streams[idx]->codecpar);
-    /* all cores; if FFmpeg can't count the PS5's, still use several */
-    c->thread_count = av_cpu_count() > 1 ? 0 : 6;
+    c->thread_count = decode_threads(fmt->streams[idx]->codecpar);
     c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
     if (avcodec_open2(c, codec, NULL) < 0) {
         avcodec_free_context(&c);
@@ -1238,11 +1319,15 @@ static int show_next(Player *p) {
     p->drops_in_row = 0;
     fast_decode_check(p);
     Uint64 d0 = SDL_GetPerformanceCounter();
+    double c0 = thread_cpu_ms();
     upload_frame(p, f);
+    average(&p->upload_ms, ms_since(d0));
     dump_frame(p, f);
     fq_pop(&p->fq);
     redraw(p);
     average(&p->draw_ms, ms_since(d0));
+    if (c0 >= 0) average(&p->draw_cpu_ms, thread_cpu_ms() - c0);
+    p->shown++;
     trace(p, "frame");
     return 1;
 }
@@ -1294,10 +1379,28 @@ static void note_waiting(Player *p) {
     }
 }
 
+/* blackbox_line: once a second, where each frame's time goes and how the
+ * console is coping, on the disk (see blackbox.h). draw = upload + render +
+ * present on the main thread; its cpu part is the share that was work. */
+static void blackbox_line(Player *p) {
+    Uint32 now = SDL_GetTicks();
+    if (now < p->bb_next) return;
+    p->bb_next = now + 1000;
+    char sys[320];
+    bb_system(sys, sizeof sys);
+    bb_log("play %.1f s: shown %d, dropped %d, queue %d/%d, draw %.1f ms (upload %.1f, render %.1f, present %.1f; "
+           "cpu %.1f), decode %.1f, convert %.1f, buffer %.0f s / %ld MB%s%s; %s",
+           position(p), p->shown, p->dropped, fq_count(&p->fq), FRAME_QUEUE, p->draw_ms, p->upload_ms, p->render_ms,
+           p->present_ms, p->draw_cpu_ms, p->decode_ms, p->convert_ms, buffered_s(p),
+           (long)((p->vq.bytes + p->aq.bytes) >> 20), p->paused ? ", paused" : "", p->fast_decode ? ", fast decode" : "",
+           sys);
+}
+
 PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     Player p = {.o = o, .ren = ren, .vidx = -1, .aidx = -1, .pending = -1, .result_seek = -1, .held = -1,
                 .resync_audio = 1, .drop_before = -1e9, .sar = 1, .aspect = o->aspect, .volume = o->volume,
                 .buffer_cap = BUFFER_BYTES};
+    if (getenv("FLEX_BUFFER_MB") && atol(getenv("FLEX_BUFFER_MB")) >= 8) p.buffer_cap = atol(getenv("FLEX_BUFFER_MB")) << 20;
     if (p.aspect < 0 || p.aspect >= ASPECT_COUNT) p.aspect = ASPECT_AUTO;
     if (p.volume < 0 || p.volume > VOLUME_MAX) p.volume = 100;
     for (int i = 0; i < PIC_COUNT; i++) {
@@ -1332,8 +1435,10 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     p.vtb = av_q2d(p.fmt->streams[p.vidx]->time_base);
     if (p.aidx >= 0) p.atb = av_q2d(p.fmt->streams[p.aidx]->time_base);
     p.start = p.fmt->start_time == AV_NOPTS_VALUE ? 0 : p.fmt->start_time / (double)AV_TIME_BASE;
-    fprintf(stderr, "player: video %s %dx%d, audio %s, %s\n", p.vdec->codec->name, p.vdec->width, p.vdec->height,
-            p.adec ? p.adec->codec->name : "none", o->seekable ? "seekable" : "restart to seek");
+    bb_log("player: \"%s\" video %s %s %dx%d, %d threads, audio %s, %s, read-ahead %ld MB / %.0f s", o->title,
+           p.vdec->codec->name, av_get_pix_fmt_name(p.vdec->pix_fmt) ? av_get_pix_fmt_name(p.vdec->pix_fmt) : "?",
+           p.vdec->width, p.vdec->height, p.vdec->thread_count, p.adec ? p.adec->codec->name : "none",
+           o->seekable ? "seekable" : "restart to seek", p.buffer_cap >> 20, BUFFER_S);
     { /* lay out from the stream's own size, so even the first frames come scaled */
         AVRational sar = p.fmt->streams[p.vidx]->codecpar->sample_aspect_ratio;
         p.sar = sar.num && sar.den ? av_q2d(sar) : 1.0;
@@ -1362,7 +1467,13 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     p.vthread = SDL_CreateThread(video_thread, "flex-video", &p);
     if (p.adec) p.athread = SDL_CreateThread(audio_thread, "flex-audio", &p);
 
+    Uint32 began = SDL_GetTicks();
     while (!p.quit) {
+        blackbox_line(&p);
+        if (o->stop_after_s > 0) { /* the self-test: so long after the picture started, or a minute more if it never does */
+            Uint32 from = p.gate_opened ? p.gate_opened : began;
+            if (SDL_GetTicks() - from > (Uint32)((o->stop_after_s + (p.gate_opened ? 0 : 60)) * 1000)) break;
+        }
         handle_events(&p);
         if (seek_ready(&p)) {
             commit_seek(&p);
@@ -1383,6 +1494,8 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
     }
 
     res.position = position(&p);
+    bb_log("player: stopped at %.1f s; %d frames shown, %d dropped, draw %.1f ms", res.position, p.shown, p.dropped,
+           p.draw_ms);
     res.seek_to = p.result_seek;
     res.ended = p.ended;
     res.toggle_upscale = p.toggle_upscale;
@@ -1405,6 +1518,7 @@ done:
     pq_destroy(&p.vq);
     pq_destroy(&p.aq);
     fq_destroy(&p.fq);
+    av_buffer_pool_uninit(&p.rgb_pool); /* after the frames holding its pictures */
     SDL_DestroyMutex(p.seek_mu);
     for (int i = 0; i < OSD_LINES; i++)
         if (p.osd[i].tex) SDL_DestroyTexture(p.osd[i].tex);
@@ -1414,5 +1528,6 @@ done:
     if (p.vdec) avcodec_free_context(&p.vdec);
     if (p.adec) avcodec_free_context(&p.adec);
     avformat_close_input(&p.fmt);
+    bb_log("player: closed");
     return res;
 }
