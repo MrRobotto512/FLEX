@@ -1,3 +1,6 @@
+#ifdef FLEX_APP
+#include "app.h"
+#endif
 #include "player.h"
 #include "blackbox.h"
 
@@ -203,6 +206,8 @@ typedef struct {
     double decode_acc;         /* video thread: ms in the decoder since the last frame came out */
     double decode_ms, draw_ms; /* moving averages per frame */
     double upload_ms, render_ms, present_ms, draw_cpu_ms, convert_ms; /* draw_ms in parts; the video thread's RGB step */
+    Uint64 loop_at;                /* when the playback loop last came round */
+    double stall_ms, log_ms;       /* longest gap between two rounds this second; the last log line's own cost */
     int shown;                 /* frames put on screen */
     Uint32 bb_next;            /* next black-box line */
     int dropped, drops_in_row;
@@ -844,7 +849,15 @@ static int memory_short(Player *p) {
     if (now - p->mem_checked >= 200) {
         p->mem_checked = now;
         long inuse, system;
+#ifdef FLEX_APP
+        /* the app's heap has a fixed size (app/heap.c): keep a quarter of it free */
+        long cap;
+        int is_short = app_heap_mb(&inuse, &system, &cap) == 0
+                           ? inuse > cap - (cap / 4 > 64 ? cap / 4 : 64)
+                           : bb_heap_mb(&inuse, &system) == 0 && system > HEAP_CEILING_MB;
+#else
         int is_short = bb_heap_mb(&inuse, &system) == 0 && system > HEAP_CEILING_MB;
+#endif
         if (is_short && !p->mem_short)
             bb_log("player: malloc holds %ld MB (%ld in use), reading ahead paused at %ld MB / %.0f s", system, inuse,
                    (long)((p->vq.bytes + p->aq.bytes) >> 20), buffered_s(p));
@@ -1386,14 +1399,17 @@ static void blackbox_line(Player *p) {
     Uint32 now = SDL_GetTicks();
     if (now < p->bb_next) return;
     p->bb_next = now + 1000;
+    Uint64 t0 = SDL_GetPerformanceCounter();
     char sys[320];
     bb_system(sys, sizeof sys);
     bb_log("play %.1f s: shown %d, dropped %d, queue %d/%d, draw %.1f ms (upload %.1f, render %.1f, present %.1f; "
-           "cpu %.1f), decode %.1f, convert %.1f, buffer %.0f s / %ld MB%s%s; %s",
+           "cpu %.1f), decode %.1f, convert %.1f, buffer %.0f s / %ld MB%s%s, longest stall %.0f ms, log %.0f ms; %s",
            position(p), p->shown, p->dropped, fq_count(&p->fq), FRAME_QUEUE, p->draw_ms, p->upload_ms, p->render_ms,
            p->present_ms, p->draw_cpu_ms, p->decode_ms, p->convert_ms, buffered_s(p),
            (long)((p->vq.bytes + p->aq.bytes) >> 20), p->paused ? ", paused" : "", p->fast_decode ? ", fast decode" : "",
-           sys);
+           p->stall_ms, p->log_ms, sys);
+    p->stall_ms = 0;
+    p->log_ms = ms_since(t0);
 }
 
 PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
@@ -1469,6 +1485,12 @@ PlayResult player_play(SDL_Renderer *ren, const PlayOpts *o) {
 
     Uint32 began = SDL_GetTicks();
     while (!p.quit) {
+        Uint64 round = SDL_GetPerformanceCounter();
+        if (p.loop_at) {
+            double gap = (double)(round - p.loop_at) * 1000.0 / SDL_GetPerformanceFrequency();
+            if (gap > p.stall_ms) p.stall_ms = gap;
+        }
+        p.loop_at = round;
         blackbox_line(&p);
         if (o->stop_after_s > 0) { /* the self-test: so long after the picture started, or a minute more if it never does */
             Uint32 from = p.gate_opened ? p.gate_opened : began;

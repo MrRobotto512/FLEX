@@ -3,13 +3,17 @@
  *
  * Controls (grid): D-pad moves, L1/R1 switch Movies/TV, Cross plays a movie
  * or opens a show, Triangle re-discovers the server and refreshes, Options
- * installs an update the server offers, Circle quits. Episodes: D-pad
+ * installs an update the server offers, holding Circle closes FLEX. Episodes: D-pad
  * up/down, Cross plays, Circle back. Player: Cross pauses, Circle stops. */
 
+#ifdef FLEX_APP
+#include "app.h"
+#endif
 #include <SDL.h>
 #include <SDL_image.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <SDL_ttf.h>
 #include <libavutil/cpu.h>
@@ -303,6 +307,11 @@ static void save_int(const char *path, int v) {
 static struct {
     char version[32], sha256[65], url[128];
     long size;
+    struct { /* the app build's files (FLEX_APP) */
+        char path[64], sha256[65], url[160];
+        long size;
+    } files[16];
+    int nfiles;
 } g_update;
 
 /* ---------- API ---------- */
@@ -1157,6 +1166,53 @@ static void draw_header(SDL_Renderer *ren, Tab tab, const char *status, const in
     }
 }
 
+/* ---------- hold Circle to close ----------
+ *
+ * A press of Circle on the main screens used to close FLEX at once, and so
+ * did every stray press. Now it has to be held: a toast at the bottom fills
+ * up while it is, letting go early cancels (the toast stays a moment so the
+ * hint can be read). Circle on the episode list and in the player still goes
+ * back at once. */
+
+#define HOLD_EXIT_MS 1500
+static Uint32 g_exit_since; /* when Circle went down; 0: not held */
+static Uint32 g_exit_hint;  /* after an early release: keep the toast until then */
+
+static void hold_exit_start(void) { g_exit_since = SDL_GetTicks() | 1; }
+
+static void hold_exit_release(void) {
+    if (!g_exit_since) return;
+    g_exit_since = 0;
+    g_exit_hint = SDL_GetTicks() + 1200;
+}
+
+/* hold_exit_done: Circle has been held long enough. */
+static int hold_exit_done(void) { return g_exit_since && SDL_GetTicks() - g_exit_since >= HOLD_EXIT_MS; }
+
+static void draw_exit_toast(SDL_Renderer *ren) {
+    Uint32 now = SDL_GetTicks();
+    double frac = 0;
+    if (g_exit_since) frac = (double)(now - g_exit_since) / HOLD_EXIT_MS;
+    else if (now >= g_exit_hint) return;
+    if (frac > 1) frac = 1;
+    const char *text = "Hold \u25CB to close FLEX";
+    int tw = 0, th = 0;
+    TTF_SizeUTF8(g_small, text, &tw, &th);
+    int w = tw + 96 > 520 ? tw + 96 : 520, h = 92, x = (SCREEN_W - w) / 2, y = SCREEN_H - h - 64;
+    fill(ren, (SDL_Rect){x, y, w, h}, (SDL_Color){C_PANEL.r, C_PANEL.g, C_PANEL.b, 240});
+    fill(ren, (SDL_Rect){x, y, w, 2}, C_ACCENT);
+    draw_text(ren, g_small, text, (SCREEN_W - tw) / 2, y + 16, C_FG);
+    int bx = x + 40, bw = w - 80, by = y + h - 28;
+    fill(ren, (SDL_Rect){bx, by, bw, 8}, (SDL_Color){58, 64, 78, 255});
+    fill(ren, (SDL_Rect){bx, by, (int)(bw * frac), 8}, C_ACCENT);
+}
+
+/* present shows the frame, with the close toast on top while it is up. */
+static void present(SDL_Renderer *ren) {
+    draw_exit_toast(ren);
+    SDL_RenderPresent(ren);
+}
+
 static void draw_home_card(SDL_Renderer *ren, Item *m, int x, int y, int selected) {
     SDL_Rect card = {x, y, HCARD_W, HCARD_H};
     if (selected) fill(ren, (SDL_Rect){x - 5, y - 5, HCARD_W + 10, HCARD_H + 10}, C_ACCENT);
@@ -1222,7 +1278,7 @@ static void draw_home(SDL_Renderer *ren, Item *list, int n, const char *status, 
         snprintf(pos, sizeof pos, "row %d of %d", g_row + 1, g_nrows);
         draw_text(ren, g_tiny, pos, SCREEN_W - MARGIN_X - 120, HOME_TOP + 4, C_MUTED);
     }
-    SDL_RenderPresent(ren);
+    present(ren);
 }
 
 static void draw_grid(SDL_Renderer *ren, Tab tab, Item *list, int n, int sel, int first_row, const char *status,
@@ -1249,7 +1305,7 @@ static void draw_grid(SDL_Renderer *ren, Tab tab, Item *list, int n, int sel, in
                  rows);
         draw_text(ren, g_tiny, pos, SCREEN_W - MARGIN_X - 200, top - 54, C_MUTED);
     }
-    SDL_RenderPresent(ren);
+    present(ren);
 }
 
 static void draw_episodes(SDL_Renderer *ren, ShowView *sv, Item *show, int sel, int first) {
@@ -1291,7 +1347,7 @@ static void draw_episodes(SDL_Renderer *ren, ShowView *sv, Item *show, int sel, 
         TTF_SizeUTF8(g_small, state, &w, &hh);
         draw_text(ren, g_small, state, SCREEN_W - MARGIN_X - w, y + 12, r->watched && i != sel ? C_ACCENT : mu);
     }
-    SDL_RenderPresent(ren);
+    present(ren);
 }
 
 /* ---------- updates ----------
@@ -1336,6 +1392,27 @@ static void check_update(void) {
     free(body);
     char version[32];
     jstr(j, "version", version, sizeof version);
+#ifdef FLEX_APP
+    /* the app updates from the app build's files: an older server, or a
+     * release without them, offers nothing */
+    cJSON *file, *files = cJSON_GetObjectItem(cJSON_GetObjectItem(j, "app"), "files");
+    cJSON_ArrayForEach(file, files) {
+        char path[64];
+        jstr(file, "path", path, sizeof path);
+        /* sce_sys is copied to the home screen when the tile is installed;
+         * a new one there would change nothing until it is reinstalled */
+        if (!path[0] || strncmp(path, "sce_sys/", 8) == 0 || strstr(path, "..") ||
+            g_update.nfiles == (int)(sizeof g_update.files / sizeof g_update.files[0]))
+            continue;
+        typeof(g_update.files[0]) *f = &g_update.files[g_update.nfiles++];
+        snprintf(f->path, sizeof f->path, "%s", path);
+        jstr(file, "sha256", f->sha256, sizeof f->sha256);
+        jstr(file, "url", f->url, sizeof f->url);
+        cJSON *size = cJSON_GetObjectItem(file, "size");
+        f->size = cJSON_IsNumber(size) ? (long)size->valuedouble : 0;
+    }
+    if (!g_update.nfiles) version[0] = 0;
+#endif
     if (version_newer(version, FLEX_VERSION)) {
         snprintf(g_update.version, sizeof g_update.version, "%s", version);
         jstr(j, "sha256", g_update.sha256, sizeof g_update.sha256);
@@ -1447,6 +1524,83 @@ static void show_notice(SDL_Renderer *ren, const char *title, const char *why) {
     }
 }
 
+#ifdef FLEX_APP
+/* The app's folder as Shadow Mount+ installed it; the app sees it as
+ * /app0 too, but only read-only. */
+#define APP_HOME "/data/homebrew/" FLEX_APP_ID
+
+/* install_update (app): fetch each file of the new build that differs from
+ * the app's own into <file>.new, check them all, then swap them in (the old
+ * ones stay as .bak). The running eboot.bin can be replaced: the console
+ * keeps the old one for this run. FLEX then closes, to be opened again. */
+static void install_update(SDL_Renderer *ren, int *quit) {
+    const char *failed = "The update did not install";
+    char path[192], tmp[200], bak[200], hex[65];
+    int todo[16], n = 0;
+    FILE *own = fopen(APP_HOME "/eboot.bin", "rb");
+    if (!own) {
+        show_notice(ren, failed,
+                    "FLEX isn't in " APP_HOME ". Copy the new folder from FLEX-ps5-app.zip there instead.");
+        return;
+    }
+    fclose(own);
+    fprintf(stderr, "FLEX: installing %s (app, %d files)\n", g_update.version, g_update.nfiles);
+    for (int i = 0; i < g_update.nfiles; i++) {
+        snprintf(path, sizeof path, APP_HOME "/%s", g_update.files[i].path);
+        if (file_sha256(path, hex) == 0 && strcmp(hex, g_update.files[i].sha256) == 0) continue;
+        todo[n++] = i;
+    }
+    for (int k = 0; k < n; k++) {
+        typeof(g_update.files[0]) *f = &g_update.files[todo[k]];
+        snprintf(tmp, sizeof tmp, APP_HOME "/%s.new", f->path);
+        char *slash = strrchr(tmp, '/');
+        if (slash && slash > tmp + sizeof APP_HOME) { /* a folder the old build didn't have */
+            *slash = 0;
+            mkdir(tmp, 0777);
+            *slash = '/';
+        }
+        draw_message(ren, "Downloading the update…", f->path, 0);
+        long got = flex_download(g_host, g_port, f->url, tmp, download_progress, ren);
+        if (got < 0 || (f->size && got != f->size) || file_sha256(tmp, hex) != 0 || strcmp(hex, f->sha256) != 0) {
+            for (int j = 0; j <= k; j++) {
+                snprintf(tmp, sizeof tmp, APP_HOME "/%s.new", g_update.files[todo[j]].path);
+                remove(tmp);
+            }
+            show_notice(ren, failed, got < 0 ? "The download from the server was cut off. Try again with Options."
+                                             : "A downloaded file is damaged (checksum mismatch). Try again with Options.");
+            return;
+        }
+    }
+    for (int k = 0; k < n; k++) {
+        const char *rel = g_update.files[todo[k]].path;
+        snprintf(path, sizeof path, APP_HOME "/%s", rel);
+        snprintf(tmp, sizeof tmp, "%s.new", path);
+        snprintf(bak, sizeof bak, "%s.bak", path);
+        remove(bak);
+        int had = rename(path, bak) == 0;
+        if (rename(tmp, path) != 0) {
+            if (had) rename(bak, path);
+            for (int j = 0; j < k; j++) { /* put back the ones already swapped */
+                snprintf(path, sizeof path, APP_HOME "/%s", g_update.files[todo[j]].path);
+                snprintf(bak, sizeof bak, "%s.bak", path);
+                rename(bak, path);
+            }
+            for (int j = k; j < n; j++) {
+                snprintf(tmp, sizeof tmp, APP_HOME "/%s.new", g_update.files[todo[j]].path);
+                remove(tmp);
+            }
+            show_notice(ren, failed, "Could not replace the app's files in " APP_HOME ".");
+            return;
+        }
+    }
+    char line[128];
+    snprintf(line, sizeof line, "Version %s is installed. FLEX closes now: open it again from its tile.",
+             g_update.version);
+    bb_log("FLEX: updated to %s (%d of %d files changed)", g_update.version, n, g_update.nfiles);
+    show_notice(ren, "Update installed", line);
+    *quit = 1;
+}
+#else
 /* install_update returns only if the update failed or websrv could not
  * restart FLEX; *quit is set when the new version is installed. */
 static void install_update(SDL_Renderer *ren, int *quit) {
@@ -1484,6 +1638,7 @@ static void install_update(SDL_Renderer *ren, int *quit) {
     show_notice(ren, "Update installed", "FLEX could not restart itself. Start it again from the Homebrew Launcher.");
     *quit = 1;
 }
+#endif
 
 /* ---------- navigation ---------- */
 
@@ -1570,6 +1725,9 @@ int main(int argc, char **argv) {
     /* stdout/stderr may be a pipe back to the dev machine (websrv pipe=1);
      * when that side hangs up we must not die on the next log line */
     signal(SIGPIPE, SIG_IGN);
+#ifdef FLEX_APP
+    mkdir(APP_DIR, 0777); /* settings, cache and the black box, shared with the Homebrew Launcher version */
+#endif
     /* One FLEX at a time: two fighting over the screen froze the whole
      * console. The lock goes with the process, however it ends; after an
      * update websrv is still ending the old copy as this one starts, so it
@@ -1580,16 +1738,26 @@ int main(int argc, char **argv) {
         fprintf(stderr, "FLEX: another FLEX is already running; this one quits\n");
         return 0;
     }
+#ifdef FLEX_APP
+    bb_open(FLEX_VERSION " (app)");
+    {
+        char unbound[512];
+        app_unbound(unbound, sizeof unbound);
+        bb_log("FLEX: system functions the app loader left unbound: %s", unbound[0] ? unbound : "none");
+        bb_log("FLEX: %s", app_heap_desc());
+    }
+#else
     bb_open(FLEX_VERSION);
+#endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
-        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        bb_log("FLEX: SDL_Init failed: %s", SDL_GetError());
         return 1;
     }
     if (TTF_Init() != 0) fprintf(stderr, "TTF_Init: %s\n", TTF_GetError());
     if (!(IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG) & IMG_INIT_JPG)) fprintf(stderr, "IMG_Init: %s\n", IMG_GetError());
 
     SDL_DisplayMode dm;
-    fprintf(stderr, "FLEX: video driver %s, %d display(s)\n", SDL_GetCurrentVideoDriver(), SDL_GetNumVideoDisplays());
+    bb_log("FLEX: video driver %s, %d display(s)", SDL_GetCurrentVideoDriver(), SDL_GetNumVideoDisplays());
     if (SDL_GetDesktopDisplayMode(0, &dm) == 0) fprintf(stderr, "FLEX: desktop mode %dx%d @%dHz\n", dm.w, dm.h, dm.refresh_rate);
     for (int i = 0, n = SDL_GetNumDisplayModes(0); i < n; i++)
         if (SDL_GetDisplayMode(0, i, &dm) == 0) fprintf(stderr, "FLEX: display mode %d: %dx%d @%dHz\n", i, dm.w, dm.h, dm.refresh_rate);
@@ -1601,16 +1769,17 @@ int main(int argc, char **argv) {
      * only render driver this SDL port has). */
     SDL_Window *win = SDL_CreateWindow("FLEX", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_W, SCREEN_H, 0);
     if (!win) {
-        fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
+        bb_log("FLEX: SDL_CreateWindow failed: %s", SDL_GetError());
         return 1;
     }
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
     if (!ren) {
-        fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError());
+        bb_log("FLEX: SDL_CreateRenderer failed: %s", SDL_GetError());
         return 1;
     }
+    bb_log("FLEX: window and renderer ready");
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     for (int i = 0; i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i)) {
@@ -1622,12 +1791,17 @@ int main(int argc, char **argv) {
     g_font = TTF_OpenFont(FONT_PATH, 36);
     g_small = TTF_OpenFont(FONT_PATH, 22);
     g_tiny = TTF_OpenFont(FONT_PATH, 18);
-    if (!g_big) g_big = TTF_OpenFont("assets/DejaVuSans.ttf", 56);
-    if (!g_font) g_font = TTF_OpenFont("assets/DejaVuSans.ttf", 36);
-    if (!g_small) g_small = TTF_OpenFont("assets/DejaVuSans.ttf", 22);
-    if (!g_tiny) g_tiny = TTF_OpenFont("assets/DejaVuSans.ttf", 18);
+#ifdef FLEX_APP
+#define LOCAL_FONT "/app0/assets/DejaVuSans.ttf" /* inside the app's own folder */
+#else
+#define LOCAL_FONT "assets/DejaVuSans.ttf"
+#endif
+    if (!g_big) g_big = TTF_OpenFont(LOCAL_FONT, 56);
+    if (!g_font) g_font = TTF_OpenFont(LOCAL_FONT, 36);
+    if (!g_small) g_small = TTF_OpenFont(LOCAL_FONT, 22);
+    if (!g_tiny) g_tiny = TTF_OpenFont(LOCAL_FONT, 18);
     if (!g_big || !g_font || !g_small || !g_tiny) {
-        fprintf(stderr, "font missing: put DejaVuSans.ttf in " APP_DIR "/assets (%s)\n", TTF_GetError());
+        bb_log("FLEX: font missing: put DejaVuSans.ttf in " APP_DIR "/assets (%s)", TTF_GetError());
         return 1;
     }
 
@@ -1709,6 +1883,9 @@ int main(int argc, char **argv) {
             if (e.type == SDL_KEYDOWN && !e.key.repeat) button = key_to_button(e.key.keysym.sym);
             if (e.type == SDL_CONTROLLERBUTTONUP && e.cbutton.button == held) held = -1;
             if (e.type == SDL_KEYUP && key_to_button(e.key.keysym.sym) == held) held = -1;
+            if ((e.type == SDL_CONTROLLERBUTTONUP && e.cbutton.button == SDL_CONTROLLER_BUTTON_B) ||
+                (e.type == SDL_KEYUP && key_to_button(e.key.keysym.sym) == SDL_CONTROLLER_BUTTON_B))
+                hold_exit_release();
             if (button < 0) continue;
 
             if (in_show) {
@@ -1777,7 +1954,7 @@ int main(int argc, char **argv) {
             case SDL_CONTROLLER_BUTTON_B:
                 if (tab == TAB_SEARCH && !kb_focus) kb_focus = 1; /* results -> keyboard -> Movies */
                 else if (tab == TAB_SEARCH) tab = TAB_MOVIES;
-                else quit = 1;
+                else hold_exit_start(); /* closes once held long enough (below) */
                 break;
             case SDL_CONTROLLER_BUTTON_START: /* options: install the offered update */
                 if (g_update.version[0]) install_update(ren, &quit);
@@ -1852,6 +2029,7 @@ int main(int argc, char **argv) {
             else move_sel(&sels[tab], &firsts[tab], counts[tab], held, rows_visible(tab));
             next_repeat = SDL_GetTicks() + 110;
         }
+        if (hold_exit_done()) quit = 1;
         SDL_Delay(16);
     }
 

@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/cast/{action}", s.handleCastControl)
 	mux.HandleFunc("GET /api/v1/client/ps5", s.handlePS5Client)
 	mux.HandleFunc("GET /api/v1/client/ps5/eboot.elf", s.handlePS5ClientFile)
+	mux.HandleFunc("GET /api/v1/client/ps5/app/{path...}", s.handlePS5AppFile)
 	if s.web != nil {
 		mux.Handle("/", http.FileServerFS(s.web))
 	}

@@ -225,7 +225,7 @@ func main() {
 	write("assets/logo/flex-1024.png", pngBytes(icon(1024)))
 	write("assets/logo/flex-wide-1920.png", pngBytes(render(wide(), 1920, 1080)))
 	write("ps5-client/sce_sys/icon0.png", pngBytes(icon(512)))
-	write("ps5-client/tile/app/sce_sys/icon0.png", pngBytes(icon(512)))
+	write("ps5-client/app/sce_sys/icon0.png", pngBytes(icon(512)))
 	for dir, s := range map[string]int{"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192} {
 		write("android/app/src/main/res/mipmap-"+dir+"/ic_launcher.png", pngBytes(icon(s)))
 	}

@@ -56,6 +56,17 @@ It is the same screen as the browser, full screen. On a TV: the D-pad and OK mov
 
 ## The PS5 (jailbroken)
 
+FLEX comes two ways; both use the same settings (`/data/homebrew/FLEX/`).
+
+**As its own app (with Shadow Mount+).** The FLEX tile on the home screen is FLEX itself.
+
+1. Download `FLEX-ps5-app.zip` from the same release and copy its `PPSA84840` folder to the console so it becomes `/data/homebrew/PPSA84840/` (`eboot.bin`, `sce_module/`, `sce_sys/`, `assets/`). Within about 15 seconds Shadow Mount+ adds a FLEX tile; if it doesn't, open Shadow Mount+ once. Replacing the files of an earlier FLEX tile (the one that started FLEX through the Homebrew Launcher) keeps the tile.
+2. Open the FLEX tile. FLEX finds the server by itself on the same network. **Hold Circle** on the grid to close it.
+
+From then on it updates itself: when the server has a newer version the grid says "Update … ready"; Options installs it and FLEX closes, to be opened again from its tile.
+
+**From the Homebrew Launcher (websrv).**
+
 1. Download `FLEX-ps5.zip` from the same release and copy its `FLEX` folder to the console so it becomes `/data/homebrew/FLEX/eboot.elf`, `.../sce_sys/icon0.png` and `.../assets/DejaVuSans.ttf` (FTP, or a USB stick and a file manager).
 2. Start FLEX from the Homebrew Launcher (websrv must be running). Press Circle once to close the launcher's log screen. FLEX finds the server by itself on the same network.
 

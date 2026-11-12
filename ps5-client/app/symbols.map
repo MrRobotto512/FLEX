@@ -1,0 +1,6 @@
+/* The app exports nothing: without this the linker could publish a function
+ * we define in place of a system one. */
+{
+    local:
+        *;
+};

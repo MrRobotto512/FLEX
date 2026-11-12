@@ -1,3 +1,6 @@
+#ifdef FLEX_APP
+#include "app.h"
+#endif
 #include "blackbox.h"
 
 #include <fcntl.h>
@@ -78,7 +81,9 @@ void bb_log(const char *fmt, ...) {
     n = m < 0 ? n : n + m;
     if (n > (int)sizeof line - 2) n = sizeof line - 2;
     line[n++] = '\n';
+#ifndef FLEX_APP /* the app's stderr is app-log.txt, beside the black box */
     fwrite(line, 1, n, stderr);
+#endif
     pthread_mutex_lock(&bb_mu);
     if (bb_fd >= 0 && bb_written < BB_MAX_BYTES) {
         if (write(bb_fd, line, n) > 0) bb_written += n;
@@ -112,9 +117,12 @@ void bb_system(char *buf, int size) {
     last_t = t;
 
     /* the whole console: user, nice, system, interrupt, idle ticks over all CPUs */
+    /* a query the system refused once (an app may not ask some) isn't asked
+     * again: this runs on the playback thread every second */
+    static int no_cp, no_free;
     long cp[5];
     size_t len = sizeof cp;
-    if (sysctlbyname("kern.cp_time", cp, &len, NULL, 0) == 0 && len == sizeof cp) {
+    if (!no_cp && !(no_cp = !(sysctlbyname("kern.cp_time", cp, &len, NULL, 0) == 0 && len == sizeof cp))) {
         long busy = 0, total = 0;
         for (int i = 0; i < 5; i++) {
             long d = cp[i] - last_cp[i];
@@ -153,8 +161,8 @@ void bb_system(char *buf, int size) {
     /* the console's free and inactive (reclaimable) memory */
     unsigned freec, inact, page;
     size_t ulen = sizeof freec;
-    if (sysctlbyname("vm.stats.vm.v_free_count", &freec, &ulen, NULL, 0) == 0 &&
-        sysctlbyname("vm.stats.vm.v_page_size", &page, &(size_t){sizeof page}, NULL, 0) == 0) {
+    if (!no_free && !(no_free = !(sysctlbyname("vm.stats.vm.v_free_count", &freec, &ulen, NULL, 0) == 0 &&
+                                  sysctlbyname("vm.stats.vm.v_page_size", &page, &(size_t){sizeof page}, NULL, 0) == 0))) {
         if (sysctlbyname("vm.stats.vm.v_inactive_count", &inact, &(size_t){sizeof inact}, NULL, 0) != 0) inact = 0;
         snprintf(freemem, sizeof freemem, "%llu MB (+%llu inactive)", (unsigned long long)freec * page >> 20,
                  (unsigned long long)inact * page >> 20);
@@ -165,6 +173,10 @@ void bb_system(char *buf, int size) {
 }
 
 int bb_heap_mb(long *inuse, long *system) {
+#ifdef FLEX_APP
+    long cap; /* the app's own heap, when it has one (app/heap.c) */
+    if (app_heap_mb(inuse, system, &cap) == 0) return 0;
+#endif
     union {
         struct {
             uint16_t size, version;
