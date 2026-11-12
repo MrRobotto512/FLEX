@@ -18,6 +18,7 @@ type Movie struct {
 	TMDBID   int64     `json:"tmdb_id,omitempty"`
 	Genres   []string  `json:"genres,omitempty"`   // TMDB's
 	Holidays []string  `json:"holidays,omitempty"` // from TMDB keywords: "halloween", "christmas", …
+	Specs    string    `json:"specs,omitempty"`    // "1080p · HEVC 10-bit · 5.1 Dolby Digital+" (mediaSpecs)
 
 	Media *MediaInfo `json:"media,omitempty"`
 
@@ -114,6 +115,7 @@ type Episode struct {
 	Backdrop   string   `json:"backdrop,omitempty"` // the show's
 	Genres     []string `json:"genres,omitempty"`   // the show's
 	Holidays   []string `json:"holidays,omitempty"` // from the episode's title and description
+	Specs      string   `json:"specs,omitempty"`    // the file, for people (mediaSpecs)
 
 	Media *MediaInfo `json:"media,omitempty"`
 

@@ -23,6 +23,7 @@ type ContinueItem struct {
 	RuntimeS int       `json:"runtime_s,omitempty"`
 	ShowID   int64     `json:"show_id,omitempty"`
 	Played   time.Time `json:"played"`
+	Specs    string    `json:"specs,omitempty"` // the file, for people (mediaSpecs)
 }
 
 // ContinueWatching returns up to limit items, most recently played first.
@@ -56,7 +57,7 @@ func (d *DB) ContinueWatching(limit int) ([]ContinueItem, error) {
 			continue // removed since
 		}
 		out = append(out, ContinueItem{Kind: "movie", ID: m.ID, Title: m.Title, Poster: m.Poster, TMDBID: m.TMDBID,
-			PosterOf: "movie", PosterID: m.ID, ResumeS: m.ResumeS, RuntimeS: m.RuntimeS, Played: p.at})
+			PosterOf: "movie", PosterID: m.ID, ResumeS: m.ResumeS, RuntimeS: m.RuntimeS, Played: p.at, Specs: m.Specs})
 	}
 
 	// the most recently played episode of each show
@@ -95,7 +96,7 @@ func (d *DB) ContinueWatching(limit int) ([]ContinueItem, error) {
 			out = append(out, ContinueItem{Kind: "episode", ID: ep.ID, Title: s.Title,
 				Subtitle: fmt.Sprintf("S%02dE%02d · %s", ep.Season, ep.Episode, ep.Title),
 				Poster:   s.Poster, TMDBID: s.TMDBID, PosterOf: "show", PosterID: s.ID,
-				ResumeS: ep.ResumeS, RuntimeS: ep.RuntimeS, ShowID: s.ID, Played: l.at})
+				ResumeS: ep.ResumeS, RuntimeS: ep.RuntimeS, ShowID: s.ID, Played: l.at, Specs: ep.Specs})
 		}
 	}
 

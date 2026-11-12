@@ -145,6 +145,8 @@ The AI (`FLEX_AI_PROVIDER` = `claude` | `openai` | `gemini`, `FLEX_AI_KEY`, opti
 
 Movies and shows in `/movies` and `/shows` carry `"genres":["Horror"]` and, from TMDB keywords, `"holidays":["halloween"]` (`halloween`, `christmas`, `thanksgiving`, `valentines`, `newyear`, `summer`).
 
+Movies and episodes everywhere they are listed (`/movies`, a show's episodes, `/home` cards, `/continue`) carry `"specs"`: the file for people, from what ffprobe read at scan time, e.g. `"4K · HDR10 · HEVC · 5.1 Dolby Digital+ · 2 audio tracks · Subtitles"` or `"SD · MPEG-4 · Stereo MP3"` (resolution by width or height: 4K, 1080p, 720p, SD; HDR10/Dolby Vision/HLG; the video codec, with 10-bit when not HDR; the default audio track's channels and codec; how many audio tracks when more than one; Subtitles when the file has any). The browser shows it as labels under the hero, the PS5 as a line under the year.
+
 ## Progress
 
 `PUT /movies/{id}/progress` body `{"position_s":1830,"duration_s":10210}` → `204`. Positions within the last 5 % mark the movie watched; positions under 30 s are stored as 0 (no resume point). Clients send this every ~10 s during playback and on stop.

@@ -86,6 +86,7 @@ typedef struct {
     char poster[128];                 /* API path or "" when the server has no artwork */
     char backdrop[128];               /* home cards: shown behind the details when focused */
     char overview[400], genres[80];   /* home cards */
+    char specs[128];                  /* home cards: "1080p · HEVC 10-bit · 5.1 Dolby Digital+" */
     int tmdb_id;                      /* part of the poster's cache name: a new match means a new poster */
     SDL_Texture *tex;                 /* decoded poster, NULL until loaded */
     int tex_state;                    /* 0 = not loaded yet, 1 = loaded, 2 = unavailable, 3 = requested */
@@ -434,6 +435,7 @@ static void parse_card(cJSON *c, Item *it) {
     jstr(c, "poster", it->poster, sizeof it->poster);
     jstr(c, "backdrop", it->backdrop, sizeof it->backdrop);
     jstr(c, "overview", it->overview, sizeof it->overview);
+    jstr(c, "specs", it->specs, sizeof it->specs);
     it->year = jint(c, "year");
     it->resume_s = jint(c, "resume_s");
     it->runtime_s = jint(c, "runtime_s");
@@ -1200,7 +1202,12 @@ static void draw_home(SDL_Renderer *ren, Item *list, int n, const char *status, 
             if (f->watched) snprintf(meta + strlen(meta), sizeof meta - strlen(meta), "  ·  watched");
         }
         draw_text_fit(ren, g_small, meta, MARGIN_X, 284, 1100, C_MUTED);
-        draw_wrapped(ren, g_small, f->overview, (SDL_Rect){MARGIN_X, 326, 900, 150}, C_FG, 0);
+        int top = 326; /* the file's details (resolution, HDR, codec, audio), when the server sends them */
+        if (f->specs[0]) {
+            draw_text_fit(ren, g_tiny, f->specs, MARGIN_X, 318, 1100, C_ACCENT);
+            top = 350;
+        }
+        draw_wrapped(ren, g_small, f->overview, (SDL_Rect){MARGIN_X, top, 900, 476 - top}, C_FG, 0);
     }
     for (int k = 0; k < 2 && g_row + k < g_nrows; k++) {
         HomeRow *r = &g_rows[g_row + k];

@@ -224,8 +224,11 @@ func scanMovie(r rowScanner, withMedia bool) (*Movie, error) {
 	if m.backdropPath != "" {
 		m.Backdrop = fmt.Sprintf("/api/v1/movies/%d/backdrop", m.ID)
 	}
-	if withMedia {
-		m.Media = unmarshalMedia(mediaJ)
+	if mi := unmarshalMedia(mediaJ); mi != nil {
+		m.Specs = mediaSpecs(mi)
+		if withMedia {
+			m.Media = mi
+		}
 	}
 	return &m, nil
 }
@@ -932,6 +935,7 @@ func (d *DB) HolidayEpisodes() ([]Episode, error) {
 			ep.Backdrop = fmt.Sprintf("/api/v1/shows/%d/backdrop", ep.ShowID)
 		}
 		ep.Genres, _ = tags(g, sql.NullString{})
+		ep.Specs = mediaSpecs(unmarshalMedia(mediaJ))
 		text := strings.ToLower(ep.Title + " " + ep.Overview)
 		for w, h := range holidayWords {
 			if strings.Contains(text, w) && !slices.Contains(ep.Holidays, h) {
@@ -973,8 +977,11 @@ func scanEpisode(r rowScanner, withMedia bool) (*Episode, error) {
 	if ep.stillPath != "" {
 		ep.Still = fmt.Sprintf("/api/v1/episodes/%d/still", ep.ID)
 	}
-	if withMedia {
-		ep.Media = unmarshalMedia(mediaJ)
+	if mi := unmarshalMedia(mediaJ); mi != nil {
+		ep.Specs = mediaSpecs(mi)
+		if withMedia {
+			ep.Media = mi
+		}
 	}
 	return &ep, nil
 }
