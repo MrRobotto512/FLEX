@@ -298,7 +298,7 @@ func (p *prepper) prepare(ctx context.Context, it PrepItem) {
 
 // upscale writes an HD H.264 + AAC MP4 of path to out.
 func (p *prepper) upscale(ctx context.Context, kind string, id int64, path string, mi *MediaInfo, out string) error {
-	w := mi.Video.Width * 1080 / mi.Video.Height / 2 * 2
+	w, h := upscaleSize(mi.Video.Width, mi.Video.Height, 1080)
 	ff := p.s.cfg.FFmpeg
 	var env []string
 	var vf, hw []string
@@ -306,11 +306,11 @@ func (p *prepper) upscale(ctx context.Context, kind string, id int64, path strin
 	case "topaz":
 		ff, env = topazFFmpeg(p.s.cfg.TopazDir), topazEnv()
 		hw = []string{"-hwaccel", "auto"}
-		vf = []string{"bwdif=mode=send_frame:deint=interlaced", topazFilter(p.s.cfg.TopazModel, w, 1080)}
+		vf = []string{"bwdif=mode=send_frame:deint=interlaced", topazFilter(p.s.cfg.TopazModel, w, h)}
 	default:
 		shader := p.s.tc.Shader(p.s.db.Animated(kind, id))
 		hw = []string{"-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk", "-hwaccel", "auto"}
-		vf = []string{"bwdif=mode=send_frame:deint=interlaced", aiFilter(shader, w, 1080, "yuv420p")}
+		vf = []string{"bwdif=mode=send_frame:deint=interlaced", aiFilter(shader, w, h, "yuv420p")}
 	}
 	enc := []string{"-c:v", "libx264", "-preset", "medium", "-crf", "17"}
 	if p.s.tc.Encoder() == "h264_nvenc" && p.engine != "topaz" {

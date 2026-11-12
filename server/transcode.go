@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -48,6 +47,9 @@ type Transcoder struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	shaders  map[string]string // AI upscalers that passed their test: name -> file
+	vsr      *vsrHelper        // RTX Video Super Resolution on an RTX card (vsr.go)
+	vsrPause time.Time         // after a stream it didn't engage in: not tried again until then
+	vsrBusy  int               // sessions running through flexvsr (the driver serves one video at a time)
 }
 
 func (t *Transcoder) setShader(name, file string) {
@@ -128,6 +130,7 @@ type transcodeRequest struct {
 	CopyVid bool    // remux video instead of re-encoding
 	Upscale bool    // scale up to the profile's height (Lanczos + light sharpening)
 	Shader  string  // with Upscale: an AI upscaler's shader file (libplacebo) in place of Lanczos
+	VSR     bool    // with Upscale: RTX Video Super Resolution (flexvsr) ahead of the shader
 	NoGPU   bool    // CPU filters even with NVENC (retry after the GPU pipeline failed)
 	CPUOnly bool    // libx264 whatever the hardware (retry after the hardware encoder failed)
 }
@@ -138,7 +141,7 @@ func NewTranscoder(ffmpeg, encoder, dir string, log *slog.Logger) *Transcoder {
 
 // Key identifies a session by everything that changes the output.
 func (r transcodeRequest) Key() string {
-	h := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%d|%.0f|%v|%v|%s", r.Path, r.Profile.Name, r.Audio, r.Sub, r.Start, r.CopyVid, r.Upscale, r.Shader)))
+	h := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%d|%.0f|%v|%v|%s|%v", r.Path, r.Profile.Name, r.Audio, r.Sub, r.Start, r.CopyVid, r.Upscale, r.Shader, r.VSR)))
 	return hex.EncodeToString(h[:6])
 }
 
@@ -146,6 +149,7 @@ func (r transcodeRequest) Key() string {
 // playlist exists, so the client can fetch it immediately.
 func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, error) {
 	key := r.Key()
+	helper := t.vsrFor(r) // before t.mu: it takes the lock itself
 	t.mu.Lock()
 	if s, ok := t.sessions[key]; ok {
 		s.lastUsed = time.Now()
@@ -159,10 +163,22 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		return "", err
 	}
 	cctx, cancel := context.WithCancel(context.Background())
-	cmd := noWindow(exec.CommandContext(cctx, t.ffmpeg, t.args(r, dir)...))
+	// one ffmpeg, or decode | flexvsr | encode for RTX Video Super Resolution;
+	// the last program writes the HLS
+	vsr := helper != nil
+	var procs []*exec.Cmd
+	if vsr {
+		dec, up, enc := t.vsrCommands(cctx, r, dir, *helper)
+		procs = []*exec.Cmd{dec, up, enc}
+	} else {
+		procs = []*exec.Cmd{noWindow(exec.CommandContext(cctx, t.ffmpeg, t.args(r, dir)...))}
+	}
+	cmd := procs[len(procs)-1]
 	s := &session{key: key, dir: dir, cmd: cmd, cancel: cancel, lastUsed: time.Now(), done: make(chan struct{})}
 	s.info = SessionInfo{Key: key, File: filepath.Base(r.Path), Start: r.Start, Mode: "transcode", Started: time.Now()}
-	if r.CopyVid {
+	if vsr {
+		s.info.Mode = "upscale, RTX Video Super Resolution"
+	} else if r.CopyVid {
 		s.info.Mode = "remux"
 	} else if t.aiUpscale(r) {
 		s.info.Mode = "upscale, " + strings.TrimSuffix(filepath.Base(r.Shader), ".glsl")
@@ -176,21 +192,58 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		s.info.Mode = "transcode, HDR on the CPU"
 	}
 	t.sessions[key] = s
+	if vsr {
+		t.vsrBusy++
+	}
 	t.mu.Unlock()
 
-	stderr, _ := cmd.StderrPipe()
-	t.log.Info("ffmpeg start", "key", key, "gpu", t.useGPU(r), "hdr_gpu", t.hdrOnGPU(r), "args", strings.Join(cmd.Args[1:], " "))
-	if err := cmd.Start(); err != nil {
+	if err := t.startProcs(key, r, procs); err != nil {
+		if vsr {
+			t.mu.Lock()
+			t.vsrBusy--
+			t.mu.Unlock()
+		}
 		close(s.done) // nothing will ever close it otherwise and remove() waits on it
 		t.remove(key)
-		return "", fmt.Errorf("start ffmpeg: %w", err)
+		if vsr {
+			t.log.Warn("flexvsr didn't start, using the other upscaler", "key", key, "err", err)
+			r.VSR = false
+			return t.Start(ctx, r)
+		}
+		return "", err
 	}
 	go func() {
-		sc := bufio.NewScanner(stderr)
-		for sc.Scan() {
-			t.log.Debug("ffmpeg", "key", key, "line", sc.Text())
+		// The earlier programs in a row end when the next one stops reading.
+		// One that fails on its own (flexvsr: no effect) stops the rest:
+		// the encoder would carry on with the audio alone, and the start
+		// has to see the failure to fall back.
+		var wg sync.WaitGroup
+		var early error
+		var earlyMu sync.Mutex
+		for _, p := range procs[:len(procs)-1] {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := p.Wait(); err != nil && cctx.Err() == nil {
+					earlyMu.Lock()
+					if early == nil {
+						early = fmt.Errorf("%s: %w", strings.TrimSuffix(filepath.Base(p.Path), ".exe"), err)
+					}
+					earlyMu.Unlock()
+					cancel()
+				}
+			}()
 		}
 		s.err = cmd.Wait()
+		wg.Wait()
+		if early != nil {
+			s.err = early
+		}
+		if vsr {
+			t.mu.Lock()
+			t.vsrBusy--
+			t.mu.Unlock()
+		}
 		close(s.done)
 		if s.err != nil && cctx.Err() == nil {
 			t.log.Warn("ffmpeg exited", "key", key, "err", s.err)
@@ -207,6 +260,22 @@ func (t *Transcoder) Start(ctx context.Context, r transcodeRequest) (string, err
 		select {
 		case <-s.done:
 			t.remove(key)
+			if vsr {
+				// the driver refused or it had no effect: the shader (or
+				// Lanczos) instead. Unless one of ours holds it (then the
+				// next try waits for that stream to end anyway), something
+				// else does, or the display is off: rest it a while.
+				t.mu.Lock()
+				ours := t.vsrBusy > 0
+				if !ours {
+					t.vsrPause = time.Now().Add(vsrPauseFor)
+				}
+				t.mu.Unlock()
+				t.log.Warn("RTX Video Super Resolution didn't engage, using the other upscaler", "key", key,
+					"err", s.err, "another_flex_stream_has_it", ours)
+				r.VSR = false
+				return t.Start(ctx, r)
+			}
 			if t.useGPU(r) || t.placebo(r) || t.hdrCUDAScale(r) || t.aiUpscale(r) {
 				// e.g. a codec the GPU can't decode: same job with CPU filters
 				t.log.Warn("ffmpeg GPU pipeline failed, retrying on the CPU", "key", key, "err", s.err)
@@ -266,8 +335,8 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 	} else if ai {
 		// deinterlace on the CPU (cheap at SD size), then the network and the
 		// last stretch to the profile's height in one libplacebo pass
-		w := r.Media.Video.Width * r.Profile.MaxHeight / r.Media.Video.Height / 2 * 2
-		vf := []string{"bwdif=mode=send_frame:deint=interlaced", aiFilter(r.Shader, w, r.Profile.MaxHeight, t.pixFormat(r))}
+		w, h := upscaleSize(r.Media.Video.Width, r.Media.Video.Height, r.Profile.MaxHeight)
+		vf := []string{"bwdif=mode=send_frame:deint=interlaced", aiFilter(r.Shader, w, h, t.pixFormat(r))}
 		if r.Sub >= 0 {
 			vf = append(vf, fmt.Sprintf("subtitles=%s:si=%d", ffEscape(r.Path), subOrdinal(r.Media, r.Sub)))
 		}
@@ -286,7 +355,8 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 	} else if gpu {
 		scale := fmt.Sprintf("scale_cuda=-2:'min(%d,ih)':format=yuv420p", r.Profile.MaxHeight)
 		if r.Upscale {
-			scale = fmt.Sprintf("scale_cuda=-2:%d:interp_algo=lanczos:format=yuv420p", r.Profile.MaxHeight)
+			w, h := upscaleSize(r.Media.Video.Width, r.Media.Video.Height, r.Profile.MaxHeight)
+			scale = fmt.Sprintf("scale_cuda=%d:%d:interp_algo=lanczos:format=yuv420p", w, h)
 		}
 		a = append(a, "-vf", "bwdif_cuda=mode=send_frame:deint=interlaced,"+scale)
 		a = append(a, t.videoCodecArgs(r)...)
@@ -300,6 +370,9 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 			// 4K picture
 			w, h := fitHeight(r.Media.Video.Width, r.Media.Video.Height, r.Profile.MaxHeight)
 			vf = []string{fmt.Sprintf("scale_cuda=%d:%d:format=p010le", w, h), "hwdownload", "format=p010le"}
+		} else if r.Upscale && r.Media.Video.Height > 0 {
+			w, h := upscaleSize(r.Media.Video.Width, r.Media.Video.Height, r.Profile.MaxHeight)
+			vf = append(vf, fmt.Sprintf("scale=%d:%d:flags=lanczos", w, h), "unsharp=5:5:0.5:5:5:0")
 		} else if r.Upscale {
 			vf = append(vf, fmt.Sprintf("scale=-2:%d:flags=lanczos", r.Profile.MaxHeight), "unsharp=5:5:0.5:5:5:0")
 		} else {
@@ -323,13 +396,53 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 		a = append(a, t.videoCodecArgs(r)...)
 	}
 
-	a = append(a, "-c:a", "aac", "-ac", "2", "-b:a", r.Profile.AudioBits, "-ar", "48000")
-	a = append(a,
+	return append(a, t.audioAndHLS(r, dir)...)
+}
+
+// audioAndHLS is the end of every session's ffmpeg: AAC stereo and 4 s HLS
+// segments into dir.
+func (t *Transcoder) audioAndHLS(r transcodeRequest, dir string) []string {
+	return []string{"-c:a", "aac", "-ac", "2", "-b:a", r.Profile.AudioBits, "-ar", "48000",
 		"-f", "hls", "-hls_time", "4", "-hls_playlist_type", "event",
 		"-hls_segment_type", "mpegts", "-hls_flags", "independent_segments",
 		"-hls_segment_filename", filepath.Join(dir, "seg%d.ts"),
-		filepath.Join(dir, "index.m3u8"))
-	return a
+		filepath.Join(dir, "index.m3u8")}
+}
+
+// startProcs starts a session's programs, each one's output piped into the
+// next, with their messages going to the log.
+func (t *Transcoder) startProcs(key string, r transcodeRequest, procs []*exec.Cmd) error {
+	var ends []*os.File // the parent's copies of the pipes, closed once all run
+	defer func() {
+		for _, f := range ends {
+			f.Close()
+		}
+	}()
+	for i := 0; i+1 < len(procs); i++ {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return err
+		}
+		procs[i].Stdout, procs[i+1].Stdin = pw, pr
+		ends = append(ends, pr, pw)
+	}
+	for i, p := range procs {
+		who := strings.TrimSuffix(filepath.Base(p.Path), ".exe")
+		stderr, err := p.StderrPipe()
+		if err != nil {
+			return err
+		}
+		t.log.Info(who+" start", "key", key, "gpu", t.useGPU(r), "hdr_gpu", t.hdrOnGPU(r), "args", strings.Join(p.Args[1:], " "))
+		if err := p.Start(); err != nil {
+			for _, q := range procs[:i] {
+				q.Process.Kill()
+				q.Wait()
+			}
+			return fmt.Errorf("start %s: %w", who, err)
+		}
+		go t.logLines(key, who, stderr)
+	}
+	return nil
 }
 
 // useGPU: the all-CUDA pipeline needs NVENC and no CPU-only filters

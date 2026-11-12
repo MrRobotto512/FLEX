@@ -54,6 +54,7 @@ func (s *Server) prepareUpscaling(ctx context.Context) {
 		results["ai"] = "no ffmpeg"
 		return
 	}
+	s.prepareVSR(ctx, results) // NVIDIA's own: needs no libplacebo
 	if !s.tc.hdrGPU {
 		results["ai"] = "needs libplacebo (Vulkan), which didn't pass its test"
 		return

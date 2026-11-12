@@ -118,9 +118,12 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 	}
 	// on the home network (bandwidth to spare for the sharper picture) an AI
 	// upscaler, when this PC's GPU passed its test: Anime4K for animation
-	shader := ""
+	// (RTX Video Super Resolution first where the card has it: sharper than
+	// either shader on both)
+	shader, vsr := "", false
 	if upscale && profileName != "remote" {
 		shader = s.tc.Shader(s.db.Animated(kind, id))
+		vsr = s.tc.VSRReady()
 	}
 
 	// Direct play ignores start: the client seeks in the file itself.
@@ -140,6 +143,7 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 		CopyVid: videoOK && sub < 0,
 		Upscale: upscale,
 		Shader:  shader,
+		VSR:     vsr,
 	})
 	if err != nil {
 		return PlayInfo{}, err
@@ -151,7 +155,9 @@ func (s *Server) decidePlay(ctx context.Context, kind string, id int64, path str
 	info.BitRate = transcodeRate
 	if !(videoOK && sub < 0) {
 		info.VideoCodec = "h264"
-		if mi.Video.Height > p.MaxHeight || upscale {
+		if upscale {
+			info.Width, info.Height = upscaleSize(mi.Video.Width, mi.Video.Height, p.MaxHeight)
+		} else if mi.Video.Height > p.MaxHeight {
 			info.Width = mi.Video.Width * p.MaxHeight / mi.Video.Height / 2 * 2
 			info.Height = p.MaxHeight
 		}

@@ -16,6 +16,7 @@
 /dist/
 desktop/build/bin/
 *.exe
+!server/vsr/flexvsr.exe
 *.test
 
 # wails / node (frontend/dist is hand-written source here, so it is tracked)
