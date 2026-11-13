@@ -77,7 +77,7 @@ func (a *App) trayReady() {
 					update.SetTitle(updateLine(a.CheckUpdate()))
 				}
 			case <-quit.ClickedCh:
-				a.Quit()
+				a.quit("Quit chosen in the tray menu")
 				return
 			}
 		}
@@ -149,8 +149,12 @@ func (a *App) ShowWindow() {
 	wruntime.WindowUnminimise(a.ctx)
 }
 
-// Quit stops the server and exits (closing the window only hides it).
-func (a *App) Quit() {
+// Quit stops the server and exits (closing the window only hides it); why
+// goes to the log, so a FLEX that is gone can be told from one that crashed.
+func (a *App) Quit() { a.quit("asked to quit") }
+
+func (a *App) quit(why string) {
+	a.log.Info("closing: " + why)
 	systray.Quit()
 	wruntime.Quit(a.ctx)
 }

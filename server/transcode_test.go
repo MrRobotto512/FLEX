@@ -182,3 +182,29 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+// A resumed remux starts picture and sound at the same keyframe; a full
+// conversion keeps the exact position.
+func TestResumeSeek(t *testing.T) {
+	tc := &Transcoder{encoder: "libx264"}
+	r := transcodeRequest{Path: "x.mp4", Media: &MediaInfo{}, Profile: profiles["cast"], Audio: -1, Sub: -1, Start: 1803}
+	loose := func(args []string) bool {
+		for i, a := range args {
+			if a == "-noaccurate_seek" {
+				return i+1 < len(args) && args[i+1] == "-ss"
+			}
+		}
+		return false
+	}
+	if loose(tc.args(r, t.TempDir())) {
+		t.Error("a conversion should seek exactly")
+	}
+	r.CopyVid = true
+	if !loose(tc.args(r, t.TempDir())) {
+		t.Error("a remux should start the sound at the picture's keyframe")
+	}
+	r.Start = 0
+	if loose(tc.args(r, t.TempDir())) {
+		t.Error("no seek from the beginning")
+	}
+}
