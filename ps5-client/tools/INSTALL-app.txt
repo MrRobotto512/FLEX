@@ -4,11 +4,17 @@ This is FLEX built as a PS5 app: its home-screen tile starts FLEX directly,
 without the Homebrew Launcher. It needs Shadow Mount+, which puts app folders
 in /data/homebrew on the home screen.
 
-First install: copy the PPSA84840 folder to the jailbroken PS5 so it becomes
+Easiest: let FLEX on your PC install it. In the FLEX window, under PS5, press
+"Install the FLEX app" next to the console (or type its address). The PS5 has
+to be jailbroken with its FTP server running (port 2121).
+
+By hand: copy the PPSA84840 folder to the jailbroken PS5 so it becomes
   /data/homebrew/PPSA84840/eboot.bin
   /data/homebrew/PPSA84840/sce_module/libc.prx
   /data/homebrew/PPSA84840/sce_sys/param.json
   /data/homebrew/PPSA84840/sce_sys/icon0.png
+  /data/homebrew/PPSA84840/sce_sys/pic0.dds
+  /data/homebrew/PPSA84840/sce_sys/pic1.dds
   /data/homebrew/PPSA84840/assets/DejaVuSans.ttf
 (FTP to the PS5, or a USB stick plus a file manager.) Within about 15 seconds
 Shadow Mount+ adds a FLEX tile; if it doesn't, open Shadow Mount+ once.
@@ -23,7 +29,8 @@ Launcher version (FLEX-ps5.zip), which still works as before.
 After that FLEX updates itself: when the FLEX server on your PC has a newer
 version, the grid shows "Update ... ready"; Options installs it and FLEX
 closes, to be opened again from its tile. Hold Circle on the grid to close
-FLEX.
+FLEX. New tile pictures (sce_sys) come only with an install; if the tile
+keeps the old ones, delete the FLEX tile and install again.
 
 sce_module/libc.prx is the clean-room runtime from Forwarder Manager's
 native-app kit, GPL-3.0-or-later; its source is at

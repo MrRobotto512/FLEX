@@ -1,6 +1,7 @@
 // Command logo draws the FLEX logo (white FLEX over a film strip on a dark
-// navy field with a blue glow) and writes every icon the project ships, so
-// they all come from one drawing:
+// navy field with a blue glow) and writes every icon the project ships, plus
+// the PS5 app's two home-screen backgrounds (background.go, bc7.go), so they
+// all come from one drawing:
 //
 //	go run ./tools/logo
 //
@@ -12,6 +13,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -222,10 +224,27 @@ func ico(sizes ...int) []byte {
 }
 
 func main() {
+	backgrounds := flag.String("backgrounds", "", "draw only the PS5 home-screen backgrounds, into this folder")
+	width := flag.Int("width", 3840, "width of the backgrounds (16:9)")
+	flag.Parse()
+	if *backgrounds != "" {
+		// previews: the pictures as PNG, and as the PS5 takes them at 4K
+		w, h := *width, *width*9/16
+		sel, launch := selectedBackground(w, h).image(1.5), launchBackground(w, h).image(1.5)
+		write(filepath.Join(*backgrounds, "background-source.png"), pngBytes(sel))
+		write(filepath.Join(*backgrounds, "launch-background-source.png"), pngBytes(launch))
+		if w == bgW {
+			write(filepath.Join(*backgrounds, "pic0.dds"), bc7DDS(sel))
+			write(filepath.Join(*backgrounds, "pic1.dds"), bc7DDS(launch))
+		}
+		return
+	}
 	write("assets/logo/flex-1024.png", pngBytes(icon(1024)))
 	write("assets/logo/flex-wide-1920.png", pngBytes(render(wide(), 1920, 1080)))
 	write("ps5-client/sce_sys/icon0.png", pngBytes(icon(512)))
 	write("ps5-client/app/sce_sys/icon0.png", pngBytes(icon(512)))
+	write("ps5-client/app/sce_sys/pic0.dds", bc7DDS(selectedBackground(bgW, bgH).image(1.5)))
+	write("ps5-client/app/sce_sys/pic1.dds", bc7DDS(launchBackground(bgW, bgH).image(1.5)))
 	for dir, s := range map[string]int{"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192} {
 		write("android/app/src/main/res/mipmap-"+dir+"/ic_launcher.png", pngBytes(icon(s)))
 	}

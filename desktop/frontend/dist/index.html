@@ -27,6 +27,7 @@
   code { font-family: ui-monospace, monospace; }
   .note { color:var(--muted); font-size:13px; margin:2px 0 0; }
   details summary { color:var(--muted); cursor:pointer; margin:6px 0; }
+  #ps5_list span { font-family:inherit; flex:none; }
 </style>
 </head>
 <body>
@@ -107,6 +108,10 @@
 <h2>PS5</h2>
 <div class="row"><label class="check"><input type="checkbox" id="ps5_keep_launcher"> Restart the Homebrew Launcher after the PS5 reboots</label></div>
 <p class="note">Payloads don't survive a console restart. When a PS5 that has used FLEX is jailbroken again (elfldr on port 9021) but its Homebrew Launcher (websrv) isn't running, FLEX sends websrv to it so the launcher tile works again.</p>
+<p class="note" style="margin-top:10px"><b>Install the FLEX app:</b> FLEX copies its PS5 app onto the console, and Shadow Mount+ adds a FLEX tile that opens FLEX directly. The console has to be jailbroken with its FTP server running (port 2121; the jailbreak starts it). Use it for the first install, to repair the app, or to bring new tile pictures; after that the app updates itself from this PC. If the tile keeps showing old pictures, delete the FLEX tile and install again.</p>
+<ul id="ps5_list"><li class="muted">No PS5 has used FLEX yet</li></ul>
+<div class="row"><label>Another PS5</label><input id="ps5_host" placeholder="its address, e.g. 192.168.0.176 (PS5: Settings > Network > Connection Status)"><button id="ps5_add">Install the FLEX app</button></div>
+<p id="ps5_msg" class="note bad"></p>
 
 <h2>Updates</h2>
 <div class="row"><span id="up_status" class="muted">Not checked yet</span><button id="up_check">Check now</button><button class="primary" id="up_install" hidden>Install update</button></div>
@@ -190,6 +195,34 @@ $('prep_add').onclick = async () => {
   refresh();
 };
 
+// --- PS5: copy the FLEX app onto a console ---
+function renderPS5(list) {
+  const ul = $('ps5_list');
+  const key = JSON.stringify(list);
+  if (ul.dataset.key === key) return;
+  ul.dataset.key = key;
+  ul.innerHTML = '';
+  if (!list.length) { ul.innerHTML = '<li class="muted">No PS5 has used FLEX yet</li>'; return; }
+  for (const c of list) {
+    const ftp = !c.checked ? '<span class="muted">looking for its FTP server…</span>'
+      : c.ftp ? '<span class="ok">FTP ready</span>' : '<span class="muted">FTP not running</span>';
+    const state = c.busy ? `<span class="warn">${Math.round(c.done * 100)}% · ${esc(c.message)}</span>`
+      : c.message ? `<span class="${c.failed ? 'bad' : 'ok'}">${esc(c.message)}</span>` : '';
+    const li = document.createElement('li');
+    li.innerHTML = `<div style="flex:1"><code>${esc(c.host)}</code> <small>${ftp}</small>${state ? `<br><small>${state}</small>` : ''}</div>`
+      + `<button${c.busy ? ' disabled' : ''}>${c.busy ? 'Installing…' : 'Install the FLEX app'}</button>`;
+    li.querySelector('button').onclick = () => installPS5(c.host);
+    ul.appendChild(li);
+  }
+}
+async function installPS5(host) {
+  $('ps5_msg').textContent = '';
+  try { await App().InstallPS5App(host); $('ps5_host').value = ''; }
+  catch (e) { $('ps5_msg').textContent = String(e); }
+  refresh();
+}
+$('ps5_add').onclick = () => { const h = $('ps5_host').value.trim(); if (h) installPS5(h); };
+
 function renderFolders() {
   renderList('folders', 'library');
   renderList('tvfolders', 'tv_library');
@@ -227,6 +260,7 @@ async function refresh() {
   $('prep_engine').textContent = !settings.prep ? 'Off' : st.prep_engine === 'topaz' ? 'Upscales with Topaz Video AI'
     : st.prep_engine === 'shaders' ? 'Upscales with the built-in AI shaders' : (st.prep_why || 'No upscaler yet');
   renderPrep(st.prep || []);
+  renderPS5(await App().PS5Consoles() || []);
   $('peers').textContent = !settings.link_servers ? 'Off' : peers.length === 0 ? 'None found yet'
     : peers.map(p => `${p.name} (${p.addr}${p.via === 'tailscale' ? ' over Tailscale' : ''}, v${p.version}): ${p.online ? `${p.movies} movies · ${p.shows} shows` : 'not answering'}`).join(' · ');
   pills.push(`<span class="pill muted">v${esc(st.version)}</span>`);
