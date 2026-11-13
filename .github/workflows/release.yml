@@ -68,8 +68,13 @@ jobs:
         run: go build -tags desktop,production -ldflags "-s -w -H windowsgui -X flex/server.Version=${TAG#v}" -o FLEX.exe .
       - name: flexd.exe
         run: go build -ldflags "-X flex/server.Version=${TAG#v}" -o flexd.exe ./cmd/flexd
+      # the installer carries FLEX.exe inside it (cmd/flexsetup)
+      - name: FLEX-Setup.exe
+        run: |
+          cp desktop/FLEX.exe cmd/flexsetup/FLEX.exe
+          go build -tags setup -ldflags "-s -w -H windowsgui -X main.version=${TAG#v}" -o FLEX-Setup.exe ./cmd/flexsetup
       - name: Collect
-        run: mkdir dist && cp desktop/FLEX.exe flexd.exe dist/
+        run: mkdir dist && cp desktop/FLEX.exe flexd.exe FLEX-Setup.exe dist/
       - uses: actions/upload-artifact@v4
         with:
           name: windows
