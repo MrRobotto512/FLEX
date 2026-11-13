@@ -95,7 +95,8 @@ deploy: $(ELF)
 #
 # `make app` builds the same program as a real PS5 app, so the home-screen
 # tile *is* FLEX (no Homebrew Launcher in between): build/app/$(APP_ID)/ with
-# eboot.bin, sce_module/libc.prx, sce_sys/ and the font. Copied to
+# eboot.bin, sce_module/libc.prx, sce_sys/ (name, tile and the two home-screen
+# backgrounds tools/logo draws) and the font. Copied to
 # /data/homebrew/$(APP_ID)/ (`make deploy-app`), Shadow Mount+ puts it on the
 # home screen. The payload SDK has no tools for apps; the app kit inside
 # Forwarder Manager (github.com/heydemoura/ps5-forwarder-manager, GPL-3.0)
@@ -143,7 +144,9 @@ build/app/pie.elf: $(APP_OBJS) app/symbols.map
 	$(LD) -T $(APP_KIT)/tooling/native/ps5-pie.ld --version-script app/symbols.map -e _start $(addprefix --wrap=,$(APP_WRAP)) $(APP_LDFLAGS) -o $@ \
 	    $(APP_OBJS) --start-group $(APP_LIBS) --end-group --as-needed $(APP_SYS) -lc
 
-$(APP_OUT)/eboot.bin: build/app/pie.elf app/param.json
+APP_ART  := app/sce_sys/icon0.png app/sce_sys/pic0.dds app/sce_sys/pic1.dds
+
+$(APP_OUT)/eboot.bin: build/app/pie.elf app/param.json $(APP_ART)
 	$(APP_TOOL) link --in $< --out build/app/eboot.elf --stub-dir $(PS5_SYSROOT)/lib \
 	    --module-sdk 0x02000009 --companion-sdk 0x08050001 --file-name eboot.elf
 	rm -rf $(APP_OUT)
@@ -152,7 +155,7 @@ $(APP_OUT)/eboot.bin: build/app/pie.elf app/param.json
 	cp $(APP_KIT)/runtime/libc.prx $(APP_OUT)/sce_module/
 	sed 's/@ID@/$(APP_ID)/g; s/@CONCEPT@/$(patsubst PPSA%,%,$(APP_ID))/; s/@NAME@/$(APP_NAME)/' \
 	    app/param.json > $(APP_OUT)/sce_sys/param.json
-	cp app/sce_sys/icon0.png $(APP_OUT)/sce_sys/
+	cp $(APP_ART) $(APP_OUT)/sce_sys/
 	cp assets/DejaVuSans.ttf $(APP_OUT)/assets/
 
 # The app's folder as PPSA84840 plus how to install it: what CI attaches to
@@ -167,7 +170,7 @@ app-release:
 
 deploy-app: app
 	cd $(APP_OUT) && for f in eboot.bin sce_module/libc.prx sce_sys/param.json sce_sys/icon0.png \
-	    assets/DejaVuSans.ttf; do \
+	    sce_sys/pic0.dds sce_sys/pic1.dds assets/DejaVuSans.ttf; do \
 	    curl -sS --ftp-create-dirs -T $$f ftp://$(PS5_HOST):$(PS5_FTP_PORT)/data/homebrew/$(APP_ID)/$$f || exit 1; \
 	done
 

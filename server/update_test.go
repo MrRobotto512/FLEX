@@ -111,3 +111,36 @@ func TestPS5AppStore(t *testing.T) {
 		t.Error("zip without <TITLEID>/eboot.bin was accepted")
 	}
 }
+
+func TestPS5UpdateWants(t *testing.T) {
+	s := &Server{cfg: Config{DataDir: t.TempDir()}, log: slog.Default()}
+	s.ps5up = &ps5Updates{s: s}
+	rel := func(v string, app bool) *Release {
+		r := &Release{Version: v, assets: map[string]string{PS5Asset: "u"}, sums: map[string]string{PS5Asset: "s"}}
+		if app {
+			r.assets[PS5AppAsset], r.sums[PS5AppAsset] = "u", "s"
+		}
+		return r
+	}
+	if !s.ps5up.wants(rel("0.8.0", true)) {
+		t.Error("nothing stored: should download")
+	}
+	s.ps5up.cl = &PS5Client{Version: "0.8.0"} // fetched by a server that didn't know the app
+	for _, c := range []struct {
+		rel  *Release
+		want bool
+	}{
+		{rel("0.8.0", true), true},   // same version, now with the app
+		{rel("0.8.0", false), false}, // nothing more to get
+		{rel("0.7.8", true), false},  // older
+		{rel("0.8.1", false), true},  // newer
+	} {
+		if got := s.ps5up.wants(c.rel); got != c.want {
+			t.Errorf("%s (app %v): wants %v", c.rel.Version, c.rel.Has(PS5AppAsset), got)
+		}
+	}
+	s.ps5up.cl.App = &PS5App{TitleID: "PPSA84840"}
+	if s.ps5up.wants(rel("0.8.0", true)) {
+		t.Error("same version with the app already stored: should not download")
+	}
+}

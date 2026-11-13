@@ -315,17 +315,26 @@ func (u *ps5Updates) store(version string, elf, appZip []byte) error {
 	return nil
 }
 
-// check downloads the PS5 client of the newest release when it is newer
-// than the stored one.
+// wants says whether rel's PS5 client should be downloaded: it is newer than
+// the stored one, or the same version but the stored one lacks the app (a
+// server that fetched it before it knew about the app, as 0.7.8 servers did
+// with 0.8.0, would otherwise never get it).
+func (u *ps5Updates) wants(rel *Release) bool {
+	if !rel.Has(PS5Asset) {
+		return false
+	}
+	cl := u.current()
+	return cl == nil || NewerVersion(rel.Version, cl.Version) ||
+		cl.Version == rel.Version && cl.App == nil && rel.Has(PS5AppAsset)
+}
+
+// check downloads the PS5 client of the newest release when wants says so.
 func (u *ps5Updates) check(ctx context.Context) error {
 	rel, err := LatestRelease(ctx)
 	if err != nil {
 		return err
 	}
-	if !rel.Has(PS5Asset) {
-		return nil
-	}
-	if cl := u.current(); cl != nil && !NewerVersion(rel.Version, cl.Version) {
+	if !u.wants(rel) {
 		return nil
 	}
 	elf, err := rel.Download(ctx, PS5Asset)

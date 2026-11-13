@@ -60,10 +60,11 @@ FLEX comes two ways; both use the same settings (`/data/homebrew/FLEX/`).
 
 **As its own app (with Shadow Mount+).** The FLEX tile on the home screen is FLEX itself.
 
-1. Download `FLEX-ps5-app.zip` from the same release and copy its `PPSA84840` folder to the console so it becomes `/data/homebrew/PPSA84840/` (`eboot.bin`, `sce_module/`, `sce_sys/`, `assets/`). Within about 15 seconds Shadow Mount+ adds a FLEX tile; if it doesn't, open Shadow Mount+ once. Replacing the files of an earlier FLEX tile (the one that started FLEX through the Homebrew Launcher) keeps the tile.
+1. In the FLEX window on the PC, under **PS5**, press **Install the FLEX app** next to the console (or type its address under "Another PS5"). FLEX copies the app to `/data/homebrew/PPSA84840/` through the console's FTP server, which the jailbreak starts (port 2121). Within about 15 seconds Shadow Mount+ adds a FLEX tile; if it doesn't, open Shadow Mount+ once. Installing over an earlier FLEX tile (the one that started FLEX through the Homebrew Launcher) keeps the tile.
+   By hand instead: download `FLEX-ps5-app.zip` from the same release and copy its `PPSA84840` folder to the console so it becomes `/data/homebrew/PPSA84840/` (`eboot.bin`, `sce_module/`, `sce_sys/`, `assets/`).
 2. Open the FLEX tile. FLEX finds the server by itself on the same network. **Hold Circle** on the grid to close it.
 
-From then on it updates itself: when the server has a newer version the grid says "Update … ready"; Options installs it and FLEX closes, to be opened again from its tile.
+From then on it updates itself: when the server has a newer version the grid says "Update … ready"; Options installs it and FLEX closes, to be opened again from its tile. The tile's pictures (the background while FLEX is highlighted and while it starts) are the exception: the home screen copies them when the tile is set up, so new ones come with **Install the FLEX app**, and if the tile still shows the old ones, delete the FLEX tile and install again.
 
 **From the Homebrew Launcher (websrv).**
 

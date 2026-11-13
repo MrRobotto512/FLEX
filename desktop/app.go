@@ -196,6 +196,30 @@ func (a *App) TailscaleSignIn() {
 
 func (a *App) SetAutostart(on bool) error { return setAutostart(on) }
 
+// PS5Consoles lists the consoles this FLEX knows, with how an install on
+// each is going.
+func (a *App) PS5Consoles() []server.PS5Console {
+	a.mu.Lock()
+	srv := a.srv
+	a.mu.Unlock()
+	if srv == nil {
+		return nil
+	}
+	return srv.PS5Consoles()
+}
+
+// InstallPS5App copies the FLEX app onto the PS5 at host (it runs in the
+// background; PS5Consoles shows the progress).
+func (a *App) InstallPS5App(host string) error {
+	a.mu.Lock()
+	srv := a.srv
+	a.mu.Unlock()
+	if srv == nil {
+		return fmt.Errorf("the FLEX server isn't running")
+	}
+	return srv.InstallPS5App(host)
+}
+
 func (a *App) PickFolder(title string) (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
 }

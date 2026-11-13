@@ -38,13 +38,21 @@ const (
 type ps5Keeper struct {
 	s *Server
 
-	mu    sync.Mutex
-	hosts map[string]*ps5Host
+	mu      sync.Mutex
+	hosts   map[string]*ps5Host
+	probing bool      // looking for the consoles' FTP servers (ps5install.go)
+	probed  time.Time // when that was last done
 }
 
 type ps5Host struct {
 	misses   int // consecutive checks with elfldr up and websrv down
 	lastSent time.Time
+
+	// installing the app from this PC (ps5install.go)
+	ftp, ftpChecked bool
+	busy, failed    bool
+	done            float64
+	msg             string
 }
 
 func newPS5Keeper(s *Server) *ps5Keeper {
@@ -86,8 +94,7 @@ func (k *ps5Keeper) note(remoteAddr string) {
 		return
 	}
 	k.s.log.Info("ps5: remembering console", "host", host)
-	b, _ := json.Marshal(list)
-	k.s.db.SetSetting("ps5_hosts", string(b))
+	k.save(list)
 	go k.websrvELF(k.s.bg()) // fetch now while the internet is surely there
 }
 

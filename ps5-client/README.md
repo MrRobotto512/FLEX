@@ -117,6 +117,8 @@ The payload SDK builds payloads that a loader injects into a running app; it has
 
 Its settings, cache and black box are the payload's (`/data/homebrew/FLEX/`). Shadow Mount+ only accepts title IDs starting PPSA, CUSA, LAPY or FAKE.
 
+The home screen's pictures for the tile are `app/sce_sys/pic0.dds` (while FLEX is highlighted) and `pic1.dds` (while it starts): 3840x2160 BC7 DDS files that `go run ./tools/logo` draws and encodes itself, no Windows converter needed (`go run ./tools/logo -backgrounds <dir>` writes PNG previews). The FLEX window on the PC installs the whole app folder, pictures included, onto a console over its FTP server (`server/ps5install.go`); the app's own updates skip `sce_sys/`.
+
 ## Next steps
 
 - On-screen keyboard for entering a Tailscale address (`SceImeDialog` is already linked by the SDL port).
