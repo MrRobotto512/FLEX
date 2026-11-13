@@ -101,6 +101,7 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.log = openLog() // here, not earlier: a second FLEX.exe never gets this far
 	a.settings = loadSettings()
 	a.startServer()
 	a.startTray()
@@ -126,7 +127,10 @@ func (a *App) openPlayerWhenUp() {
 	}
 }
 
-func (a *App) shutdown(ctx context.Context) { a.stopServer() }
+func (a *App) shutdown(ctx context.Context) {
+	a.log.Info("closing: shutting down")
+	a.stopServer()
+}
 
 // --- bound to the frontend as window.go.main.App.* ---
 

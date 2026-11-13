@@ -321,6 +321,14 @@ func (t *Transcoder) args(r transcodeRequest, dir string) []string {
 		a = append(a, "-readrate", "1.5", "-readrate_initial_burst", "60")
 	}
 	if r.Start > 0 {
+		if r.CopyVid {
+			// A copied picture can only begin at the keyframe before the asked
+			// position. Without this the converted sound still began exactly at
+			// the position, up to a few seconds later: a resumed title opened
+			// with picture and no sound, then the sound cut in (heard as a
+			// glitch when casting). Now both begin at that keyframe.
+			a = append(a, "-noaccurate_seek")
+		}
 		a = append(a, "-ss", fmt.Sprintf("%.3f", r.Start))
 	}
 	a = append(a, "-i", r.Path, "-map", fmt.Sprintf("0:%d", r.Media.Video.Index))

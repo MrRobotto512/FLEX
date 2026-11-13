@@ -51,6 +51,8 @@ func main() {
 		Bind:        []any{app},
 	})
 	if err != nil {
+		app.log.Error("closing: the window could not run", "err", err)
 		panic(err)
 	}
+	app.log.Info("closed")
 }

@@ -118,8 +118,7 @@ func (a *App) InstallUpdate() error {
 		os.Rename(old, exe)
 		return fmt.Errorf("start the new FLEX.exe: %w", err)
 	}
-	a.log.Info("update: restarting", "version", rel.Version)
-	a.Quit()
+	a.quit("restarting into version " + rel.Version)
 	return nil
 }
 
