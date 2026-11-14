@@ -146,15 +146,23 @@ build/app/pie.elf: $(APP_OBJS) app/symbols.map
 
 APP_ART  := app/sce_sys/icon0.png app/sce_sys/pic0.dds app/sce_sys/pic1.dds
 
-$(APP_OUT)/eboot.bin: build/app/pie.elf app/param.json $(APP_ART)
+# The PlayStation form of the version, which consoles and the homebrew
+# catalog compare to find updates: 0.8.4 -> 01.008.004. The committed
+# app/sce_sys/param.json is FLEX's own (PPSA84840) and carries the value of
+# the release it was tagged for; `make content-version` rewrites it.
+CONTENT_VERSION := $(shell echo '$(VERSION)' | awk -F'[.-]' '{printf "%02d.%03d.%03d", $$1+1, $$2, $$3}')
+
+$(APP_OUT)/eboot.bin: build/app/pie.elf app/sce_sys/param.json $(APP_ART)
 	$(APP_TOOL) link --in $< --out build/app/eboot.elf --stub-dir $(PS5_SYSROOT)/lib \
 	    --module-sdk 0x02000009 --companion-sdk 0x08050001 --file-name eboot.elf
 	rm -rf $(APP_OUT)
 	mkdir -p $(APP_OUT)/sce_module $(APP_OUT)/sce_sys $(APP_OUT)/assets
 	$(APP_TOOL) self --sign --in build/app/eboot.elf --out $@ --magic 0x1D3D154F
 	cp $(APP_KIT)/runtime/libc.prx $(APP_OUT)/sce_module/
-	sed 's/@ID@/$(APP_ID)/g; s/@CONCEPT@/$(patsubst PPSA%,%,$(APP_ID))/; s/@NAME@/$(APP_NAME)/' \
-	    app/param.json > $(APP_OUT)/sce_sys/param.json
+	sed -e 's/PPSA84840/$(APP_ID)/g' -e 's/"conceptId": "84840"/"conceptId": "$(patsubst PPSA%,%,$(APP_ID))"/' \
+	    -e 's/"titleName": "FLEX"/"titleName": "$(APP_NAME)"/' \
+	    -e 's/"contentVersion": "[^"]*"/"contentVersion": "$(CONTENT_VERSION)"/' \
+	    app/sce_sys/param.json > $(APP_OUT)/sce_sys/param.json
 	cp $(APP_ART) $(APP_OUT)/sce_sys/
 	cp assets/DejaVuSans.ttf $(APP_OUT)/assets/
 
@@ -162,11 +170,19 @@ $(APP_OUT)/eboot.bin: build/app/pie.elf app/param.json $(APP_ART)
 # a release, and what FLEX servers unpack to update consoles' apps.
 app-release:
 	$(MAKE) app APP_ID=PPSA84840 APP_NAME=FLEX
-	rm -rf build/appzip build/FLEX-ps5-app.zip
+	rm -rf build/appzip build/FLEX-ps5-app.zip build/PPSA84840.zip
 	mkdir -p build/appzip
 	cp -r build/app/PPSA84840 build/appzip/
 	sed 's/@VERSION@/$(VERSION)/' tools/INSTALL-app.txt > build/appzip/INSTALL.txt
 	cd build/appzip && zip -qr ../FLEX-ps5-app.zip INSTALL.txt PPSA84840
+	# the folder alone, named after the title: what the homebrew catalog lists
+	# and ProsperoStore installs
+	cd build/appzip && zip -qr ../PPSA84840.zip PPSA84840
+
+# Before tagging a release: make content-version VERSION=0.8.4, and commit.
+content-version:
+	sed -i 's/"contentVersion": "[^"]*"/"contentVersion": "$(CONTENT_VERSION)"/' app/sce_sys/param.json
+	@grep contentVersion app/sce_sys/param.json
 
 deploy-app: app
 	cd $(APP_OUT) && for f in eboot.bin sce_module/libc.prx sce_sys/param.json sce_sys/icon0.png \
@@ -177,4 +193,4 @@ deploy-app: app
 clean:
 	rm -rf build
 
-.PHONY: all run run-headless websrv deploy release app app-release deploy-app clean
+.PHONY: all run run-headless websrv deploy release app app-release content-version deploy-app clean

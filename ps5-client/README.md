@@ -105,6 +105,7 @@ bash tools/setup-app-kit.sh   # once: the app kit's converter and libc.prx, into
 make app                      # -> build/app/PPSA84840/{eboot.bin, sce_module/libc.prx, sce_sys/, assets/}
 make deploy-app               # upload it to /data/homebrew/PPSA84840 (Shadow Mount+ adds the tile)
 make app-release              # build/FLEX-ps5-app.zip, what a release carries
+make content-version VERSION=0.8.4   # before tagging: the PlayStation version in app/sce_sys/param.json; commit it
 make app APP_ID=PPSA84841 APP_NAME="FLEX Test"   # a second tile for trying a build
 ```
 
@@ -116,6 +117,8 @@ The payload SDK builds payloads that a loader injects into a running app; it has
 - The payload SDK's `libc.a` is linked after the system modules: its `mmap`/`mprotect` make raw system calls and change page rights with the payload's kernel access, which an app has neither of.
 
 Its settings, cache and black box are the payload's (`/data/homebrew/FLEX/`). Shadow Mount+ only accepts title IDs starting PPSA, CUSA, LAPY or FAKE.
+
+For the [homebrew catalog](https://github.com/blackbearreloaded/ps5-homebrew-catalog) behind ProsperoStore, `app/sce_sys/param.json` is committed as FLEX's own (title `PPSA84840`) with a `contentVersion` that rises with every release (0.8.4 is `01.008.004`; the release build fails if the committed value doesn't match the tag), and each release carries `PPSA84840.zip`, the app folder alone. `FLEX-ps5-app.zip` is the same folder plus install notes, and is what FLEX servers fetch.
 
 The home screen's pictures for the tile are `app/sce_sys/pic0.dds` (while FLEX is highlighted) and `pic1.dds` (while it starts): 3840x2160 BC7 DDS files that `go run ./tools/logo` draws and encodes itself, no Windows converter needed (`go run ./tools/logo -backgrounds <dir>` writes PNG previews). The FLEX window on the PC installs the whole app folder, pictures included, onto a console over its FTP server (`server/ps5install.go`); the app's own updates skip `sce_sys/`.
 

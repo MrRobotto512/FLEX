@@ -38,7 +38,11 @@ jobs:
         working-directory: ps5-client
         env:
           PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
-        run: make release app-release VERSION="${TAG#v}"
+        run: |
+          # the homebrew catalog reads contentVersion from the param.json committed at the tag
+          make content-version VERSION="${TAG#v}"
+          git diff --exit-code app/sce_sys/param.json || { echo "::error::run 'make -C ps5-client content-version VERSION=${TAG#v}', commit, and tag again"; exit 1; }
+          make release app-release VERSION="${TAG#v}"
       - uses: actions/upload-artifact@v4
         with:
           name: ps5
@@ -46,6 +50,7 @@ jobs:
             ps5-client/build/FLEX-ps5.elf
             ps5-client/build/FLEX-ps5.zip
             ps5-client/build/FLEX-ps5-app.zip
+            ps5-client/build/PPSA84840.zip
 
   windows:
     runs-on: windows-latest
@@ -128,7 +133,7 @@ jobs:
           merge-multiple: true
       - name: Checksums
         working-directory: dist
-        run: sha256sum FLEX.exe flexd.exe FLEX-ps5.elf FLEX-ps5.zip FLEX-ps5-app.zip FLEX-android.apk > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum FLEX.exe FLEX-Setup.exe flexd.exe FLEX-ps5.elf FLEX-ps5.zip FLEX-ps5-app.zip PPSA84840.zip FLEX-android.apk > SHA256SUMS && cat SHA256SUMS
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
