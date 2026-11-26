@@ -29,12 +29,13 @@ type Server struct {
 	log     *slog.Logger
 	web     fs.FS // static UI, may be nil
 
-	ps5    *ps5Keeper
-	ps5up  *ps5Updates // newest PS5 client build, offered to consoles
-	peers  *peers      // other FLEX servers whose libraries this one lists; nil when off
-	themes *themer     // the home screen's AI-made rows
-	prep   *prepper    // season prep: titles upscaled ahead of time
-	cast   *caster     // Chromecasts on the network and what one is playing
+	ps5     *ps5Keeper
+	ps5up   *ps5Updates // newest PS5 client build, offered to consoles
+	lookups lookups     // posters found by name, for titles outside the library
+	peers   *peers      // other FLEX servers whose libraries this one lists; nil when off
+	themes  *themer     // the home screen's AI-made rows
+	prep    *prepper    // season prep: titles upscaled ahead of time
+	cast    *caster     // Chromecasts on the network and what one is playing
 
 	gpus         []string          // graphics adapters Windows reports
 	encoderTests map[string]string // hardware encoder -> "ok" or why not

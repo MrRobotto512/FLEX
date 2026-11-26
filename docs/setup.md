@@ -62,7 +62,9 @@ FLEX comes two ways; both use the same settings (`/data/homebrew/FLEX/`).
 
 1. In the FLEX window on the PC, under **PS5**, press **Install the FLEX app** next to the console (or type its address under "Another PS5"). FLEX copies the app to `/data/homebrew/PPSA84840/` through the console's FTP server, which the jailbreak starts (port 2121). Within about 15 seconds Shadow Mount+ adds a FLEX tile; if it doesn't, open Shadow Mount+ once. Installing over an earlier FLEX tile (the one that started FLEX through the Homebrew Launcher) keeps the tile.
    By hand instead: download `FLEX-ps5-app.zip` from the same release and copy its `PPSA84840` folder to the console so it becomes `/data/homebrew/PPSA84840/` (`eboot.bin`, `sce_module/`, `sce_sys/`, `assets/`).
-2. Open the FLEX tile. FLEX finds the server by itself on the same network. **Hold Circle** on the grid to close it.
+2. Open the FLEX tile. FLEX finds the server by itself on the same network. **Hold Circle** on the grid, until the bar is full, **then let go** to close it.
+
+**A USB drive in the PS5.** Put video files in a folder named `Movies` or `TV` at the top of the drive (a show is a folder inside `TV`, seasons in `Season 2` folders or `S02E10` in the file names) and plug it into the console: a **USB** tab appears in FLEX and plays them straight from the drive, with resume, even when no PC is running. Nothing is converted, so the console must be able to decode the file itself (1080p H.264 is fine). With a FLEX PC on the network the titles get posters. It needs the jailbreak's web server (port 8080) and FTP server (port 2121) running, which is how FLEX reads the drive: the console doesn't let an app do that itself.
 
 From then on it updates itself: when the server has a newer version the grid says "Update … ready"; Options installs it and FLEX closes, to be opened again from its tile. The tile's pictures (the background while FLEX is highlighted and while it starts) are the exception: the home screen copies them when the tile is set up, so new ones come with **Install the FLEX app**, and if the tile still shows the old ones, delete the FLEX tile and install again.
 

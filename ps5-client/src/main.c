@@ -9,6 +9,7 @@
 #ifdef FLEX_APP
 #include "app.h"
 #endif
+#include <ctype.h>
 #include <SDL.h>
 #include <SDL_image.h>
 #include <fcntl.h>
@@ -30,6 +31,7 @@
 #include "net.h"
 #include "player.h"
 #include "posters.h"
+#include "usb.h"
 
 #ifndef FLEX_VERSION
 #define FLEX_VERSION "dev" /* the Makefile passes the git tag */
@@ -72,9 +74,10 @@
 typedef enum { KIND_MOVIE, KIND_SHOW } Kind;
 
 /* The tabs, in L1/R1 order. Home needs a server with /home; Continue is
- * skipped while empty, and while Home (whose first row it is) is there. */
-typedef enum { TAB_HOME, TAB_CONTINUE, TAB_MOVIES, TAB_SHOWS, TAB_SEARCH, TABS } Tab;
-static const char *tab_names[TABS] = {"Home", "Continue", "Movies", "TV", "Search"};
+ * skipped while empty, and while Home (whose first row it is) is there; USB
+ * is there while a drive with a Movies or TV folder is plugged in. */
+typedef enum { TAB_HOME, TAB_CONTINUE, TAB_MOVIES, TAB_SHOWS, TAB_USB, TAB_SEARCH, TABS } Tab;
+static const char *tab_names[TABS] = {"Home", "Continue", "Movies", "TV", "USB", "Search"};
 
 /* One poster card: a movie or a show. On the Continue tab a card can stand
  * for an episode: it shows the show's poster and plays episode play_id. */
@@ -1146,6 +1149,7 @@ static void draw_keyboard(SDL_Renderer *ren, int nresults) {
 static int tab_shown(Tab t, const int *counts) {
     if (t == TAB_HOME) return counts[TAB_HOME] > 0;
     if (t == TAB_CONTINUE) return counts[TAB_CONTINUE] > 0 && counts[TAB_HOME] == 0;
+    if (t == TAB_USB) return counts[TAB_USB] > 0;
     return 1;
 }
 
@@ -1169,25 +1173,57 @@ static void draw_header(SDL_Renderer *ren, Tab tab, const char *status, const in
 /* ---------- hold Circle to close ----------
  *
  * A press of Circle on the main screens used to close FLEX at once, and so
- * did every stray press. Now it has to be held: a toast at the bottom fills
- * up while it is, letting go early cancels (the toast stays a moment so the
- * hint can be read). Circle on the episode list and in the player still goes
- * back at once. */
+ * did every stray press. Now it has to be held and then let go: a toast at
+ * the bottom fills up while it is held, letting go early cancels (the toast
+ * stays a moment so the hint can be read), and letting go once it is full
+ * closes FLEX. Nothing closes while the button is still down, so a press
+ * whose release never arrives can't close FLEX: the button's real state is
+ * read every frame, and a press that is no longer down counts as let go.
+ * Circle on the episode list and in the player still goes back at once. */
 
 #define HOLD_EXIT_MS 1500
 static Uint32 g_exit_since; /* when Circle went down; 0: not held */
 static Uint32 g_exit_hint;  /* after an early release: keep the toast until then */
 
-static void hold_exit_start(void) { g_exit_since = SDL_GetTicks() | 1; }
+static int g_exit_poll;     /* the button's state can be read (it read as down when pressed) */
 
-static void hold_exit_release(void) {
-    if (!g_exit_since) return;
-    g_exit_since = 0;
-    g_exit_hint = SDL_GetTicks() + 1200;
+static int circle_down(void);
+
+static void hold_exit_start(void) {
+    g_exit_since = SDL_GetTicks() | 1;
+    g_exit_poll = circle_down();
 }
 
-/* hold_exit_done: Circle has been held long enough. */
-static int hold_exit_done(void) { return g_exit_since && SDL_GetTicks() - g_exit_since >= HOLD_EXIT_MS; }
+/* hold_exit_full: Circle has been held long enough; letting go closes. */
+static int hold_exit_full(void) { return g_exit_since && SDL_GetTicks() - g_exit_since >= HOLD_EXIT_MS; }
+
+/* hold_exit_release: Circle was let go. Returns 1 when that closes FLEX. */
+static int hold_exit_release(void) {
+    if (!g_exit_since) return 0;
+    int full = hold_exit_full();
+    bb_log("FLEX: Circle let go after %u ms: %s", (unsigned)(SDL_GetTicks() - g_exit_since),
+           full ? "closing" : "not closing");
+    g_exit_since = 0;
+    if (!full) g_exit_hint = SDL_GetTicks() + 1200;
+    return full;
+}
+
+/* circle_down reads the button itself (and Esc), for a release whose event
+ * went missing. */
+static int circle_down(void) {
+    for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        SDL_GameController *c = SDL_GameControllerFromInstanceID(SDL_JoystickGetDeviceInstanceID(i));
+        if (c && SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_B)) return 1;
+    }
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    return keys && keys[SDL_SCANCODE_ESCAPE];
+}
+
+/* hold_exit_check, once a frame: 1 when FLEX should close. */
+static int hold_exit_check(void) {
+    if (!g_exit_since || !g_exit_poll || SDL_GetTicks() - g_exit_since < 150 || circle_down()) return 0;
+    return hold_exit_release();
+}
 
 static void draw_exit_toast(SDL_Renderer *ren) {
     Uint32 now = SDL_GetTicks();
@@ -1195,7 +1231,7 @@ static void draw_exit_toast(SDL_Renderer *ren) {
     if (g_exit_since) frac = (double)(now - g_exit_since) / HOLD_EXIT_MS;
     else if (now >= g_exit_hint) return;
     if (frac > 1) frac = 1;
-    const char *text = "Hold \u25CB to close FLEX";
+    const char *text = frac >= 1 ? "Let go of \u25CB to close FLEX" : "Hold \u25CB to close FLEX";
     int tw = 0, th = 0;
     TTF_SizeUTF8(g_small, text, &tw, &th);
     int w = tw + 96 > 520 ? tw + 96 : 520, h = 92, x = (SCREEN_W - w) / 2, y = SCREEN_H - h - 64;
@@ -1295,7 +1331,7 @@ static void draw_grid(SDL_Renderer *ren, Tab tab, Item *list, int n, int sel, in
         draw_card(ren, &list[i], MARGIN_X + col * (CARD_W + GAP_X), top + row * ROW_H, focus && i == sel);
     }
     const char *empty[TABS] = {"", "Nothing to continue.", "No movies. Add folders on the PC and scan.",
-                               "No TV shows found.", g_query[0] ? "Nothing matches." : ""};
+                               "No TV shows found.", "", g_query[0] ? "Nothing matches." : ""};
     if (n == 0 && empty[tab][0]) draw_text(ren, g_font, empty[tab], MARGIN_X, top, C_MUTED);
 
     int rows = (n + COLS - 1) / COLS;
@@ -1679,6 +1715,121 @@ static int move_kb(int button) {
     return 1;
 }
 
+/* ---------- a USB drive's Movies and TV folders ----------
+ *
+ * Their cards are on the USB tab: no posters (the title stands in), played
+ * straight from the drive, so they work without a server. Ids are negative
+ * so they can't be taken for the server's: movie i is -(i + 1), show i is
+ * -(USB_SHOW_BASE + i + 1), and in a show's list episode i is -(i + 1). */
+
+#define USB_SHOW_BASE 1000000
+
+/* usb_poster: with a server around, its poster for a title it has never
+ * seen, looked up by name (GET /lookup/poster). The name's hash stands in
+ * for the TMDB id in the poster cache, so each title keeps its own picture. */
+static void usb_poster(Item *m) {
+    if (!g_host[0]) return; /* no server: the title stands in */
+    int n = snprintf(m->poster, sizeof m->poster, "/api/v1/lookup/poster?kind=%s&name=",
+                     m->kind == KIND_SHOW ? "show" : "movie");
+    unsigned hash = 2166136261u;
+    for (const unsigned char *c = (const unsigned char *)m->title; *c; c++) {
+        hash = (hash ^ *c) * 16777619u;
+        if (n + 4 >= (int)sizeof m->poster) { /* too long to ask for */
+            m->poster[0] = 0;
+            return;
+        }
+        if (isalnum(*c)) m->poster[n++] = (char)*c;
+        else n += snprintf(m->poster + n, sizeof m->poster - n, "%%%02X", *c);
+    }
+    m->poster[n] = 0;
+    m->tmdb_id = (int)(hash & 0x7fffffff);
+    m->tex_state = 0;
+}
+
+static Item *usb_items(int *count) {
+    int nm = usb_movie_count(), ns = usb_show_count();
+    *count = nm + ns;
+    if (!*count) return NULL;
+    Item *list = calloc(*count, sizeof *list);
+    for (int i = 0; i < nm; i++) {
+        const UsbFile *f = usb_movie(i);
+        Item *m = &list[i];
+        m->kind = KIND_MOVIE;
+        m->id = -(i + 1);
+        snprintf(m->title, sizeof m->title, "%s", f->title);
+        m->resume_s = usb_resume(f->path);
+        m->tex_state = 2;
+        usb_poster(m);
+    }
+    for (int i = 0; i < ns; i++) {
+        const UsbShow *sh = usb_show(i);
+        Item *m = &list[nm + i];
+        m->kind = KIND_SHOW;
+        m->id = -(USB_SHOW_BASE + i + 1);
+        snprintf(m->title, sizeof m->title, "%s", sh->title);
+        m->episodes = sh->n;
+        m->tex_state = 2;
+        usb_poster(m);
+    }
+    return list;
+}
+
+/* usb_show_view fills the episode list for a show on the drive; returns
+ * the row to start on (the first episode with a resume point, else the first). */
+static int usb_show_view(long id, ShowView *sv) {
+    free(sv->rows);
+    memset(sv, 0, sizeof *sv);
+    sv->id = id;
+    const UsbShow *sh = usb_show((int)(-id - USB_SHOW_BASE - 1));
+    if (!sh) return 0;
+    snprintf(sv->title, sizeof sv->title, "%s", sh->title);
+    sv->episodes = sh->n;
+    sv->rows = calloc(sh->n * 2 + 1, sizeof *sv->rows);
+    int focus = -1, first = -1, season = -1;
+    for (int i = 0; i < sh->n; i++) {
+        const UsbFile *f = &sh->eps[i];
+        if (f->season != season && f->season > 0) {
+            EpRow *h = &sv->rows[sv->n++];
+            h->header = 1;
+            h->season = f->season;
+            sv->seasons++;
+        }
+        season = f->season;
+        EpRow *r = &sv->rows[sv->n++];
+        r->season = f->season;
+        r->episode = f->episode;
+        r->id = -(i + 1);
+        snprintf(r->title, sizeof r->title, "%s", f->title);
+        r->resume_s = usb_resume(f->path);
+        if (first < 0) first = sv->n - 1;
+        if (focus < 0 && r->resume_s > 0) focus = sv->n - 1;
+    }
+    return focus >= 0 ? focus : first >= 0 ? first : 0;
+}
+
+static void play_usb(SDL_Renderer *ren, const UsbFile *f, const char *title) {
+    char path[512];
+    snprintf(path, sizeof path, "%s", f->path); /* a copy: a rescan may replace the lists */
+    char url[1600];
+    int seekable = usb_url(path, url, sizeof url);
+    double duration = usb_duration(url);
+    bb_log("FLEX: play \"%s\" from the drive: %s (%.0f s%s)", title, path, duration, seekable ? "" : ", no seeking");
+    PlayOpts o = {.url = url, .title = title, .initial = seekable ? usb_resume(path) : 0, .duration = duration,
+                  .seekable = seekable, .aspect = ASPECT_AUTO, .volume = g_volume, .font = g_small};
+    memcpy(o.picture, g_picture, sizeof o.picture);
+    PlayResult r = player_play(ren, &o);
+    if (r.volume != g_volume) {
+        g_volume = r.volume;
+        save_int(VOLUME_FILE, g_volume);
+    }
+    if (memcmp(r.picture, g_picture, sizeof g_picture) != 0) {
+        memcpy(g_picture, r.picture, sizeof g_picture);
+        save_picture();
+    }
+    bb_log("FLEX: stopped at %.1fs%s", r.position, r.position < 0 ? " (the file could not be played)" : "");
+    if (r.position >= 0 && seekable) usb_set_resume(path, r.ended ? duration : r.position, duration);
+}
+
 /* next_tab steps L1/R1 through the tabs that are shown. */
 static Tab next_tab(Tab t, int dir, const int *counts) {
     do t = (Tab)((t + dir + TABS) % TABS);
@@ -1825,6 +1976,10 @@ int main(int argc, char **argv) {
     ShowView sv = {0};
     int in_show = 0, ep_sel = 0, ep_first = 0;
 
+    usb_scan();
+    lists[TAB_USB] = usb_items(&counts[TAB_USB]);
+    Uint32 usb_next = 0; /* when to look at the drives again */
+
     int found = find_server() == 0;
     char bench[256];
     if (found && read_bench(bench, sizeof bench)) {
@@ -1847,10 +2002,13 @@ int main(int argc, char **argv) {
         posters_server(g_host, g_port);
         prefetch_posters(lists[TAB_MOVIES], counts[TAB_MOVIES]);
         prefetch_posters(lists[TAB_SHOWS], counts[TAB_SHOWS]);
+        free_items(lists[TAB_USB], counts[TAB_USB]); /* again, now that a server can find their posters */
+        lists[TAB_USB] = usb_items(&counts[TAB_USB]);
         check_update();
     } else {
         fprintf(stderr, "FLEX: no server found (discovery timed out, saved addresses unreachable)\n");
         snprintf(status, sizeof status, "No server found. Start FLEX on your PC (same network); Triangle retries.");
+        if (counts[TAB_USB]) tab = TAB_USB; /* the drive plays without one */
     }
 
     /* D-pad auto-repeat while held */
@@ -1859,6 +2017,16 @@ int main(int argc, char **argv) {
 
     while (!quit) {
         bb_every(5000, "grid");
+        if (!in_show && SDL_GetTicks() >= usb_next) { /* a drive went in or out? */
+            usb_next = SDL_GetTicks() + 3000;
+            if (usb_changed()) {
+                usb_scan();
+                free_items(lists[TAB_USB], counts[TAB_USB]);
+                lists[TAB_USB] = usb_items(&counts[TAB_USB]);
+                sels[TAB_USB] = firsts[TAB_USB] = 0;
+                if (!tab_shown(tab, counts)) tab = counts[TAB_HOME] ? TAB_HOME : TAB_MOVIES;
+            }
+        }
         Item *list = lists[tab];
         int n = counts[tab], *sel = &sels[tab], *first_row = &firsts[tab];
         int typing = tab == TAB_SEARCH && kb_focus;
@@ -1884,8 +2052,9 @@ int main(int argc, char **argv) {
             if (e.type == SDL_CONTROLLERBUTTONUP && e.cbutton.button == held) held = -1;
             if (e.type == SDL_KEYUP && key_to_button(e.key.keysym.sym) == held) held = -1;
             if ((e.type == SDL_CONTROLLERBUTTONUP && e.cbutton.button == SDL_CONTROLLER_BUTTON_B) ||
-                (e.type == SDL_KEYUP && key_to_button(e.key.keysym.sym) == SDL_CONTROLLER_BUTTON_B))
-                hold_exit_release();
+                (e.type == SDL_KEYUP && key_to_button(e.key.keysym.sym) == SDL_CONTROLLER_BUTTON_B)) {
+                if (hold_exit_release()) quit = 1;
+            }
             if (button < 0) continue;
 
             if (in_show) {
@@ -1895,6 +2064,7 @@ int main(int argc, char **argv) {
                 case SDL_CONTROLLER_BUTTON_B:
                     in_show = 0;
                     held = -1;
+                    if (sv.id < 0) break; /* a show on the drive: nothing to ask the server */
                     refresh_items(KIND_SHOW, &lists[TAB_SHOWS], &counts[TAB_SHOWS]);
                     refresh_continue(&lists[TAB_CONTINUE], &counts[TAB_CONTINUE]);
                     if (tab == TAB_HOME) {
@@ -1907,10 +2077,13 @@ int main(int argc, char **argv) {
                         EpRow r = sv.rows[ep_sel];
                         char title[260];
                         snprintf(title, sizeof title, "%s S%02dE%02d %s", sv.title, r.season, r.episode, r.title);
-                        play_item(ren, "episodes", r.id, title, r.resume_s, r.watched, r.runtime_s);
+                        const UsbShow *drive = sv.id < 0 ? usb_show((int)(-sv.id - USB_SHOW_BASE - 1)) : NULL;
+                        if (sv.id >= 0) play_item(ren, "episodes", r.id, title, r.resume_s, r.watched, r.runtime_s);
+                        else if (drive && -r.id - 1 < drive->n) play_usb(ren, &drive->eps[-r.id - 1], title);
                         held = -1;
                         long keep = r.id;
-                        fetch_show(sv.id, &sv);
+                        if (sv.id >= 0) fetch_show(sv.id, &sv);
+                        else usb_show_view(sv.id, &sv);
                         for (int i = 0; i < sv.n; i++)
                             if (sv.rows[i].id == keep) ep_sel = i;
                     }
@@ -1954,7 +2127,7 @@ int main(int argc, char **argv) {
             case SDL_CONTROLLER_BUTTON_B:
                 if (tab == TAB_SEARCH && !kb_focus) kb_focus = 1; /* results -> keyboard -> Movies */
                 else if (tab == TAB_SEARCH) tab = TAB_MOVIES;
-                else hold_exit_start(); /* closes once held long enough (below) */
+                else hold_exit_start(); /* closes when let go after a full hold */
                 break;
             case SDL_CONTROLLER_BUTTON_START: /* options: install the offered update */
                 if (g_update.version[0]) install_update(ren, &quit);
@@ -1971,6 +2144,8 @@ int main(int argc, char **argv) {
                     posters_server(g_host, g_port);
                     prefetch_posters(lists[TAB_MOVIES], counts[TAB_MOVIES]);
                     prefetch_posters(lists[TAB_SHOWS], counts[TAB_SHOWS]);
+                    free_items(lists[TAB_USB], counts[TAB_USB]);
+                    lists[TAB_USB] = usb_items(&counts[TAB_USB]);
                     check_update();
                 }
                 for (int k = 0; k < TABS; k++) {
@@ -1988,6 +2163,20 @@ int main(int argc, char **argv) {
                 }
                 if (n == 0) break;
                 Item m = list[*sel]; /* a copy: the lists are re-fetched below */
+                if (m.id < 0) { /* on the USB drive */
+                    if (m.kind == KIND_MOVIE) {
+                        const UsbFile *f = usb_movie((int)(-m.id - 1));
+                        if (f) play_usb(ren, f, m.title);
+                        free_items(lists[TAB_USB], counts[TAB_USB]); /* the new resume point */
+                        lists[TAB_USB] = usb_items(&counts[TAB_USB]);
+                    } else {
+                        ep_sel = usb_show_view(m.id, &sv);
+                        ep_first = ep_sel > EP_ROWS_VISIBLE - 2 ? ep_sel - 2 : 0;
+                        in_show = sv.n > 0;
+                    }
+                    held = -1;
+                    break;
+                }
                 if (m.episode || m.kind == KIND_MOVIE) {
                     char title[380];
                     if (m.episode) snprintf(title, sizeof title, "%s %s", m.title, m.subtitle);
@@ -2029,7 +2218,7 @@ int main(int argc, char **argv) {
             else move_sel(&sels[tab], &firsts[tab], counts[tab], held, rows_visible(tab));
             next_repeat = SDL_GetTicks() + 110;
         }
-        if (hold_exit_done()) quit = 1;
+        if (hold_exit_check()) quit = 1;
         SDL_Delay(16);
     }
 
