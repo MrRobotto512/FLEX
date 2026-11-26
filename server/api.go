@@ -57,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cast", s.handleCastStatus)
 	mux.HandleFunc("POST /api/v1/cast", s.handleCast)
 	mux.HandleFunc("POST /api/v1/cast/{action}", s.handleCastControl)
+	mux.HandleFunc("GET /api/v1/lookup/poster", s.handleLookupPoster)
 	mux.HandleFunc("GET /api/v1/client/ps5", s.handlePS5Client)
 	mux.HandleFunc("GET /api/v1/client/ps5/eboot.elf", s.handlePS5ClientFile)
 	mux.HandleFunc("GET /api/v1/client/ps5/app/{path...}", s.handlePS5AppFile)

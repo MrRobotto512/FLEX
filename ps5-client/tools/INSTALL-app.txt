@@ -28,9 +28,11 @@ Launcher version (FLEX-ps5.zip), which still works as before.
 
 After that FLEX updates itself: when the FLEX server on your PC has a newer
 version, the grid shows "Update ... ready"; Options installs it and FLEX
-closes, to be opened again from its tile. Hold Circle on the grid to close
-FLEX. New tile pictures (sce_sys) come only with an install; if the tile
-keeps the old ones, delete the FLEX tile and install again.
+closes, to be opened again from its tile. Hold Circle on the grid until the
+bar is full, then let go, to close FLEX. A USB drive with a Movies or TV
+folder plugged into the PS5 shows up as a USB tab. New tile pictures
+(sce_sys) come only with an install; if the tile keeps the old ones, delete
+the FLEX tile and install again.
 
 sce_module/libc.prx is the clean-room runtime from Forwarder Manager's
 native-app kit, GPL-3.0-or-later; its source is at

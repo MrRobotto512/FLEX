@@ -77,8 +77,18 @@ typedef struct {
     SDL_Texture *tex;
     int w, h;
 } OsdLine;
-enum { OSD_TITLE, OSD_TIME, OSD_STATE, OSD_PERF, OSD_PIC, OSD_PIC_END = OSD_PIC + PIC_COUNT, OSD_PIC_HINT = OSD_PIC_END,
-       OSD_LINES };
+enum {
+    OSD_TITLE,
+    OSD_TIME,
+    OSD_STATE,
+    OSD_PERF,
+    OSD_PIC, /* the picture panel: a name and a value for each row, its title, two lines of help */
+    OSD_PIC_VAL = OSD_PIC + PIC_COUNT,
+    OSD_PIC_TITLE = OSD_PIC_VAL + PIC_COUNT,
+    OSD_PIC_HINT,
+    OSD_PIC_HINT2,
+    OSD_LINES
+};
 
 /* the picture panel: name, range, step, neutral value */
 static const struct {
@@ -503,22 +513,28 @@ static void fmt_time(char *b, size_t n, double s) {
     else snprintf(b, n, "%d:%02d", t / 60, t % 60);
 }
 
-static void osd_text(Player *p, int slot, const char *text, int x, int y, int right_align) {
+/* osd_text draws a line and returns its width; a slot keeps one colour. */
+static int osd_text_col(Player *p, int slot, const char *text, int x, int y, int right_align, SDL_Color col) {
     OsdLine *l = &p->osd[slot];
-    if (!p->o->font || !text[0]) return;
+    if (!p->o->font || !text[0]) return 0;
     if (!l->tex || strcmp(l->text, text) != 0) {
         if (l->tex) SDL_DestroyTexture(l->tex);
         l->tex = NULL;
         snprintf(l->text, sizeof l->text, "%s", text);
-        SDL_Surface *s = TTF_RenderUTF8_Blended(p->o->font, text, (SDL_Color){232, 234, 240, 255});
-        if (!s) return;
+        SDL_Surface *s = TTF_RenderUTF8_Blended(p->o->font, text, col);
+        if (!s) return 0;
         l->tex = SDL_CreateTextureFromSurface(p->ren, s);
         l->w = s->w;
         l->h = s->h;
         SDL_FreeSurface(s);
-        if (!l->tex) return;
+        if (!l->tex) return 0;
     }
     SDL_RenderCopy(p->ren, l->tex, NULL, &(SDL_Rect){right_align ? x - l->w : x, y, l->w, l->h});
+    return l->w;
+}
+
+static void osd_text(Player *p, int slot, const char *text, int x, int y, int right_align) {
+    osd_text_col(p, slot, text, x, y, right_align, (SDL_Color){232, 234, 240, 255});
 }
 
 /* perf_text sums up how playback keeps up; refreshed once a second so the
@@ -537,6 +553,54 @@ static const char *perf_text(Player *p) {
                  p->vdec ? p->vdec->thread_count : 0, p->fast_decode ? "  ·  fast decode" : "");
     }
     return p->perf;
+}
+
+/* The picture panel (Options while playing), top right: a slider for each
+ * adjustment with a tick at its neutral value, the chosen row lit, and the
+ * buttons underneath. The panel is as wide as its longest line of help. */
+static void draw_picture_panel(Player *p) {
+    SDL_Renderer *r = p->ren;
+    const SDL_Color fg = {232, 234, 240, 255}, muted = {138, 144, 160, 255};
+    const int pad = 36, row_h = 86, title_h = 64, hint_h = 40;
+    static int hint_w; /* the help lines' width, known after the first draw */
+    int w = hint_w + 2 * pad > 620 ? hint_w + 2 * pad : 620;
+    SDL_Rect box = {SCREEN_W - 80 - w, 60, w, pad + title_h + PIC_COUNT * row_h + 16 + 2 * hint_h + pad - 8};
+    SDL_SetRenderDrawColor(r, 15, 17, 21, 235);
+    SDL_RenderFillRect(r, &box);
+    SDL_SetRenderDrawColor(r, 90, 169, 255, 255);
+    SDL_RenderFillRect(r, &(SDL_Rect){box.x, box.y, box.w, 4});
+    osd_text_col(p, OSD_PIC_TITLE, "Picture", box.x + pad, box.y + pad - 8, 0, fg);
+
+    int x0 = box.x + pad, x1 = box.x + box.w - pad, y = box.y + pad + title_h;
+    for (int i = 0; i < PIC_COUNT; i++, y += row_h) {
+        int v = p->pic[i], sel = i == p->adj_row;
+        if (sel) {
+            SDL_SetRenderDrawColor(r, 255, 255, 255, 22);
+            SDL_RenderFillRect(r, &(SDL_Rect){box.x, y - 8, box.w, row_h - 4});
+            SDL_SetRenderDrawColor(r, 90, 169, 255, 255);
+            SDL_RenderFillRect(r, &(SDL_Rect){box.x, y - 8, 6, row_h - 4});
+        }
+        char val[24];
+        if (i == PIC_BRIGHTNESS) snprintf(val, sizeof val, "%+d", v);
+        else snprintf(val, sizeof val, "%d %%", v);
+        osd_text_col(p, OSD_PIC + i, pic_def[i].name, x0, y, 0, fg);
+        osd_text_col(p, OSD_PIC_VAL + i, val, x1, y, 1, fg);
+        /* the slider: filled from the neutral value to the chosen one */
+        int ty = y + 50, tw = x1 - x0, range = pic_def[i].max - pic_def[i].min;
+        int at = x0 + (v - pic_def[i].min) * tw / range, mid = x0 + (pic_def[i].neutral - pic_def[i].min) * tw / range;
+        SDL_SetRenderDrawColor(r, 60, 66, 80, 255);
+        SDL_RenderFillRect(r, &(SDL_Rect){x0, ty, tw, 6});
+        SDL_SetRenderDrawColor(r, 90, 169, 255, sel ? 255 : 150);
+        SDL_RenderFillRect(r, &(SDL_Rect){at < mid ? at : mid, ty, at < mid ? mid - at : at - mid, 6});
+        SDL_SetRenderDrawColor(r, 138, 144, 160, 255);
+        SDL_RenderFillRect(r, &(SDL_Rect){mid - 1, ty - 5, 2, 16});
+        SDL_SetRenderDrawColor(r, 232, 234, 240, 255);
+        SDL_RenderFillRect(r, &(SDL_Rect){at - 4, ty - 8, 8, 22});
+    }
+    y += 8;
+    int a = osd_text_col(p, OSD_PIC_HINT, "Up/Down choose  Â·  Left/Right change", x0, y, 0, muted);
+    int b = osd_text_col(p, OSD_PIC_HINT2, "Square resets  Â·  Options or Circle closes", x0, y + hint_h, 0, muted);
+    hint_w = a > b ? a : b;
 }
 
 static void draw_osd(Player *p) {
@@ -560,24 +624,7 @@ static void draw_osd(Player *p) {
     osd_text(p, OSD_STATE, state, SCREEN_W / 2 - 300, SCREEN_H - 140, 0);
     osd_text(p, OSD_PERF, perf_text(p), SCREEN_W - 80, SCREEN_H - 50, 1);
 
-    if (p->adjusting) { /* the picture panel, top right */
-        SDL_Rect box = {SCREEN_W - 560, 60, 480, 70 + PIC_COUNT * 52};
-        SDL_SetRenderDrawColor(r, 0, 0, 0, 190);
-        SDL_RenderFillRect(r, &box);
-        for (int i = 0; i < PIC_COUNT; i++) {
-            char line[64];
-            int v = p->pic[i];
-            if (i == PIC_BRIGHTNESS) snprintf(line, sizeof line, "%s   %+d", pic_def[i].name, v);
-            else snprintf(line, sizeof line, "%s   %d %%", pic_def[i].name, v);
-            if (i == p->adj_row) {
-                SDL_SetRenderDrawColor(r, 90, 169, 255, 255);
-                SDL_RenderFillRect(r, &(SDL_Rect){box.x, box.y + 14 + i * 52, 6, 40});
-            }
-            osd_text(p, OSD_PIC + i, line, box.x + 30, box.y + 18 + i * 52, 0);
-        }
-        osd_text(p, OSD_PIC_HINT, "Left/Right change  ·  Square resets  ·  Options closes", box.x + 30,
-                 box.y + 26 + PIC_COUNT * 52, 0);
-    }
+    if (p->adjusting) draw_picture_panel(p);
 
     if (dur > 0) {
         int x = 80, y = SCREEN_H - 70, w = SCREEN_W - 160;

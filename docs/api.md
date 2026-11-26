@@ -198,6 +198,10 @@ The server checks the latest GitHub release every 6 h (unless `FLEX_NO_UPDATES=1
 
 The PS5 client offers it when `version` is newer than its own (any release is newer than a dev build) and checks `size` and `sha256` before swapping it in.
 
+## Posters by name
+
+- `GET /lookup/poster?kind=movie|show&name=…` → the poster image for a title that isn't in the library, found on TMDB from a file or folder name (`Ambulance 2022`, `Heat (1995)`, `Ambulance.2022.1080p.WEBRip.x264-RARBG.mp4`). `404 not_found` when nothing matches, `404 no_tmdb` without a TMDB key. The PS5 app uses it for the titles on a USB drive plugged into the console.
+
 ## Auth
 
 - LAN: open by default; optional 4-digit PIN (`X-Flex-Pin`) once the desktop UI exposes it.
