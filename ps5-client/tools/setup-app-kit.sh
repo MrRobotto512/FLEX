@@ -36,6 +36,25 @@ git -C "$KIT" config core.autocrlf false   # its checksums need LF line endings
 git -C "$KIT" fetch -q --depth 1 origin "$REV"
 git -C "$KIT" checkout -q --force FETCH_HEAD
 
+# The kit's host tools build zlib 1.3.2 from a tarball it fetches from
+# zlib.net alone, and stops if the checksum is off. zlib.net now and then
+# hands CI machines something else, which failed releases; so the same
+# tarball (same checksum, the kit's own) is put in the kit's cache first,
+# from zlib's GitHub release and then zlib.net, and the kit finds it there.
+ZLIB_FILE="$KIT/.deps/native/zlib/zlib-1.3.2.tar.gz"
+ZLIB_SUM="bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+zlib_ok() { echo "$ZLIB_SUM  $ZLIB_FILE" | sha256sum --check --strict >/dev/null 2>&1; }
+if ! zlib_ok; then
+  echo "== zlib 1.3.2"
+  mkdir -p "$(dirname "$ZLIB_FILE")"
+  for url in https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz \
+             https://zlib.net/fossils/zlib-1.3.2.tar.gz https://zlib.net/fossils/zlib-1.3.2.tar.gz; do
+    wget -q "$url" -O "$ZLIB_FILE" && zlib_ok && break
+    rm -f "$ZLIB_FILE"
+  done
+  zlib_ok || echo "zlib: none of the downloads matched the checksum; the kit will try once more itself"
+fi
+
 echo "== host tools and libc.prx"
 (cd "$KIT" && USE_CCACHE=0 bash tools/rebuild-libc.sh)
 ls -l "$KIT/build/host/ps5-native-tool" "$KIT/runtime/libc.prx"
